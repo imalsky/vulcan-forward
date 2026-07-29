@@ -1,0 +1,60 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vulcan-forward"
+dynamic = ["version"]
+description = "Shared VULCAN-JAX to ExoJAX forward-model engine (chemistry + radiative transfer)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "GPL-3.0-only"
+license-files = ["LICENSE"]
+dependencies = [
+    "numpy>=1.26",
+    "jax>=0.6.2",
+    # The RT layer is built on exojax and the PIN IS LOAD-BEARING in four
+    # independent places (see README "The exojax pin"): the local
+    # inverse-square gravity profile that works around exojax's own linear-1/r
+    # gravity_profile, the routing around the deprecated dit_grid_resolution
+    # kwarg, two imports through compatibility shims slated for removal in
+    # exojax 3.x, and the mdb.gamma_air monkey-patch for H2/He widths.
+    # Note exojax 2.2.3 itself caps numpy<2. Isolating that constraint here --
+    # rather than in the chemistry core, vulcan-jax -- is a main reason this
+    # package exists.
+    "exojax==2.2.3",
+    "vulcan-jax>=0.3.0",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+]
+
+[project.urls]
+Homepage = "https://github.com/imalsky/vulcan-forward"
+Repository = "https://github.com/imalsky/vulcan-forward"
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "ruff>=0.11", "build>=1.2", "twine>=5"]
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+include-package-data = false
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.dynamic]
+version = { attr = "vulcan_forward._version.__version__" }
+
+# vulcan_chem must set the VULCAN_JAX_* import-frozen env vars and jax x64
+# before importing jax/vulcan_jax, so its module-level imports legitimately
+# follow executable statements.
+[tool.ruff.lint.per-file-ignores]
+"src/vulcan_forward/vulcan_chem.py" = ["E402"]
+"src/vulcan_forward/exojax_rt.py" = ["E402"]
+
+[tool.ruff]
+line-length = 100
