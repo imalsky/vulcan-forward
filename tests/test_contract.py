@@ -167,3 +167,33 @@ print("OK")
                           text=True, timeout=900)
     assert proc.returncode == 0, proc.stderr[-2000:]
     assert "OK" in proc.stdout
+
+
+def test_ensure_layout_creates_the_trees(tmp_path, monkeypatch):
+    """A setup tool must be able to CREATE the layout.
+
+    data_root() is strict on purpose, but a fetch command knows the directories
+    should exist. Before this existed, a first run reported the CIA tables as
+    failures because the data root the install instructions name did not exist
+    yet (2026-07-29).
+    """
+    from vulcan_forward import paths
+
+    monkeypatch.delenv(paths.ENV_LINELISTS, raising=False)
+    monkeypatch.delenv(paths.ENV_OPACITY_CACHE, raising=False)
+    monkeypatch.setattr(paths, "_root_override", None, raising=False)
+    root = tmp_path / "made-by-setup"
+    monkeypatch.setenv(paths.ENV_ROOT, str(root))
+
+    assert not root.exists()
+    assert paths.ensure_layout() == root
+    assert (root / "exojax_linelists").is_dir()
+    assert (root / "opacity_cache").is_dir()
+    # and the strict reader is satisfied afterwards
+    assert paths.data_root() == root
+    assert paths.linelist_dir() == root / "exojax_linelists"
+
+    # it still refuses to guess a location
+    monkeypatch.delenv(paths.ENV_ROOT, raising=False)
+    with pytest.raises(RuntimeError, match=paths.ENV_ROOT):
+        paths.ensure_layout()

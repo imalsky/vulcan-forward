@@ -79,6 +79,37 @@ def data_root() -> Path:
     return root
 
 
+def ensure_layout() -> Path:
+    """Create the data layout under the configured root and return the root.
+
+    ``data_root`` is deliberately strict, because a missing directory during a
+    run is a configuration error. A SETUP tool is the opposite case: it knows the
+    directories should exist and its job is to make them. Use this from a fetch
+    or bootstrap command, never from a model build.
+
+    The root itself still has to be configured -- this function will not guess a
+    location -- but it is created if it does not exist, together with the two
+    subdirectories the engine reads.
+    """
+    if _root_override is not None:
+        root = _root_override
+    else:
+        env = os.environ.get(ENV_ROOT, "").strip()
+        if not env:
+            raise RuntimeError(
+                f"vulcan_forward needs a data root: set ${ENV_ROOT} to the "
+                "directory that should hold exojax_linelists/ and "
+                "opacity_cache/, then run the setup command again.")
+        root = Path(env).expanduser()
+    root.mkdir(parents=True, exist_ok=True)
+    for env_var, subdir in ((ENV_LINELISTS, "exojax_linelists"),
+                            (ENV_OPACITY_CACHE, "opacity_cache")):
+        override = os.environ.get(env_var, "").strip()
+        target = Path(override).expanduser() if override else root / subdir
+        target.mkdir(parents=True, exist_ok=True)
+    return root
+
+
 def _tree(env_var: str, subdir: str, *, what: str) -> Path:
     """Resolve one data tree: per-tree env var wins, else <root>/<subdir>."""
     env = os.environ.get(env_var, "").strip()

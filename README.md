@@ -92,6 +92,10 @@ You can move one directory without moving the other. Set
 application with its own configuration can instead call
 `vulcan_forward.paths.set_data_root(...)`.
 
+The root does not have to exist yet. A setup command creates the layout with
+`vulcan_forward.paths.ensure_layout()`. A model build never creates directories:
+it reports a missing one as an error.
+
 The package reads no file until it needs one. If a file or directory is missing,
 the package stops and shows the path and the remedy. The H2-He CIA table is
 required physics, because helium is about 14% of the atmosphere by number. A
