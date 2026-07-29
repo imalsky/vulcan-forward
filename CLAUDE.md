@@ -23,7 +23,7 @@ vulcan-jwst-tool}`. The architecture rationale lives in the ROOT CLAUDE.md.
   overrides. Resolved on USE, never at import. Molecule-table `db` values are
   path SUFFIXES — keep them relative so the table stays location-independent.
 - **`exojax==2.2.3` is pinned and the pin is load-bearing in four places** (see
-  README "The exojax pin"). exojax caps `numpy<2`; containing that here is a main
+  README "The exojax version"). exojax caps `numpy<2`; containing that here is a main
   reason this package exists, so do not relax the pin without re-verifying the
   gravity-profile workaround, the `dit_grid_resolution` routing, the two
   compat-shim imports, and the `mdb.gamma_air` monkey-patch.

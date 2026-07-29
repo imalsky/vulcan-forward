@@ -101,8 +101,8 @@ absorption.
 ## Planet geometry is required
 
 `build_rt_model` needs three values in its profile: `rp_cm` (the planet radius in
-centimetres), `gs_cgs` (the surface gravity in cm/s^2), and `rstar_cm` (the
-stellar radius in centimetres). These values set the transit-depth normalization
+centimeters), `gs_cgs` (the surface gravity in cm/s^2), and `rstar_cm` (the
+stellar radius in centimeters). These values set the transit-depth normalization
 and the atmospheric scale height. There is no safe default value, so the function
 stops with an error if one is missing.
 
