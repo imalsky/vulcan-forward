@@ -595,7 +595,8 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         _y0n = _y0_np
         _nC = np.asarray(compo[:, constants.ATOM_COLS["C"]], dtype=np.float64)
         _nO = np.asarray(compo[:, constants.ATOM_COLS["O"]], dtype=np.float64)
-        _mC = np.asarray(carbon_mask); _mOo = np.asarray(o_only_mask)
+        _mC = np.asarray(carbon_mask)
+        _mOo = np.asarray(o_only_mask)
         _C_tot = float((_y0n * _nC[None, :]).sum())
         _O_tot = float((_y0n * _nO[None, :]).sum())
         _OC_z = (_y0n * (_nO * _mC)[None, :]).sum(axis=1)
