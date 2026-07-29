@@ -126,3 +126,44 @@ def test_import_order_guard_is_documented_and_live():
                           text=True, timeout=600)
     assert proc.returncode != 0, "importing after exojax must fail"
     assert "must be imported BEFORE exojax" in proc.stderr, proc.stderr
+
+
+def test_chem_params_named_api_matches_the_vector_form():
+    """The engine's primitive is named ChemParams; the positional vector stays
+    supported as the adapter a sampler or a jvp needs (2026-07-29).
+
+    Runs in a SUBPROCESS on purpose. Importing vulcan_chem needs a clean
+    interpreter: an earlier test in this file imports exojax_rt, and after that
+    the import-order guard correctly refuses vulcan_chem. (Discovering this the
+    hard way is a fair demonstration that the guard works.)
+    """
+    pytest.importorskip("jax")
+    import subprocess
+
+    code = r"""
+import numpy as np, jax
+from vulcan_forward.vulcan_chem import ChemParams, params_from_vector
+
+# with a tp_eval hook the tail is that hook's parameter block
+theta = [0.5, -0.25, 1.5, 1200.0, -1.0]
+p = params_from_vector(theta, n_tp_params=2, has_tp_eval=True)
+assert (float(p.lnZ), float(p.c_o), float(p.lnKzz)) == (0.5, -0.25, 1.5)
+assert np.allclose(np.asarray(p.tp), [1200.0, -1.0])
+assert np.allclose(np.asarray(p.to_vector()), theta)
+
+# without one, the tail is a single uniform temperature offset in K
+q = params_from_vector([0.0, 0.0, 0.0, 25.0], n_tp_params=0, has_tp_eval=False)
+assert np.asarray(q.tp).shape == (1,)
+assert float(q.tp[0]) == 25.0
+
+# a NamedTuple, so it is a JAX pytree and round-trips through to_vector
+assert len(jax.tree_util.tree_leaves(ChemParams(1.0, 2.0, 3.0, (4.0,)))) == 4
+assert np.allclose(
+    np.asarray(ChemParams(1.0, 2.0, 3.0, (4.0,)).to_vector()),
+    [1.0, 2.0, 3.0, 4.0])
+print("OK")
+"""
+    proc = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                          text=True, timeout=900)
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    assert "OK" in proc.stdout

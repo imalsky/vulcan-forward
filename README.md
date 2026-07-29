@@ -141,14 +141,28 @@ and users who want chemistry alone install nothing more.
 The numerical core does not depend on any application. It takes the planet
 geometry as arguments, and it contains no sampler concepts.
 
-One part of the interface is inherited and not yet redesigned. The public
-functions of `vulcan_chem` take a **positional parameter vector**. They read
-`theta[0:3]` as `[lnZ, c_o, lnKzz]`, and `theta[3:3+n_tp]` as the
-temperature-pressure block. This is the retrieval framework's convention. A
-library should instead accept keyword arguments or a small parameter class, and
-let each application convert its own vector. This change adds an interface and
-removes nothing, so it is planned. It was kept out of the extraction commit,
-because that commit had to show that no spectrum changed.
+### Chemistry parameters
+
+`vulcan_chem` has a named parameter type. Use it in new code:
+
+```python
+from vulcan_forward.vulcan_chem import ChemParams
+
+params = ChemParams(lnZ=0.0, c_o=0.0, lnKzz=0.7, tp=(1200.0, -1.0))
+y = chem.converged_y(params)
+```
+
+`lnZ` scales the metals. `c_o` moves carbon at fixed oxygen. `lnKzz` scales the
+eddy-diffusion profile. `tp` holds the temperature parameters. The meaning of
+`tp` is fixed when you build the model. With a `tp_eval` hook it is that hook's
+parameter block. Without one it is a single uniform temperature offset in
+kelvin.
+
+Every function also accepts a positional vector, `[lnZ, c_o, lnKzz, *tp]`. Keep
+that form for a sampler or for forward-mode automatic differentiation. In those
+cases the parameters are a vector, and the tangent must have the same shape.
+`params_from_vector` reads a vector into a `ChemParams`, and
+`ChemParams.to_vector` writes one back.
 
 The tests in this repository check the packaging rules only. Each test confirms
 one rule:

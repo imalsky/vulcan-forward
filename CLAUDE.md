@@ -33,12 +33,14 @@ vulcan-jwst-tool}`. The architecture rationale lives in the ROOT CLAUDE.md.
   `p_bar`, all max|diff| = 0). Any refactor claiming to be behavior-neutral runs
   that same check. This repo's own suite covers packaging contracts only —
   physics validation lives in the consumers.
-- **Known API debt, deliberate:** `vulcan_chem`'s entry points take the
-  retrieval's POSITIONAL theta vector (`theta[0:3]` = lnZ/c_o/lnKzz,
-  `theta[3:3+n_tp]` = T-P). A library should expose keyword or dataclass
-  parameters with the vector form as a consumer-side adapter. Additive; kept out
-  of the extraction commit so that move stayed provable. Doing it means touching
-  both consumers' call sites.
+- **Named parameters (0.2.0):** `ChemParams(lnZ, c_o, lnKzz, tp)` is the
+  primitive; `params_from_vector` / `ChemParams.to_vector` convert to and from
+  the positional `[lnZ, c_o, lnKzz, *tp]` layout, which every entry point still
+  accepts. KEEP the vector path: the retrieval's sampler and the planner's
+  `jax.jvp` differentiate with respect to that array, and a tangent has to match
+  its shape — that is an adapter, not debt. `_as_params` is the single
+  normalization point; `_prep` reads fields by name. When `tp_eval` is None the
+  tail is `theta[3:4]` (a uniform T offset), not `theta[3:3]`.
 - Suite: `python -m pytest tests -q` (dependency-light; the geometry and
   import-order tests skip without exojax). Install editable:
   `pip install --no-deps -e .`.

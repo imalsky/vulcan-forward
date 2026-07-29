@@ -189,6 +189,46 @@ def _assert_composition_tables(composition) -> None:
                 "the hardcoded mass.")
 
 
+class ChemParams(NamedTuple):
+    """Named chemistry parameters -- the engine's primitive.
+
+    ``lnZ`` scales the metals (ln of the multiple of the baseline metallicity),
+    ``c_o`` moves carbon at fixed oxygen (ln of the C/O multiple), ``lnKzz``
+    scales the whole eddy-diffusion profile, and ``tp`` carries the temperature
+    parameters. What ``tp`` MEANS is fixed when the model is built: with a
+    ``tp_eval`` hook it is that hook's parameter block; without one it is a
+    single uniform temperature offset in K, added to the structural profile.
+
+    Prefer this over a bare vector in new code, because the field names carry
+    the meaning. The positional vector form is still accepted everywhere (see
+    ``params_from_vector``) and remains the right shape for a sampler or for
+    forward-mode AD, where the parameters ARE a vector and the tangent has to
+    match it. This type is a NamedTuple, so it is also a JAX pytree.
+    """
+    lnZ: float = 0.0
+    c_o: float = 0.0
+    lnKzz: float = 0.0
+    tp: tuple = ()
+
+    def to_vector(self):
+        """The equivalent positional vector ``[lnZ, c_o, lnKzz, *tp]``."""
+        return jnp.asarray([self.lnZ, self.c_o, self.lnKzz, *self.tp],
+                           dtype=jnp.float64)
+
+
+def params_from_vector(theta, n_tp_params: int, *, has_tp_eval: bool):
+    """Read a positional ``theta`` into named :class:`ChemParams`.
+
+    The layout is the retrieval framework's, kept for compatibility:
+    ``theta[0:3]`` is ``[lnZ, c_o, lnKzz]`` and the tail is the temperature
+    block -- ``theta[3:3+n_tp_params]`` when the model was built with a
+    ``tp_eval`` hook, else the single element ``theta[3]``.
+    """
+    v = jnp.asarray(theta, dtype=jnp.float64)
+    tp = v[3:3 + n_tp_params] if has_tp_eval else v[3:4]
+    return ChemParams(lnZ=v[0], c_o=v[1], lnKzz=v[2], tp=tp)
+
+
 class ConvDiag(NamedTuple):
     """Per-solve convergence diagnostics read off the runner's final carry.
 
@@ -662,8 +702,15 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
             y0p = base * scale[None, :]
         return y0p
 
+    def _as_params(p):
+        """Accept named :class:`ChemParams` or a positional vector."""
+        if isinstance(p, ChemParams):
+            return p
+        return params_from_vector(p, n_tp_params, has_tp_eval=tp_eval is not None)
+
     def _prep(theta, warm_y=None, lnZ_ref=0.0, c_o_ref=0.0):
-        """Build the perturbed initial runner state + atm for theta=[lnZ, c_o, lnKzz, T...].
+        """Build the perturbed initial runner state + atm from ChemParams (or the
+        equivalent positional vector [lnZ, c_o, lnKzz, T...]).
 
         Continuation: pass warm_y = a previously-CONVERGED y (and its lnZ_ref / c_o_ref)
         to warm-start from there instead of the fixed baseline y0 (see _guess_y0). In
@@ -672,16 +719,17 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         "masks" mode the incremental scaling IS the map (avoids the runner's
         snap-back-to-baseline, and avoids double-applying C/O to a warm_y that already
         carries it -- a fixed-C/O metallicity march passes c_o_ref = c_o)."""
-        lnZ, c_o, lnKzz = theta[0], theta[1], theta[2]
+        _p = _as_params(theta)
+        lnZ, c_o, lnKzz = _p.lnZ, _p.c_o, _p.lnKzz
 
-        # Temperature: default is the validated uniform T shift theta[3]; with a tp_eval
-        # hook the full differentiable T-P profile theta[3:3+n_tp_params] is used instead.
+        # Temperature: default is the validated uniform T shift; with a tp_eval hook
+        # the full differentiable T-P profile is used instead.
         # Either way rate constants are rebuilt ON-GRAPH (rates_jax), with n_0 = pco/(kb T),
         # Ti, and the pv carry (fig_so2_temperature pattern).
         if tp_eval is None:
-            T = T_base + theta[3]
+            T = T_base + _p.tp[0]
         else:
-            T = tp_eval(theta[3:3 + n_tp_params], p_bar_j)
+            T = tp_eval(_p.tp, p_bar_j)
         M = pco / (kb * T)
         # Honor cfg.use_lowT_limit_rates (2026-07-19): build_rate_array
         # defaults use_lowT_caps=False, so a config with the flag ON was
@@ -804,7 +852,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         (n_0, Kzz, atom_ini, and with condensation on the live-rebuilt c_* conden
         arrays + fix_species_sat_mix) WITHOUT running the solver. Pure function
         of theta; jit/vmap/jvp-traceable. Diagnostics/tests only."""
-        init, _atm_T = _prep(jnp.asarray(theta, dtype=jnp.float64))
+        init, _atm_T = _prep(theta)
         return init.pv
 
     def converged_y(theta, warm_y=None, lnZ_ref=0.0, c_o_ref=0.0, return_diag=False,
@@ -837,7 +885,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         surface: ``conv_normal`` is the runner's canonical certification recomputed at
         the exit state, so a stall-fallback or budget exit reads False even when
         ``longdy < yconv_min``. Supersedes return_diag for new callers."""
-        init, atm_T = _prep(jnp.asarray(theta, dtype=jnp.float64), warm_y=warm_y,
+        init, atm_T = _prep(theta, warm_y=warm_y,
                             lnZ_ref=lnZ_ref, c_o_ref=c_o_ref)
         init = _runner_carry_seed(init, warm_continuation=warm_y is not None,
                                   warm_cap=warm_cap)
@@ -864,8 +912,8 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         elemental-repair factor (elemental mode; must be > 0), and the atom_ini
         consistency |atoms(y_init) - atom_ini|/atom_ini in the runner's atom basis.
         """
-        th = jnp.asarray(theta, dtype=jnp.float64)
-        init, _atm_T = _prep(th, warm_y=warm_y, lnZ_ref=lnZ_ref, c_o_ref=c_o_ref)
+        th = _as_params(theta).to_vector()
+        init, _atm_T = _prep(theta, warm_y=warm_y, lnZ_ref=lnZ_ref, c_o_ref=c_o_ref)
         y = np.asarray(init.y, dtype=np.float64)
         Mn = np.asarray(init.pv.n_0, dtype=np.float64)
         A = (y @ np.asarray(compo[:, _elem_cols], dtype=np.float64)).sum(axis=0)
@@ -897,6 +945,8 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         return out
 
     return SimpleNamespace(
+        ChemParams=ChemParams,          # the named primitive
+        params_from_vector=lambda th: _as_params(th),   # model-aware adapter
         converged_ymix=converged_ymix,
         run_diag=run_diag,
         converged_y=converged_y,
