@@ -25,12 +25,15 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
-      # --no-deps: the point of this suite is that the contract holds WITHOUT
-      # the heavy tree (exojax pins numpy<2). Installing the deps here would
-      # test a different claim than the one the file makes.
-      - name: Install (contract only, no heavy deps)
+      # --no-deps for the package itself: the point of this suite is that the
+      # contract holds WITHOUT the heavy tree (exojax pins numpy<2, so it is
+      # deliberately absent and its two tests importorskip). jax + numpy ARE
+      # installed so the params_from_vector test runs: it pins the positional
+      # [lnZ, c_o, lnKzz] + T-P theta layout that both consumers unpack by
+      # fixed index, which is the contract most expensive to break silently.
+      - name: Install (contract only, no exojax)
         run: |
-          pip install pytest
+          pip install pytest numpy "jax>=0.6"
           pip install --no-deps -e .
       - name: Run contract tests
         run: python -m pytest tests -q -ra
