@@ -133,6 +133,11 @@ MOLECULES = {
     # PRISM). The SNCHO network names the species COS; the PICASO Visscher
     # tables call it OCS (consumers alias the token).
     "OCS":  {"vulcan": "COS",  "molmass": 60.075, "source": "hitran", "db": "OCS"},
+    # Photochemical sulfur carrier (collaborator request 2026-07-31).
+    "CS2":  {"vulcan": "CS2",  "molmass": 76.131, "source": "hitran", "db": "CS2"},
+    # Simple hydrocarbons: photochemical CH4-destruction products.
+    "C2H4": {"vulcan": "C2H4", "molmass": 28.054, "source": "hitran", "db": "C2H4"},
+    "C2H6": {"vulcan": "C2H6", "molmass": 30.069, "source": "hitran", "db": "C2H6"},
 }
 
 # Bulk gas used for CIA + the dominant background (H2).
