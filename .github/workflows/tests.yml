@@ -1,0 +1,36 @@
+name: tests
+
+# The contract suite is deliberately dependency-light (no jax, no exojax, no
+# vulcan_jax): it pins that the package imports with no data installed, that the
+# $VULCAN_FORWARD_DATA contract fails loudly instead of guessing, that the
+# molecule table is injectable, and that planet geometry is required. Those are
+# the properties that made the 2026-07-29 extraction worth doing, and they are
+# what the two consumer repos build on -- so they are worth checking on every
+# push. The physics itself is validated by the consumers' suites.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      matrix:
+        # requires-python = ">=3.10"; keep the floor claim verified.
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      # --no-deps: the point of this suite is that the contract holds WITHOUT
+      # the heavy tree (exojax pins numpy<2). Installing the deps here would
+      # test a different claim than the one the file makes.
+      - name: Install (contract only, no heavy deps)
+        run: |
+          pip install pytest
+          pip install --no-deps -e .
+      - name: Run contract tests
+        run: python -m pytest tests -q -ra
