@@ -126,6 +126,16 @@ the behavior of that version:
    transit depth is +1.5 parts per million with the local profile, -101.8 parts
    per million with constant gravity, and -50.8 parts per million with the exojax
    profile.
+
+   Those three numbers come from a 2026-07-28 audit against an independent chord
+   quadrature on an isothermal gray column at 60 layers. The audit scripts
+   (`verify_gravity_profile.py`, `verify_rt_transmission.py`) are cited in the
+   `_gravity_profile_invsq` docstring but are NOT in this repository, so the
+   numbers are not reproducible from a clean clone. What IS pinned here is the
+   choice itself: `tests/test_gravity_profile.py` fails if the profile collapses
+   to constant `g` or to the exojax `1/r` helper, or if the planet geometry
+   stops being passed through. Reproducing the ppm figures needs the audit
+   scripts restored; the regression test does not depend on them.
 2. **Deprecated argument.** exojax deprecated the `dit_grid_resolution` argument
    and replaced it with `broadening_resolution`. The accepted format of the new
    argument applies to exojax 2.x only.
