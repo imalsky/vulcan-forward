@@ -9,10 +9,6 @@ T_art, mmw_art)`` maps per-layer VMR + temperature + mean-molecular-weight profi
 Everything inside ``transmission_depth`` is pure JAX, so forward-mode tangents from the
 chemistry pass straight through to the spectrum. Opacities are built in float64 (x64 is
 globally enabled), matching the chemistry side -- no dtype break.
-
-Adapted from the validated emission pipeline in
-``emulator-demo/emulator_tests/smc.py`` (lines ~590-716), swapping ``ArtEmisPure`` for
-``ArtTransPure`` and the single CO opacity for a configurable molecule set.
 """
 from __future__ import annotations
 
@@ -124,10 +120,8 @@ def _build_opa(key: str, spec: dict, nu_grid, broadening: str = "air",
         # standard (slightly conservative) approximation documented in constants.py.
         if broadening == "h2he":
             # separate h2he/<db> cache dir: forces a fresh nonair_broadening
-            # download, AND keeps the path stem a valid HITRAN molecule token.
-            # (The old "<db>_h2he" naming broke under exojax>=2.x, which derives
-            # the molecule id from the stem -- radis raised NotImplementedError
-            # before anything downloaded, killing every h2he run.)
+            # download AND keeps the path stem a valid HITRAN molecule token
+            # (a "<db>_h2he" suffix breaks exojax>=2.x molecule parsing)
             mdb = MdbHitran(str(paths.linelist_dir() / "h2he" / spec["db"]),
                             nurange=nu_grid, isotope=1, nonair_broadening=True)
             _blend_h2he_broadening(mdb, key)
@@ -139,11 +133,9 @@ def _build_opa(key: str, spec: dict, nu_grid, broadening: str = "air",
                              "(expected 'air' or 'h2he')")
     else:
         raise ValueError(f"unknown opacity source {src!r} for {key}")
-    # exojax >= 2.x deprecated the dit_grid_resolution= constructor argument
-    # (it still maps to broadening_resolution internally but emits a
-    # UserWarning per molecule per build and can disappear in a future
-    # release): pass the SAME value through the supported knob. The public
-    # profile key stays "dit_grid_resolution" -- identical semantics.
+    # exojax >= 2.x deprecated the dit_grid_resolution= constructor argument:
+    # pass the SAME value through broadening_resolution. The public profile
+    # key stays "dit_grid_resolution" -- identical semantics.
     _broad_res = {"mode": "manual", "value": float(dit_grid_resolution)}
     try:
         opa = OpaPremodit.from_snapshot(
@@ -163,15 +155,12 @@ def _gravity_profile_invsq(art, T_art, mmw_art, radius_btm, gravity_btm):
     """Mid-layer inverse-square gravity profile, g(r) = g_btm * (R_btm/r)^2.
 
     ExoJax's own ``ArtCommon.gravity_profile`` (<=2.2.3) returns
-    ``g_btm / rn`` -- LINEAR in 1/r -- while its height integrator
-    (``normalized_layer_height``) uses the physical inverse-square
-    ``g_btm / rn**2``. Using ``gravity_profile`` for the opacity columns
-    therefore leaves heights and columns on DIFFERENT gravities and removes
-    only about half of the constant-g transmission bias (measured on an
-    isothermal gray W39b-like test vs an independent chord quadrature at
-    nlayer=60: -101.8 ppm constant-g, -50.8 ppm gravity_profile, +1.5 ppm
-    this profile; audit 2026-07-28, verify_gravity_profile.py /
-    verify_rt_transmission.py). Same (nlayer, 1) shape contract as
+    ``g_btm / rn`` -- LINEAR in 1/r -- while its height integrator uses the
+    physical inverse-square ``g_btm / rn**2``. Using ``gravity_profile`` for
+    the opacity columns leaves heights and columns on DIFFERENT gravities and
+    removes only about half of the constant-g bias (measured vs an independent
+    chord quadrature: -101.8 ppm constant-g, -50.8 ppm gravity_profile,
+    +1.5 ppm this profile). Same (nlayer, 1) shape contract as
     ``gravity_profile`` so it broadcasts through the dtau kernels.
     """
     normalized_height, normalized_radius_lower = art.atmosphere_height(
@@ -208,14 +197,11 @@ def _accumulate_dtau(art, nu_grid, mols, opas, molmass, opacia, g_btm,
     Pure JAX throughout, so forward-mode tangents from the chemistry pass straight through.
 
     Each molecule's line-opacity term (and each CIA term) is wrapped in
-    ``jax.checkpoint``: REVERSE-mode differentiation (the SMC retrieval's RT vjp)
-    otherwise has to STORE every molecule's PreMODIT intermediates
-    (~(nlayer x n_nu x broadening-grid) fp64 tensors) until the backward pass --
-    ~30-50 GB per spectrum on the gpu-preset grid, which OOM'd a GH200 at a 6-wide
-    particle chunk (2026-07-06, ~300 GiB requested). With checkpoint the backward
-    recomputes one molecule at a time and the tape keeps only each term's (nlayer,
-    n_nu) output. Exact same values; forward eval and forward-mode jvp (the
-    published sensitivity path) are unaffected.
+    ``jax.checkpoint``: reverse-mode differentiation otherwise stores every
+    molecule's PreMODIT intermediates until the backward pass (~30-50 GB per
+    spectrum on the gpu-preset grid; OOM'd a GH200 at a 6-wide particle
+    chunk). With checkpoint the backward recomputes one molecule at a time.
+    Exact same values; forward eval and forward-mode jvp are unaffected.
     """
     dtau = jnp.zeros((art.pressure.shape[0], nu_grid.shape[0]))
     for key in mols:
@@ -246,16 +232,11 @@ def _accumulate_dtau(art, nu_grid, mols, opas, molmass, opacia, g_btm,
         dP = jnp.asarray(art.dParr)                                # (nlayer,) bar
         dtau = dtau + kappa_c[None, :] * (dP[:, None] * _BAR_CGS / g_btm)
     if mie is not None:
-        # Mie cloud deck (v16, exojax PdbCloud/OpaMie): column-uniform
-        # condensate MMR with a single lognormal size distribution.
-        # mie = [log10 rg (cm), sigmag, log10 MMR]; mie_pack = (OpaMie,
-        # substance density) baked at build time. sigma_extinction
-        # (absorption + scattering) is the correct chord attenuation in
-        # transmission AND the pure-absorption emission approximation for
-        # the extinction term (scattering as removal; the tool documents
-        # the forward-scattering caveat). Differentiable: the miegrid
-        # interpolation is piecewise-linear in (log rg, sigmag), clamped at
-        # the grid edges (callers keep parameters strictly inside).
+        # Mie cloud deck (exojax PdbCloud/OpaMie): column-uniform condensate
+        # MMR, one lognormal size distribution; mie = [log10 rg (cm), sigmag,
+        # log10 MMR]. sigma_extinction is the correct chord attenuation.
+        # Differentiable: the miegrid interp is piecewise-linear, edge-clamped
+        # (callers keep parameters strictly inside the grid).
         if mie_pack is None:
             raise ValueError(
                 "mie parameters passed but the RT was built without "
@@ -416,13 +397,11 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
     else:
         rayleigh_xs = None
 
-    # Mie cloud deck (v16 tool work): opt-in via profile["mie_condensate"]
-    # + profile["mie_data_dir"] (a pinned ABSOLUTE cache dir -- exojax's own
-    # default is CWD-relative, which is banned here). The forward model only
-    # LOADS a pre-generated miegrid (pure numpy/jnp, differentiable); a
-    # missing grid raises with the generation command. The 4 MB virga
-    # refractive-index archive auto-downloads from Zenodo on first use --
-    # announced up front so an offline failure is attributable.
+    # Mie cloud deck: opt-in via profile["mie_condensate"] + a pinned ABSOLUTE
+    # mie_data_dir (exojax's own default is CWD-relative, banned here). The
+    # forward model only LOADS a pre-generated miegrid; a missing grid raises
+    # with the generation command. The virga archive auto-downloads on first
+    # use -- announced up front so an offline failure is attributable.
     mie_pack = None
     mie_cond = profile.get("mie_condensate") or None
     if mie_cond:
@@ -479,19 +458,11 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
         mie=[log10 rg (cm), sigmag, log10 MMR] (needs mie_condensate at build).
         """
         _require_he(vmr_he)
-        # g(r) SELF-CONSISTENCY: use the SAME height-dependent gravity ExoJax
-        # uses for the chord heights (art.run -> normalized_layer_height,
-        # g(r) = g_btm*(R_btm/r)^2) in the pressure->column-mass conversion,
-        # instead of the constant scalar g_btm. Constant g_btm makes upper-layer
-        # column mass dP/g (hence tau) too SMALL because g(r) < g_btm aloft -- an
-        # internal inconsistency (heights g(r) vs opacity constant-g) that biases
-        # transmission amplitude toward the model top, largest for low-gravity
-        # super-puffs. NOTE: art.gravity_profile is NOT this profile -- it is
-        # linear in 1/r (see _gravity_profile_invsq docstring + audit numbers);
-        # the local inverse-square helper is what matches the height integrator.
-        # Returns (nlayer,1), broadcasting through opacity_profile_xs/cia/cloud/
-        # mie/rayleigh. (Emission is plane-parallel and correctly keeps the
-        # constant g_btm below.)
+        # g(r) self-consistency: use the SAME inverse-square gravity ExoJax
+        # uses for the chord heights in the pressure->column-mass conversion.
+        # Constant g_btm makes upper-layer tau too small; art.gravity_profile
+        # is 1/r-linear and is NOT this profile (see _gravity_profile_invsq).
+        # Emission is plane-parallel and correctly keeps constant g_btm.
         g_prof = _gravity_profile_invsq(art, T_art, mmw_art, Rp_btm, g_btm)  # (nlayer,1)
         dtau = _accumulate_dtau(art, nu_grid, mols, opas, molmass, opacia, g_prof,
                                 vmr, vmr_h2, T_art, mmw_art,
@@ -542,9 +513,8 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
         rt_integration=integration,
         dit_grid_resolution=dit_res,
         has_cia_h2he=opacia_he is not None,
-        # Mie deck echo (v16): "" when no Mie cloud was built -- consumers
-        # verify this against what they requested (an engine too old to know
-        # mie_condensate would ignore it silently; the echo makes that loud)
+        # Mie deck echo: "" when no Mie cloud was built -- consumers verify it
+        # against what they requested (the echo makes a silent ignore loud)
         mie_condensate=str(mie_cond or ""),
         # internals reused by build_emis_model (so opacities aren't rebuilt)
         _nu_grid=nu_grid, _opas=opas, _molmass=molmass, _opacia=opacia,
@@ -591,16 +561,10 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
                 "vmr_he is required: pass the He VMR profile so the H2-He CIA term "
                 "is included in the emission opacity (parity with transmission).")
         if mie is not None:
-            # ArtEmisPure is a PURE-ABSORPTION thermal solver. The Mie deck
-            # returns sigma_extinction (absorption + scattering); feeding that
-            # to the emission dtau counts scattering as thermal absorption, so a
-            # conservative (pure-scattering) cloud radiates as a blackbody
-            # instead of zero -- it VIOLATES the conservative-scattering
-            # zero-emission limit and can fake a thermal source in a cloudy
-            # eclipse. Refuse loudly rather than return a wrong flux (a
-            # scattering-aware emission solver is the correct fix). The
-            # power-law cloud is a deliberately absorbing opacity, so it stays
-            # allowed; only the scattering Mie deck is refused here.
+            # ArtEmisPure is pure-absorption: Mie sigma_extinction would count
+            # scattering as thermal absorption (a conservative cloud would
+            # radiate like a blackbody instead of zero). Refuse; the absorbing
+            # power-law cloud stays allowed.
             raise ValueError(
                 "Mie cloud is not supported in EMISSION: ArtEmisPure is a "
                 "pure-absorption solver, so Mie scattering would be counted as "

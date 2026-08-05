@@ -1,77 +1,45 @@
-"""VULCAN-JAX side of the demo: the differentiable physics-parameters -> converged-VMR map.
+"""The differentiable physics-parameters -> converged-VMR map on VULCAN-JAX.
 
-``build_chem_model(profile)`` runs the one-time WASP-39b pre-loop + a single warm-up
-convergence (which compiles & caches the JIT'd inner runner), then returns a model whose
-``converged_ymix(theta)`` re-converges the closed column as a function of
-
-    theta = [lnZ, c_o, lnKzz, T_int]   (all scalars)
+``build_chem_model(profile)`` runs the one-time pre-loop + a warm-up convergence
+(compiles and caches the JIT'd inner runner), then returns a model whose
+``converged_ymix(theta)`` re-converges the column as a function of
+``theta = [lnZ, c_o, lnKzz, T...]``.
 
 Abundance knobs -- two modes (``profile["abundance_mode"]``):
-  * ``"masks"`` (legacy default): multiplicative species-mask y0 directions, the
-    validated jax_paper patterns (fig_metallicity_sens.py / fixed-O C/O). These are
-    NOT exact elemental directions: scaling every C/N/O/S-bearing species also moves
-    the hydrogen those molecules carry (~0.6% of elemental H per e-fold of Z at the
-    10x-solar baseline), the fixed-O b_z compensation leaks into N/S through NO/SO/SO2,
-    and the scaled column no longer sums to M = P/(kB T) until the runner's per-step
-    hydrostatic renorm restores it. Kept for reproducing the published demo caches.
-  * ``"elemental"`` (retrieval / production default via config_schema): the mask scaling
-    is only a smooth initial GUESS; the column is then renormalized to sum_i n_i = M
-    per layer and repaired (three fixed Newton-style iterations of a small linear solve
-    on the runner's own reservoir species He/H2O/CO/N2/H2S) so the column-integrated
-    elemental ratios hit the targets EXACTLY:
-        He/H = baseline,  O/H = Z x baseline,  N/H = Z x baseline,
-        S/H  = Z x baseline,  C/H = Z e^{c_o} x baseline   (=> dln(C/O) = c_o at fixed O/H)
-    with Z = e^lnZ relative to the FastChem baseline (fastchem_met_scale). The conserved
-    atom totals ``pv.atom_ini`` are rebuilt from the repaired column, so the runner's
-    atom-conservation anchor, the third-body density, the pressure, and the initial
-    composition all describe the same gas -- and cold/warm paths share identical
-    conserved inventories by construction (targets depend on theta only, never on the
-    warm-start history). ``reanchor_atom_ini`` is moot in this mode. Residuals after the
-    fixed iterations are ~1e-8 relative; measure them with ``audit_init``.
+  * ``"masks"`` (legacy): multiplicative species-mask y0 directions. NOT exact
+    elemental directions (bound hydrogen scales along, ~0.6% of elemental H per
+    e-fold of Z at 10x solar; the fixed-O b_z compensation leaks into N/S).
+    Kept only to reproduce the published demo caches.
+  * ``"elemental"`` (production default): the mask scaling is only a smooth
+    initial guess; the column is renormalized to sum_i n_i = M per layer and
+    repaired (three fixed Newton-style iterations on the reservoir species
+    He/H2O/CO/N2/H2S) so the column elemental ratios hit the theta targets
+    EXACTLY (He/H fixed; O/N/S x Z; C x Z e^{c_o} -> dln(C/O) = c_o at fixed
+    O). ``pv.atom_ini`` is rebuilt from the repaired column, so anchor, third-
+    body density, pressure, and initial composition describe the same gas, and
+    cold/warm paths share conserved inventories by construction. Residuals
+    ~1e-8 relative; measure with ``audit_init``.
 
-Temperature / atmosphere: rate constants are rebuilt on-graph (rates_jax) and the
-ATMOSPHERIC STRUCTURE now follows the proposed T-P/composition too. The runner itself
-refreshes the hydrostatic geometry (mu, g, Hp, dz, dzi, Hpi) in-loop from the live
-composition and ``pv.r_Tco`` every ``update_frq`` accepted steps (first firing on the
-first accepted step), so the converged column was already hydrostatically consistent;
-what was frozen at the baseline was (a) the molecular-diffusion coefficients Dzz(T, M)
-(+ the derived vm / settling vs), (b) the convergence gate's ``pv.Kzz``, and (c) the
-initial carry geometry for step 1. All three are now rebuilt per proposal via the
-committed on-graph builders (vulcan_jax.atm_jax / atm_refresh).
+Temperature / atmosphere: rate constants and the T/composition-dependent
+structure (Dzz + vm/vs, the gate's pv.Kzz, the initial carry geometry) are
+rebuilt on-graph per proposal; the runner refreshes hydrostatic geometry
+in-loop. Condensation follows the live T(P) too: static metadata is extracted
+once and ``_prep`` rebuilds every T-dependent conden array per proposal; a
+baseline-frozen conden table never reaches a live-T solve. Unsupported conden
+configs refuse loudly at build (moldiff off, empty condense_sp,
+use_sat_surfaceH2O). The cold-trap index and active-layer set are discrete: a
+jvp through a condensing state is valid only away from those switches.
 
-Condensation follows the live T(P) too (2026-07-13): with ``use_condense=True``,
-``vulcan_jax.conden.make_conden_spec`` extracts the static metadata once at build
-and ``_prep`` rebuilds every T/structure-dependent condensation array on-graph per
-proposal (``conden.build_conden_profile``: saturation number densities, Dg
-growth/diffusion terms from the live Dzz, H2O/NH3 relax inputs, the NH3 cold-trap
-argmin, fix-species saturation mixing ratios), splicing them into the ProfileVars
-carry the runner reads each step. Baseline-frozen condensation tables never reach
-a live-T solve. Genuinely unsupported condensation configs still refuse loudly at
-build time: ``use_moldiff=False`` (the growth term Dg IS the molecular-diffusion
-coefficient -- it would be silently zero), an empty/inert ``condense_sp``, and
-``use_sat_surfaceH2O`` (a bottom BC frozen at the structural T at ini time). The
-cold-trap index and the active-condensation layer set are discrete: a jvp through
-a condensing state is valid only away from those switches (validated in
-tests/test_condensation_live_tp.py; Fisher forecasts through condensation stay
-disabled in vulcan-jwst-tool).
+KNOWN LIMITATION -- conden-on does NOT reduce to conden-off when nothing
+condenses: the fix_species pin freezes the reservoirs at their
+stop_conden_time state, a transient on a column too hot to supersaturate.
+Enable condensation only where the species genuinely condenses. A
+criterion-gated pin would change the certified convergence recipe and needs
+measured re-validation first.
 
-KNOWN LIMITATION -- condensation-enabled does NOT reduce to condensation-off when
-nothing condenses. The upstream conden-window + whole-column ``fix_species`` pin
-freezes the condensable reservoirs at their ``stop_conden_time`` state. On a column
-too hot for the species to supersaturate (or one whose chemistry has not settled by
-the window's end), that pin still captures a transient state rather than the
-condensation-off steady state, so ``use_condense=True`` and ``use_condense=False``
-can differ even where no mass actually rained out. Enable condensation only for
-columns where the species genuinely condenses. A criterion-gated pin (activate only
-on measurable condensate/supersaturation) is a possible future refinement but would
-change the certified convergence recipe (the pin is what makes a condensing column
-converge) and needs measured re-validation before adoption -- not done here.
-
-Still frozen by design: the photolysis cross-section T-interpolation (host-side
-re-bake upstream; second-order).
-
-The runner's lax.while_loop supports jvp/jacfwd but NOT vjp, so forward-mode is the
-end-to-end route -- which is also optimal here (few scalar inputs -> high-dim spectrum).
+Still frozen by design: the photolysis cross-section T-interpolation.
+The runner's lax.while_loop supports jvp/jacfwd but NOT vjp; forward-mode is
+the end-to-end route (few scalar inputs -> high-dim spectrum).
 """
 from __future__ import annotations
 
@@ -95,11 +63,9 @@ if "exojax" in sys.modules:
         "jax x64 and the VULCAN_JAX_* import-frozen env vars. Import order: "
         "vulcan_forward.vulcan_chem, then vulcan_forward.exojax_rt.")
 
-# VULCAN-JAX freezes network/atom_list at ITS first import, so arriving after it
-# makes the assignment below a no-op: the run then fails much later with a
-# message about the env var instead of about import order. Checked for the same
-# reason the exojax guard exists -- a library must not depend on import luck --
-# and only when the frozen choice actually conflicts with what this engine needs.
+# VULCAN-JAX freezes network/atom_list at ITS first import, so arriving after
+# it makes the setdefault below a no-op and the run fails much later. Raise
+# only when the frozen choice actually conflicts with what this engine needs.
 _WANT_ENV = {"VULCAN_JAX_NETWORK": constants.DEFAULT_NETWORK,
              "VULCAN_JAX_ATOM_LIST": constants.DEFAULT_ATOM_LIST}
 if "vulcan_jax" in sys.modules:
@@ -127,16 +93,13 @@ import jax.numpy as jnp  # noqa: E402
 
 jax.config.update("jax_enable_x64", True)
 
-# Column-repair pairs for the exact-elemental mode: element -> adjuster species.
-# These are the runner's own atom-conservation reservoirs (jax_step._ATOM_RESERVOIRS),
-# i.e. the abundant carrier of each element in an H2-dominated gas, so the linear
-# repair stays tiny and well-conditioned across the retrieval prior box. H is the
-# reference element (its absolute density is set by sum_i n_i = M); He preserves the
-# baseline He/H.
+# Column-repair pairs for the exact-elemental mode: element -> adjuster species,
+# the runner's own atom-conservation reservoirs (abundant carriers in H2-dominated
+# gas, so the linear repair stays tiny and well-conditioned). H is the reference
+# element; He preserves the baseline He/H.
 _ELEMENTAL_REPAIR = (("He", "He"), ("O", "H2O"), ("C", "CO"), ("N", "N2"), ("S", "H2S"))
-# Number of renorm+repair iterations. Each iteration nails the column ratios exactly,
-# then the per-layer renorm to M perturbs them by O(alpha x layer heterogeneity); the
-# residual contracts geometrically (~1e-2 -> ~1e-8 by three passes; see audit_init).
+# Renorm+repair iterations: the residual contracts geometrically
+# (~1e-2 -> ~1e-8 by three passes; see audit_init).
 _ELEMENTAL_REPAIR_ITERS = 3
 
 # Tolerance (g/mol) for checking constants.ATOMIC_MASSES against the package's
@@ -325,14 +288,11 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         cfg.count_min = int(profile["count_min"])
     if profile.get("count_max"):
         cfg.count_max = int(profile["count_max"])
-    # Warm-continuation step cap (accepted steps) for the MUTATION path only. A warm
-    # re-converge from a particle's own converged column normally needs ~count_min-300
-    # steps; a proposal still not converged at warm_count_max is headed for rejection
-    # anyway, so cutting the loop there (instead of at the full cold count_max) stops a
-    # single bad lane from dragging the whole lockstep batch through thousands of wasted
-    # steps. Realized via a SECOND runner whose _Statics snapshot the smaller cap (the
-    # cap is baked into the jitted while_loop at trace time); the cold/two-stage solves
-    # keep count_max. warm_count_max == count_max (or absent) means one shared runner.
+    # Warm-continuation step cap for the MUTATION path only: a proposal still
+    # unconverged at warm_count_max is headed for rejection, so cut the loop
+    # there instead of dragging the lockstep batch to the cold cap. Realized as
+    # a SECOND runner (the cap is baked into the jitted while_loop at trace
+    # time); == count_max (or absent) means one shared runner.
     warm_count_max = int(profile.get("warm_count_max") or cfg.count_max)
     if warm_count_max > int(cfg.count_max):
         raise ValueError(
@@ -439,14 +399,11 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
           f"warming up runner ...", flush=True)
     tw = time.time()
     rs_warmup = integ(rs)
-    # Certify the warm-up exit (the comment above used to CLAIM this and not
-    # check it -- audit 2026-07-28, FWD-09). Recomputes the runner's canonical
-    # two-branch certification host-side on the returned RunState (same
-    # predicate as _conv_normal_at_exit below; kept in sync). The result is
-    # exported as ``baseline_conv_normal`` and the INFERENCE path refuses an
-    # uncertified baseline in retrieval_forward (mirrors the conden gate);
-    # forward-only consumers (e.g. the cold no-photo conden test, which
-    # deliberately integrates to a runtime cap) get the loud print only.
+    # Certify the warm-up exit (never claim it unchecked): recompute the
+    # runner's canonical two-branch certification host-side (same predicate as
+    # _conv_normal_at_exit below; keep in sync). Exported as
+    # ``baseline_conv_normal``; the inference path refuses an uncertified
+    # baseline, forward-only consumers get the loud print.
     _w_ld = float(rs_warmup.step.longdy)
     _w_lddt = float(rs_warmup.step.longdydt)
     _w_af = (float(rs_warmup.photo_runtime.aflux_change)
@@ -482,23 +439,15 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         integ_warm = integ
 
     # --- runner-carry budget/scheme seeding --------------------------------
-    # The runner's termination budget and diffusion-scheme blend live on the
-    # CARRY, not the statics: _pack_state_from_runstate seeds count_min_dyn /
-    # count_max_dyn / runtime_dyn from the packing runner's statics and
-    # hybrid_use_vm = 1.0 iff use_vm_mol (upwind / phase 0), and the runner's
-    # cond_fn/_real_terminate read ONLY those carry fields (the hybrid phase
-    # flip mutates them mid-run). state0 below is packed ONCE under the COLD
-    # statics, so every per-proposal solve must re-seed these for the runner
-    # that consumes it -- otherwise the warm twin runs to the cold count_max
-    # (its warm_count_max cap silently unbound) and, with the hybrid default
-    # on, every warm continuation restarts in upwind phase 0 and exhausts the
-    # warm cap before the phase flip's budget extension (~count+2000) can
-    # certify. Warm continuations start from a column already converged on
-    # the CENTRAL-difference operator (a completed hybrid run always ends in
-    # phase 1), so they continue on that operator: same fixed point, no
-    # phase-0 re-preconditioning. Pure-upwind configs (use_vm_mol on, hybrid
-    # off) keep upwind for warm continuation -- their steady state IS the
-    # upwind fixed point.
+    # The termination budget and diffusion-scheme blend live on the CARRY, not
+    # the statics, and state0 is packed ONCE under the COLD statics -- so every
+    # per-proposal solve must re-seed them for the runner that consumes it.
+    # Otherwise the warm twin runs to the cold count_max, and under the hybrid
+    # default every warm continuation restarts in upwind phase 0 and exhausts
+    # the warm cap before the phase flip can certify. Warm continuations start
+    # from a column already converged on the central operator (a completed
+    # hybrid run ends in phase 1), so they continue on it; pure-upwind configs
+    # keep upwind (their steady state IS the upwind fixed point).
     cold_count_max = int(cfg.count_max)
     count_min_v = int(cfg.count_min)
     runtime_v = float(cfg.runtime)
@@ -563,13 +512,10 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     # --- composition masks for the y0 knobs -------------------------------
     compo = np.asarray(composition.compo_array)
     metal_cols = [constants.ATOM_COLS[a] for a in ("O", "C", "N", "S")]
-    # Scales every C/N/O/S-bearing species. NOTE (elemental accounting): the hydrogen
-    # bound in those molecules (H2O, CH4, NH3, H2S, OH, ...) scales along with them, so
-    # this is NOT an exact "metals only, H/He fixed" elemental direction -- standalone
-    # H2/He are untouched but elemental H shifts by the bound-H fraction (~0.6% per
-    # e-fold of Z at the 10x-solar baseline, growing toward the 100x edge). In
-    # abundance_mode="elemental" this is only the initial guess and the exact repair
-    # below removes the leakage; in legacy "masks" mode it IS the knob definition.
+    # Scales every C/N/O/S-bearing species; NOT an exact elemental direction
+    # (bound H scales along, ~0.6% per e-fold of Z at 10x solar). In
+    # "elemental" mode this is only the initial guess and the repair removes
+    # the leakage; in legacy "masks" mode it IS the knob definition.
     metal_mask = jnp.asarray((compo[:, metal_cols].sum(axis=1) > 0).astype(np.float64))
     carbon_mask = jnp.asarray((compo[:, constants.ATOM_COLS["C"]] > 0).astype(np.float64))  # C/O proxy
     # fixed-O C/O mode ("co_mode": "fixed_O"): every C atom lives in a C-bearing species,
@@ -684,13 +630,11 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         c_o_inc = c_o - c_o_ref     # incremental C/O relative to the warm state
         base = y0 if warm_y is None else warm_y
         if co_fixed_o:
-            # c_o == delta ln(C/O) at fixed O, EXACTLY, layer by layer: scaling every
-            # C-bearing species by e^c multiplies each layer's C total by e^c (all C lives
-            # there); the O those species drag along (CO, CO2, ...) is compensated by
-            # scaling the O-only carriers by b_z = 1 + (1 - e^c)*O_Ccarriers/O_Oonly, which
-            # keeps each layer's O total invariant. Leakage is only into H (via H2O's H,
-            # ~1e-3 relative per unit c) and N/S (via trace NO/SO/SO2 in the equilibrium
-            # init). Smooth in c_o -> AD-safe; b_z > 0 within the range printed at build.
+            # c_o == delta ln(C/O) at fixed O, exactly, layer by layer: scale
+            # C-bearing species by e^c; compensate the O they drag along by
+            # scaling O-only carriers by b_z = 1 + (1 - e^c)*O_Ccarriers/O_Oonly,
+            # keeping each layer's O total invariant. Smooth in c_o -> AD-safe;
+            # b_z > 0 within the range printed at build.
             OC_z = (base * (nO_per_species * carbon_mask)[None, :]).sum(axis=1)
             OO_z = (base * (nO_per_species * o_only_mask)[None, :]).sum(axis=1)
             b_z = 1.0 + (1.0 - jnp.exp(c_o_inc)) * OC_z / OO_z                # (nz,)
@@ -709,33 +653,26 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         return params_from_vector(p, n_tp_params, has_tp_eval=tp_eval is not None)
 
     def _prep(theta, warm_y=None, lnZ_ref=0.0, c_o_ref=0.0):
-        """Build the perturbed initial runner state + atm from ChemParams (or the
-        equivalent positional vector [lnZ, c_o, lnKzz, T...]).
+        """Build the perturbed initial runner state + atm from ChemParams (or
+        the positional vector [lnZ, c_o, lnKzz, T...]).
 
-        Continuation: pass warm_y = a previously-CONVERGED y (and its lnZ_ref / c_o_ref)
-        to warm-start from there instead of the fixed baseline y0 (see _guess_y0). In
-        "elemental" mode the guess is then projected onto the EXACT theta targets (which
-        depend on theta only), so the conserved inventory is path-independent; in legacy
-        "masks" mode the incremental scaling IS the map (avoids the runner's
-        snap-back-to-baseline, and avoids double-applying C/O to a warm_y that already
-        carries it -- a fixed-C/O metallicity march passes c_o_ref = c_o)."""
+        Continuation: pass warm_y = a previously-CONVERGED y (with its lnZ_ref /
+        c_o_ref) to warm-start from there. In "elemental" mode the guess is
+        projected onto the exact theta targets, so the conserved inventory is
+        path-independent; in "masks" mode the incremental scaling IS the map."""
         _p = _as_params(theta)
         lnZ, c_o, lnKzz = _p.lnZ, _p.c_o, _p.lnKzz
 
-        # Temperature: default is the validated uniform T shift; with a tp_eval hook
-        # the full differentiable T-P profile is used instead.
-        # Either way rate constants are rebuilt ON-GRAPH (rates_jax), with n_0 = pco/(kb T),
-        # Ti, and the pv carry (fig_so2_temperature pattern).
+        # Temperature: uniform T shift by default; with a tp_eval hook the full
+        # differentiable T-P profile. Either way the rate table is rebuilt
+        # on-graph (rates_jax) with n_0 = pco/(kb T).
         if tp_eval is None:
             T = T_base + _p.tp[0]
         else:
             T = tp_eval(_p.tp, p_bar_j)
         M = pco / (kb * T)
-        # Honor cfg.use_lowT_limit_rates (2026-07-19): build_rate_array
-        # defaults use_lowT_caps=False, so a config with the flag ON was
-        # silently solved with uncapped low-T rates (no shipped config sets
-        # it, but a silent config-ignore violates the loud-errors rule; the
-        # adjoint caller in vulcan-jwst-tool already passed it explicitly).
+        # Honor cfg.use_lowT_limit_rates: build_rate_array defaults it off, and
+        # silently ignoring a set config flag violates the loud-errors rule.
         k_arr = rates_jax.build_rate_array(
             network, T, M, nasa9, remove_list,
             use_lowT_caps=bool(cfg.use_lowT_limit_rates))
@@ -754,15 +691,11 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
             pv_T = pv0._replace(n_0=M, r_Tco=T, Kzz=Kzz_eff, atom_ini=atom_ini_new)
         else:
             ymix0 = y0p / jnp.sum(y0p, axis=1, keepdims=True)
-            # Legacy masks mode, opt-in: re-anchor the conserved atom totals to the
-            # PERTURBED column. The runner's atom-conservation (_compute_atom_loss)
-            # measures drift from pv.atom_ini; if atom_ini stays at the baked baseline,
-            # finite metallicity/C-O steps that exceed the loss threshold get the added
-            # metals driven back to baseline (the "snap to baseline" seen for
-            # lnZ >= +0.10). NOTE: y0p is NOT renormalized to M here (published-demo
-            # behavior); the runner's first hydrostatic renorm rescales it, so atom_ini
-            # computed from the raw y0p mismatches the post-renorm gas by the scaled
-            # metal fraction. The "elemental" mode removes this inconsistency.
+            # Legacy masks mode, opt-in: re-anchor the conserved atom totals to
+            # the PERTURBED column -- without it, finite metallicity/C-O steps
+            # beyond the loss threshold snap back to baseline. y0p is NOT
+            # renormalized to M here (published-demo behavior); "elemental"
+            # mode removes that inconsistency.
             if reanchor_atom_ini:
                 atom_ini_new = jnp.einsum("zi,ia->a", y0p, compo_run)
                 pv_T = pv0._replace(n_0=M, r_Tco=T, Kzz=Kzz_eff, atom_ini=atom_ini_new)
@@ -829,19 +762,11 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     def run_diag(theta, return_atm=False):
         """Diagnostic twin of converged_ymix: returns (final_runner_state, init_state).
 
-        Lets a caller inspect convergence (longdy/accept_count/t), whether the runner
-        actually moved off the init, and whether the metallicity perturbation changed the
-        conserved element totals. Not on any AD path.
-
-        ``return_atm=True`` additionally returns the theta-dependent AtmStatic the
-        runner was actually driven with (``atm_T`` from ``_prep``: live Tco/Ti/M/
-        Kzz/Dzz/vm/vs + refreshed geometry) -- the ``atm`` a reverse-mode adjoint
-        call (vulcan_jax.steady_state_grad) must linearize around. Without it a
-        caller can only reach the setup-time baseline AtmStatic, which is the
-        WRONG operating point whenever theta carries a T-P or Kzz offset (the
-        scope audit flags that as stale_geometry). Added 2026-07-15 for the
-        jwst-tool adjoint diagnostics; the (final, init) two-tuple contract is
-        unchanged for existing callers."""
+        Lets a caller inspect convergence and conserved-total drift. Not on any
+        AD path. ``return_atm=True`` additionally returns the theta-dependent
+        AtmStatic the runner was actually driven with -- the operating point a
+        reverse-mode adjoint must linearize around (the setup-time baseline is
+        WRONG whenever theta carries a T-P or Kzz offset)."""
         init, atm_T = _prep(theta)
         init = _runner_carry_seed(init, warm_continuation=False, warm_cap=False)
         final = integ._runner(init, atm_T)
@@ -855,36 +780,22 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         init, _atm_T = _prep(theta)
         return init.pv
 
-    def converged_y(theta, warm_y=None, lnZ_ref=0.0, c_o_ref=0.0, return_diag=False,
+    def converged_y(theta, warm_y=None, lnZ_ref=0.0, c_o_ref=0.0,
                     warm_cap=False, return_conv_diag=False):
-        """Converged ABSOLUTE number densities y (nz, ni), with optional continuation
-        warm-start (warm_y at lnZ_ref / c_o_ref). Differentiable via forward-mode w.r.t. theta.
-        The SO2 column number density is then jnp.sum(y[:, so2] * dz); jvp gives both y (for
-        chaining the next continuation step) and its lnZ-derivative (the index) in one pass.
+        """Converged ABSOLUTE number densities y (nz, ni), with optional
+        continuation warm-start (warm_y at lnZ_ref / c_o_ref). Forward-mode
+        differentiable w.r.t. theta.
 
-        The carry's live termination budget + diffusion blend are re-seeded per solve
-        (``_runner_carry_seed``): the warm-capped path gets count_max_dyn=warm_count_max,
-        and under the hybrid vm_mol default a warm continuation runs on the
-        central-difference operator (the converged phase-1 operator) instead of
-        re-entering upwind phase 0.
+        The carry's termination budget + diffusion blend are re-seeded per
+        solve; under the hybrid vm_mol default a warm continuation runs on the
+        central operator instead of re-entering upwind phase 0.
 
-        ``return_diag=True`` additionally returns ``final.accept_count`` (int32 scalar) so a
-        caller can detect a count_max-exhausted (not-actually-converged) solve without
-        re-deriving the runner's own termination ladder. AD-safe inside a forward-mode jvp
-        chain: accept_count rides the runner's primal carry (no extra work) and, being
-        integer-valued, carries no tangent -- callers on an AD path should wrap it in
-        ``stop_gradient`` and cast, and must not differentiate w.r.t. it.
-
-        ``warm_cap=True`` runs the warm-capped twin runner (count_max=warm_count_max) --
-        the SMC mutation path, where a proposal that hasn't converged in warm_count_max
-        steps is rejected rather than marched to the full cold cap.
-
-        ``return_conv_diag=True`` returns ``(y, ConvDiag)`` -- the full per-solve
-        convergence diagnostics (accept_count, longdy, longdydt, count_since_new_min,
-        conv_normal), all free reads off the primal carry. This is the SMC hot-path
-        surface: ``conv_normal`` is the runner's canonical certification recomputed at
-        the exit state, so a stall-fallback or budget exit reads False even when
-        ``longdy < yconv_min``. Supersedes return_diag for new callers."""
+        ``warm_cap=True`` runs the warm-capped twin runner (the SMC mutation
+        path). ``return_conv_diag=True`` returns ``(y, ConvDiag)`` -- free
+        reads off the primal carry; ``conv_normal`` is the canonical
+        certification recomputed at the exit, so a stall or budget exit reads
+        False even when ``longdy < yconv_min``. ConvDiag's integer fields
+        carry no tangent -- AD callers stop_gradient them."""
         init, atm_T = _prep(theta, warm_y=warm_y,
                             lnZ_ref=lnZ_ref, c_o_ref=c_o_ref)
         init = _runner_carry_seed(init, warm_continuation=warm_y is not None,
@@ -898,8 +809,6 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
                 count_since_new_min=final.count_since_new_min,
                 conv_normal=_conv_normal_at_exit(final),
             )
-        if return_diag:
-            return final.y, final.accept_count
         return final.y
 
     def audit_init(theta, warm_y=None, lnZ_ref=0.0, c_o_ref=0.0):
@@ -950,15 +859,12 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         converged_ymix=converged_ymix,
         run_diag=run_diag,
         converged_y=converged_y,
-        conv_normal_at_exit=_conv_normal_at_exit,  # canonical certification of a
-        #                                            raw run_diag final carry --
-        #                                            exported 2026-07-19 so
-        #                                            adjoint callers can gate on
-        #                                            conv_normal, not longdy alone
+        conv_normal_at_exit=_conv_normal_at_exit,  # certify a raw run_diag final
+        #                                            carry (gate on conv_normal,
+        #                                            never longdy alone)
         audit_init=audit_init,
         baseline_conv_normal=baseline_conv_normal,  # warm-up exit certified?
-        #                                             (inference refuses False --
-        #                                             retrieval_forward gate)
+        #                                             (inference refuses False)
         conden_spec=conden_spec,   # static conden metadata (None when conden off)
         prep_pv=prep_pv,           # theta -> initial ProfileVars (no solve; tests)
         _integ=integ,              # the OuterLoop (baked statics access; tests only)

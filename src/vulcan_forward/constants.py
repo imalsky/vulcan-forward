@@ -6,12 +6,6 @@ sensitive VULCAN-JAX setup runs and safe to import on a machine with no data
 installed. Data locations live in ``paths.py``; application-specific settings
 (planet geometry, run profiles, parameter-vector layouts) belong to the
 consumer, not here.
-
-Provenance: these values were extracted from vulcan-retrieval's
-``retrieval_framework/forward/config.py`` when the shared engine became its own
-distribution (2026-07-29). That module mixed three unrelated things -- these
-constants, the retrieval checkout's filesystem layout, and WASP-39b/demo
-settings. Only the first kind belongs in a library.
 """
 from __future__ import annotations
 
@@ -109,8 +103,7 @@ WIDE_BAND_NU_MAX = 10000.0   # 1 um
 #
 # "source" is one of {"exomol_cached", "exomol", "hitran"}. "db" is a path
 # suffix RESOLVED AGAINST THE DATA ROOTS in paths.py -- never an absolute path
-# here, so this table stays location-independent (the pre-extraction version
-# baked an absolute cache path into the CO entry). molmass is explicit (exojax
+# here, so this table stays location-independent. molmass is explicit (exojax
 # isotope_molmass returns None for CH4).
 #
 # Callers may pass their own table to build_rt_model via
@@ -133,7 +126,7 @@ MOLECULES = {
     # PRISM). The SNCHO network names the species COS; the PICASO Visscher
     # tables call it OCS (consumers alias the token).
     "OCS":  {"vulcan": "COS",  "molmass": 60.075, "source": "hitran", "db": "OCS"},
-    # Photochemical sulfur carrier (collaborator request 2026-07-31).
+    # Photochemical sulfur carrier.
     "CS2":  {"vulcan": "CS2",  "molmass": 76.131, "source": "hitran", "db": "CS2"},
     # Simple hydrocarbons: photochemical CH4-destruction products.
     "C2H4": {"vulcan": "C2H4", "molmass": 28.054, "source": "hitran", "db": "C2H4"},
