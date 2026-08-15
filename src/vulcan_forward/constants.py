@@ -74,6 +74,31 @@ H2HE_BROADENING_MIX = (0.85, 0.15)   # (f_H2, f_He) by number, ~solar envelope
 # peaks. This is an EXPLICIT modeling choice, measured on WASP-39 b.
 ART_PTOP_BAR = 1.0e-8
 ART_PBTM_BAR = 7.0
+
+# Pressure at which a consumer's rp_cm / gs_cgs are taken to be defined. A
+# published planet radius is the TRANSIT radius, so it belongs at roughly the
+# transmission photosphere, not at the bottom of the RT grid where exojax
+# defines radius_btm. 1 mbar is the value validated against the JWST ERS
+# WASP-39 b spectrum: re-anchoring there reproduced the published 3.0-5.5 um
+# median depth to 0.4% (21,299 vs 21,381 ppm), where the un-converted literature
+# radius gave 26,853. Override per planet with profile["p_ref_bar"].
+P_REF_BAR = 1.0e-3
+
+# The emission column probes MUCH deeper than the limb: the slant path is ~35-90x
+# the vertical one (Fortney 2005), so transmission sees ~mbar while the dayside
+# photosphere sits near 0.1 bar. Using the transit radius/gravity for emission
+# biases planet-to-star flux ratios by ~5% typically and 10-25% for low-gravity
+# hot Jupiters (Fortney, Lupu, Morley, Freedman & Hood 2019, ApJL 880, L16).
+# 0.1 bar is HyDRA's stated convention, "the mean pressure of the tau=1 surface"
+# (Gandhi & Madhusudhan 2018). NOTE this only re-anchors the column GRAVITY; the
+# fully correct treatment computes a wavelength-dependent radius at vertical
+# tau = 2/3, as POSEIDON and PLATON II do, and is not implemented here.
+P_REF_EMISSION_BAR = 1.0e-1
+
+# Physical constants, cgs (CODATA 2018). Local so this module stays stdlib-only;
+# vulcan_jax.phy_const carries the same values for the chemistry side.
+K_B_CGS = 1.380649e-16      # Boltzmann constant, erg/K
+M_U_CGS = 1.66053906660e-24  # atomic mass unit, g (mmw is in amu)
 T_OPA_MIN_K = 300.0
 T_OPA_MAX_K = 3000.0
 

@@ -504,7 +504,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     # phys0/spec_atm feed atm_jax._mol_diff, the committed on-graph Dzz(T, M) builder
     # (field-for-field equal to the host make_atm_static for this atm_type; validated
     # in VULCAN-JAX tests/test_atm_jax.py).
-    refresh_static = integ._build_refresh_static(var, atm)
+    refresh_static = integ._build_refresh_static(atm)
     phys0, spec_atm = atm_jax.make_physical_inputs(cfg, var, atm, list(network.species))
     use_vm = bool(spec_atm.use_vm_mol and spec_atm.use_moldiff)
     use_set = bool(spec_atm.use_settling and spec_atm.use_moldiff)

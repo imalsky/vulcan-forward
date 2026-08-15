@@ -169,6 +169,62 @@ def _gravity_profile_invsq(art, T_art, mmw_art, radius_btm, gravity_btm):
     return jnp.array([gravity_btm / rn_mid**2]).T
 
 
+def _anchor_to_grid_bottom(lnp_art, T_art, mmw_art, r_ref, g_ref, p_ref_bar):
+    """Radius and gravity at the RT grid bottom, from values quoted at p_ref.
+
+    ExoJax defines ``radius_btm``/``gravity_btm`` at the LOWER boundary of the
+    bottom layer. A published planet radius is instead the transit radius, i.e.
+    the radius at roughly the photosphere (~mbar). Handing exojax the literature
+    pair stacks the whole p_ref -> p_btm column ON TOP OF a radius that already
+    is the photospheric one, which inflated WASP-39 b's transit depth by
+    5472 ppm (26,853 vs a measured 21,381) and its spectral contrast by 1.42x.
+
+    Integrating hydrostatic equilibrium with GM held fixed, so that
+    ``g(r) = g_ref (r_ref/r)^2``::
+
+        dr/dlnP = -kT/(mu m_H g(r)) = -C(P) r^2,   C = kT/(mu m_H g_ref r_ref^2)
+
+    the substitution u = 1/r linearises it exactly::
+
+        du/dlnP = +C(P)      ->      u_btm = u_ref + int_{lnP_ref}^{lnP_btm} C dlnP
+
+    so no ODE solve is needed and the whole thing stays differentiable. Deeper
+    means smaller radius and stronger gravity, as it must.
+
+    lnp_art must be ascending (exojax orders its grid top-to-bottom).
+    Returns (r_btm, g_btm) in cgs.
+    """
+    return _radius_at(lnp_art, T_art, mmw_art, r_ref, g_ref, p_ref_bar,
+                      jnp.exp(lnp_art[-1]))
+
+
+def _radius_at(lnp_art, T_art, mmw_art, r_ref, g_ref, p_ref_bar, p_target_bar):
+    """Radius and gravity at ``p_target_bar``, given them at ``p_ref_bar``.
+
+    The workhorse behind _anchor_to_grid_bottom; see that docstring for the
+    derivation. Separate because emission needs a DIFFERENT target level than
+    transmission: the two observables probe different depths, so a single anchor
+    cannot serve both (Fortney et al. 2019, ApJL 880, L16).
+    """
+    C = constants.K_B_CGS * T_art / (
+        mmw_art * constants.M_U_CGS * g_ref * r_ref ** 2)
+    cum = jnp.concatenate([
+        jnp.zeros(1),
+        jnp.cumsum(0.5 * (C[1:] + C[:-1]) * jnp.diff(lnp_art))])
+    i_ref = jnp.interp(jnp.log(p_ref_bar), lnp_art, cum)
+    i_tgt = jnp.interp(jnp.log(p_target_bar), lnp_art, cum)
+    r = 1.0 / (1.0 / r_ref + (i_tgt - i_ref))
+    return r, g_ref * (r_ref / r) ** 2
+
+
+def _gravity_at(lnp_art, T_art, mmw_art, g_ref, p_ref_bar, r_ref,
+                p_target_bar):
+    """Just the gravity at ``p_target_bar``. Emission is plane-parallel and
+    needs one scalar g for its dP/g column-mass conversion."""
+    return _radius_at(lnp_art, T_art, mmw_art, r_ref, g_ref, p_ref_bar,
+                      p_target_bar)[1]
+
+
 def _accumulate_dtau(art, nu_grid, mols, opas, molmass, opacia, g_btm,
                      vmr, vmr_h2, T_art, mmw_art,
                      opacia_he=None, vmr_he=None, cloud=None, rayleigh_xs=None,
@@ -354,6 +410,12 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
         integration=integration)
     art.change_temperature_range(constants.T_OPA_MIN_K, constants.T_OPA_MAX_K)
     p_art_bar = np.asarray(art.pressure)
+    # ascending (exojax orders top-to-bottom); _anchor_to_grid_bottom relies on it
+    if not np.all(np.diff(p_art_bar) > 0):
+        raise RuntimeError(
+            "the ART pressure grid is not ascending; _anchor_to_grid_bottom's "
+            "cumulative integral and jnp.interp both assume it is")
+    lnp_art = jnp.asarray(np.log(p_art_bar))
     print(f"[rt] ArtTransPure {profile['art_nlayer']} layers, "
           f"P=[{p_art_bar.min():.1e},{p_art_bar.max():.1e}] bar, "
           f"chord integration {integration}, dit_grid_resolution {dit_res:g}",
@@ -434,9 +496,18 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
               flush=True)
 
     _require_geometry(profile, "rp_cm", "gs_cgs", "rstar_cm")
-    Rp_btm = float(profile["rp_cm"])
-    g_btm = float(profile["gs_cgs"])
-    depth_norm = (Rp_btm / float(profile["rstar_cm"])) ** 2  # (R_btm/R_star)^2
+    Rp_ref = float(profile["rp_cm"])
+    g_ref = float(profile["gs_cgs"])
+    rstar_cm = float(profile["rstar_cm"])
+    # Pressure at which rp_cm / gs_cgs are quoted. A published planet radius is
+    # the TRANSIT radius, i.e. the radius at roughly the photosphere, NOT the
+    # radius at the bottom of a model grid. See _anchor_to_grid_bottom.
+    p_ref_bar = float(profile.get("p_ref_bar", constants.P_REF_BAR))
+    if not (ptop <= p_ref_bar <= pbtm):
+        raise ValueError(
+            f"p_ref_bar={p_ref_bar:g} lies outside the RT grid "
+            f"[{ptop:g}, {pbtm:g}] bar. It is the pressure at which rp_cm and "
+            "gs_cgs are defined, so it must be a level the grid actually covers.")
 
     def _require_he(vmr_he):
         # He is ~14% by number and its CIA is real continuum physics;
@@ -458,6 +529,10 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
         mie=[log10 rg (cm), sigmag, log10 MMR] (needs mie_condensate at build).
         """
         _require_he(vmr_he)
+        # rp_cm/gs_cgs are quoted at p_ref_bar (the transit radius, ~mbar), not at
+        # the grid bottom where exojax wants them -- convert first.
+        Rp_btm, g_btm = _anchor_to_grid_bottom(
+            lnp_art, T_art, mmw_art, Rp_ref, g_ref, p_ref_bar)
         # g(r) self-consistency: use the SAME inverse-square gravity ExoJax
         # uses for the chord heights in the pressure->column-mass conversion.
         # Constant g_btm makes upper-layer tau too small; art.gravity_profile
@@ -470,7 +545,7 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
                                 rayleigh_xs=rayleigh_xs,
                                 mie_pack=mie_pack, mie=mie)
         Rp2 = art.run(dtau, T_art, mmw_art, Rp_btm, g_btm)          # (radius/Rp_btm)^2
-        return Rp2 * depth_norm                                     # (radius/R_star)^2
+        return Rp2 * (Rp_btm / rstar_cm) ** 2                       # (radius/R_star)^2
 
     def transmission_depth_r(vmr, vmr_h2, T_art, mmw_art, lnR0, vmr_he=None,
                              cloud=None, mie=None):
@@ -482,6 +557,8 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
         fixed, lnR0 must be read as a pressure-radius normalization, NOT a physical
         planet-radius change at fixed mass."""
         _require_he(vmr_he)
+        Rp_btm, g_btm = _anchor_to_grid_bottom(
+            lnp_art, T_art, mmw_art, Rp_ref, g_ref, p_ref_bar)
         Rp_r = Rp_btm * jnp.exp(lnR0)
         # g(r) at the lnR0-scaled reference radius (gravity g_btm held fixed, per
         # the xR_p normalization; the height grid and thus g(r) shift with Rp_r) --
@@ -494,7 +571,8 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
                                 rayleigh_xs=rayleigh_xs,
                                 mie_pack=mie_pack, mie=mie)
         Rp2 = art.run(dtau, T_art, mmw_art, Rp_r, g_btm)            # (radius/Rp_r)^2
-        return Rp2 * depth_norm * jnp.exp(2.0 * lnR0)               # (radius/R_star)^2
+        return (Rp2 * (Rp_btm / rstar_cm) ** 2                      # (radius/R_star)^2
+                * jnp.exp(2.0 * lnR0))
 
     return SimpleNamespace(
         transmission_depth=transmission_depth,
@@ -510,6 +588,10 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
         # never silently compute a different model than the cache key claims
         art_ptop_bar=ptop,
         art_pbtm_bar=pbtm,
+        # the pressure rp_cm/gs_cgs were taken to apply at; consumers verify this
+        # echo, because a tool that silently reverted to bottom-of-grid anchoring
+        # would inflate every transit depth (see _anchor_to_grid_bottom)
+        p_ref_bar=p_ref_bar,
         rt_integration=integration,
         dit_grid_resolution=dit_res,
         has_cia_h2he=opacia_he is not None,
@@ -540,7 +622,30 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
     opacia_he = trt._opacia_he
     mie_pack = getattr(trt, "_mie_pack", None)   # shared Mie deck (v16)
     _require_geometry(profile, "gs_cgs")
-    g_btm = float(profile["gs_cgs"])
+    # Emission is plane-parallel, so ArtEmisPure needs ONE gravity for the whole
+    # column: it converts pressure to column mass as dP/g. That gravity must be
+    # the same physical quantity the transmission path anchors, otherwise the two
+    # observables silently disagree about the planet. gs_cgs is quoted at
+    # p_ref_bar (~1 mbar), while the column is dominated by the emission
+    # photosphere near 0.1 bar, so the gravity is re-anchored there.
+    #
+    # SCOPE, stated because it is a real and quantified limitation: the eclipse
+    # depth prefactor (R_p/R_star)^2 still uses a SINGLE radius. Fortney, Lupu,
+    # Morley, Freedman & Hood 2019 (ApJL 880, L16) show the correct prefactor is
+    # the wavelength-dependent photospheric radius at vertical tau = 2/3, which
+    # POSEIDON (use_photosphere_radius, default True) and PLATON II both compute.
+    # Using a single radius biases planet-to-star flux ratios by ~5% typically
+    # and 10-25% for low-gravity hot Jupiters, and it MUTES or ENHANCES features
+    # rather than offsetting them. Implementing that is the right next step; it
+    # is deliberately not done here.
+    _require_geometry(profile, "rp_cm")
+    g_ref_em = float(profile["gs_cgs"])
+    r_ref_em = float(profile["rp_cm"])
+    p_ref_em = float(profile.get("p_ref_emission_bar",
+                                 constants.P_REF_EMISSION_BAR))
+    profile = dict(profile)
+    profile["p_ref_bar_used"] = float(
+        profile.get("p_ref_bar", constants.P_REF_BAR))
 
     # pressure bounds follow the transmission model's (possibly profile-
     # overridden) grid -- the two share opacities and must share the column
@@ -548,6 +653,7 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
                       pressure_btm=trt.art_pbtm_bar, nlayer=int(profile["art_nlayer"]),
                       rtsolver="ibased", nstream=8)
     art.change_temperature_range(constants.T_OPA_MIN_K, constants.T_OPA_MAX_K)
+    lnp_em = jnp.asarray(np.log(np.asarray(art.pressure)))
     print(f"[rt] ArtEmisPure {profile['art_nlayer']} layers (shares opacities)", flush=True)
 
     def emission_flux(vmr, vmr_h2, T_art, mmw_art, vmr_he=None, cloud=None,
@@ -572,7 +678,9 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
                 "zero-emission limit. Use transmission, or the (absorbing) "
                 "power-law cloud, until a scattering-aware emission solver "
                 "lands.")
-        dtau = _accumulate_dtau(art, nu_grid, mols, opas, molmass, opacia, g_btm,
+        g_em = _gravity_at(lnp_em, T_art, mmw_art, g_ref_em,
+                           float(profile["p_ref_bar_used"]), r_ref_em, p_ref_em)
+        dtau = _accumulate_dtau(art, nu_grid, mols, opas, molmass, opacia, g_em,
                                 vmr, vmr_h2, T_art, mmw_art,
                                 opacia_he=opacia_he, vmr_he=vmr_he, cloud=cloud,
                                 mie_pack=mie_pack, mie=None)
@@ -585,7 +693,9 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
         thick at the bottom -- a caller must check min(tau_bottom) and
         refuse/flag windows that see through the grid (the flux there is
         silently underestimated). Not on the hot AD path (diagnostic)."""
-        dtau = _accumulate_dtau(art, nu_grid, mols, opas, molmass, opacia, g_btm,
+        g_em = _gravity_at(lnp_em, T_art, mmw_art, g_ref_em,
+                           float(profile["p_ref_bar_used"]), r_ref_em, p_ref_em)
+        dtau = _accumulate_dtau(art, nu_grid, mols, opas, molmass, opacia, g_em,
                                 vmr, vmr_h2, T_art, mmw_art,
                                 opacia_he=opacia_he, vmr_he=vmr_he, cloud=cloud,
                                 mie_pack=mie_pack, mie=mie)
