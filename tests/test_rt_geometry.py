@@ -26,15 +26,29 @@ pytest.importorskip("jax", reason="the RT geometry helpers are JAX code")
 import jax.numpy as jnp                                    # noqa: E402
 
 from vulcan_forward import constants                       # noqa: E402
-from vulcan_forward.exojax_rt import _anchor_to_grid_bottom  # noqa: E402
+from vulcan_forward.exojax_rt import (                       # noqa: E402
+    _anchor_to_grid_bottom, _radius_at)
 
 R_JUP_CM = 7.1492e9
 P_TOP, P_BTM, NLAYER = 1.0e-8, 7.0, 100
 
 
 def _grid(n=NLAYER):
-    """An ascending log-pressure grid, as exojax orders its layers."""
+    """An ascending log-pressure grid, as exojax orders its layers.
+
+    These are layer CENTRES (exojax's ``pressure_layer_logspace``); the level
+    ``radius_btm`` is defined at is half a log-layer deeper. ``_p_boundary``
+    below is that level.
+    """
     return jnp.asarray(np.log(np.logspace(np.log10(P_TOP), np.log10(P_BTM), n)))
+
+
+def _p_boundary(n=NLAYER):
+    """Pressure at the LOWER BOUNDARY of the bottom layer = p[-1] * k**-0.5,
+    which is where exojax defines radius_btm (atm/atmprof.py).
+    """
+    lnp = np.asarray(_grid(n))
+    return float(np.exp(lnp[-1] + 0.5 * (lnp[-1] - lnp[-2])))
 
 
 def _isothermal(T=1097.0, mmw=2.502, n=NLAYER):
@@ -56,7 +70,7 @@ def test_matches_the_closed_form_for_an_isothermal_column():
     r_btm, g_btm = _anchor_to_grid_bottom(lnp, Ti, mi, r_ref, g_ref, p_ref)
 
     c = constants.K_B_CGS * T / (mmw * constants.M_U_CGS * g_ref * r_ref ** 2)
-    u_exact = 1.0 / r_ref + c * np.log(P_BTM / p_ref)
+    u_exact = 1.0 / r_ref + c * np.log(_p_boundary() / p_ref)
     assert float(r_btm) == pytest.approx(1.0 / u_exact, rel=1e-9)
     # GM is held fixed, so gravity must follow the inverse square exactly.
     assert float(g_btm) == pytest.approx(
@@ -76,15 +90,48 @@ def test_deeper_is_smaller_and_heavier():
 
 
 def test_anchoring_at_the_grid_bottom_is_the_identity():
-    """p_ref = P_btm must reproduce the inputs untouched. This is the ONLY
-    setting under which the pre-v0.4.0 behaviour was correct, so it doubles as
-    a description of what the old code assumed."""
+    """p_ref at the bottom BOUNDARY must reproduce the inputs untouched. This
+    is the ONLY setting under which the pre-v0.4.0 behaviour was correct, so it
+    doubles as a description of what the old code assumed."""
     lnp = _grid()
     Ti, mi = _isothermal()
     r_ref, g_ref = 1.279 * R_JUP_CM, 422.0
-    r_btm, g_btm = _anchor_to_grid_bottom(lnp, Ti, mi, r_ref, g_ref, P_BTM)
+    r_btm, g_btm = _anchor_to_grid_bottom(lnp, Ti, mi, r_ref, g_ref,
+                                          _p_boundary())
     assert float(r_btm) == pytest.approx(r_ref, rel=1e-9)
     assert float(g_btm) == pytest.approx(g_ref, rel=1e-9)
+
+
+def test_the_anchor_level_is_the_grid_bottom_BOUNDARY_at_any_resolution():
+    """``radius_btm`` means the radius at the bottom layer's LOWER BOUNDARY.
+
+    v0.4.0 anchored to the deepest layer CENTRE instead, half a log-layer
+    shallower, and the size of that half layer shrinks with resolution. A
+    requested 1 mbar reference therefore landed at 1.11 mbar on the planner's
+    100-layer grid and 1.71 mbar on vulcan-retrieval's 20-layer SMOKE preset,
+    which made the absolute transit depth depend on art_nlayer (+0.20% and
+    +1.02%). Here _anchor_to_grid_bottom must agree with _radius_at aimed
+    explicitly at the boundary, at every layer count.
+    """
+    r_ref, g_ref, p_ref = 1.279 * R_JUP_CM, 422.0, 1.0e-3
+    for n in (20, 60, 100, 400):
+        lnp = _grid(n)
+        Ti, mi = _isothermal(n=n)
+        got = float(_anchor_to_grid_bottom(lnp, Ti, mi, r_ref, g_ref, p_ref)[0])
+        want = float(_radius_at(lnp, Ti, mi, r_ref, g_ref, p_ref,
+                                _p_boundary(n))[0])
+        assert got == pytest.approx(want, rel=1e-12), n
+
+
+def test_radius_at_a_fixed_pressure_is_resolution_independent():
+    """The physical content: r(p) at a FIXED pressure must not depend on how
+    many layers the grid happens to have. Isothermal, so the integrand carries
+    no discretisation error of its own and any spread is the anchoring."""
+    r_ref, g_ref, p_ref, p_tgt = 1.279 * R_JUP_CM, 422.0, 1.0e-3, 1.0
+    got = [float(_radius_at(_grid(n), *_isothermal(n=n), r_ref, g_ref,
+                            p_ref, p_tgt)[0])
+           for n in (20, 60, 100, 400)]
+    assert max(got) / min(got) - 1.0 < 1e-9, got
 
 
 def test_correction_scales_with_scale_height():

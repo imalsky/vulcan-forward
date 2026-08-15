@@ -114,6 +114,60 @@ Earlier versions of this code used WASP-39 b values when a key was absent. A
 caller who forgot one key then modeled a different planet. No message reported
 the substitution.
 
+### Where the radius applies: `p_ref_bar`
+
+A radius is only meaningful with a pressure attached to it. `p_ref_bar` (default
+1e-3 bar) is the pressure at which `rp_cm` and `gs_cgs` are taken to apply, and
+the engine converts hydrostatically from there to the level exojax needs.
+
+Before version 0.4.0 there was no conversion: the caller's values went straight
+to exojax as `radius_btm`/`gravity_btm`, which exojax defines at the bottom of
+the RT grid (7 bar). A published planet radius is the transit radius, near the
+terminator photosphere at roughly a millibar, so the whole 7 bar to millibar
+column was stacked on top of a radius that already was the photospheric one.
+Measured on WASP-39 b, that put the modeled transit depth at 26,754 ppm against
+a published 21,381, with 1.42 times too much spectral contrast.
+
+Two notes for callers:
+
+- The reference pressure and the reference radius are strongly degenerate in
+  transmission. A forward model has to fix both, so this is an input, not a
+  result. Depth shifts by roughly 4.6 (H/Rp) per decade of `p_ref_bar`, which is
+  4.7 percent per decade for WASP-39 b. Feature shapes are second order and
+  barely move. Quote absolute depths with that caveat.
+- A retrieval that INFERS a reference radius should pin `p_ref_bar` to whatever
+  its prior was built around, because changing it slides the fitted radius by
+  the same amount. `vulcan-retrieval` pins it explicitly for this reason.
+
+Emission anchors separately, at `p_ref_emission_bar` (default 0.1 bar). The
+dayside photosphere sits about two decades deeper than the limb, so a single
+anchor cannot serve both geometries. `build_emis_model` exposes
+`emission_radius(T, mmw)` for the eclipse-depth prefactor; using the catalogue
+transit radius with the emission column's gravity implies a planet mass 8.9
+percent off its own GM.
+
+This is still a SINGLE radius. The fully correct prefactor is the
+wavelength-dependent radius at vertical optical depth 2/3 (Fortney, Lupu,
+Morley, Freedman and Hood 2019, ApJL 880 L16), which biases planet-to-star flux
+ratios by about 5 percent typically and 10 to 25 percent for low-gravity hot
+Jupiters. Not implemented.
+
+### The emission column has to be opaque at its bottom
+
+`build_emis_model` runs exojax's `ibased_linsap` solver, which carries an
+interior source term: the deepest boundary temperature, attenuated by
+`exp(-tau_total/mu)`. That term is an isothermal-interior assumption standing in
+for everything below the grid, so a column that leans on it is reporting an
+assumption rather than a model. Consumers should check `tau_bottom` and refuse a
+transparent column; the fix is a deeper `art_pbtm_bar`, not a wider tolerance.
+
+Before 0.5.0 the solver was `ibased`, which drops the term entirely. Photons
+entering from below were simply lost, and at the marginal optical depths a
+consumer gate typically admits that is 12 to 52 percent of the flux. `linsap` is
+also the more accurate scheme at production layer counts: at 60 layers and
+bottom optical depth 10 it sits within 0.13 to 0.40 percent of its own converged
+answer where `ibased` sits 2.9 to 5.3 percent away.
+
 ## The exojax version
 
 This package requires exactly `exojax==2.2.3`. Four parts of `exojax_rt` depend on
