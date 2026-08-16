@@ -96,3 +96,39 @@ def overlap(a, b, gg, gw):
                           in_axes=(1, 1), out_axes=1),
                  in_axes=(0, 0), out_axes=0)
     return f(cg, ss)
+
+
+def _fold_wo(dts, zero_of, gg, gw, wo_idx, finish=None):
+    """Left-fold ``dts`` with ``overlap``; for each i in ``wo_idx`` also produce
+    the same fold with ``dts[i]`` replaced by ``zero_of(i)``, reusing the
+    running prefix. Returns ``(full_total, [(i, finish(total_wo)), ...])`` with
+    the wo list in ascending-i order.
+
+    Bit-identity contract: every wo result is the EXACT op sequence of a naive
+    left fold over ``[dts[0], .., zero_of(i), .., dts[-1]]`` — the fold order is
+    load-bearing (``overlap`` is a resort-rebin, neither associative nor an
+    exact identity on a zero operand), and a dropped absorber is still folded,
+    as the zero tensor its zeroed VMR produces. Only the shared prefix
+    ``dts[0..i-1]`` is computed once instead of per wo (~2x fewer folds).
+
+    ``finish`` maps each wo total to its observable before the next fold starts,
+    so at most one (nlayer, ng, nband) wo total is alive at a time.
+    """
+    if finish is None:
+        finish = lambda t: t  # noqa: E731
+    n = len(dts)
+    wo_idx = set(wo_idx)
+    bad = [i for i in wo_idx if not 0 <= i < n]
+    if bad:
+        raise ValueError(f"_fold_wo: wo indices {sorted(bad)} outside 0..{n-1}")
+    out = []
+    prefix = None
+    for i in range(n):
+        if i in wo_idx:
+            z = zero_of(i)
+            t = z if prefix is None else overlap(prefix, z, gg, gw)
+            for j in range(i + 1, n):
+                t = overlap(t, dts[j], gg, gw)
+            out.append((i, finish(t)))
+        prefix = dts[i] if prefix is None else overlap(prefix, dts[i], gg, gw)
+    return prefix, out

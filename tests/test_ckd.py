@@ -155,6 +155,50 @@ def test_interp_logk_is_exact_on_its_own_nodes():
         assert np.allclose(got[n], np.asarray(logk)[i, j], atol=1e-9), (i, j)
 
 
+def test_fold_wo_is_bit_identical_to_naive_refolds():
+    """The prefix-memoized leave-one-out fold must be the EXACT op sequence of
+    a naive left fold per output -- overlap is a resort-rebin, so it is not
+    associative and a zero operand is not guaranteed to pass through as an
+    exact identity; any reordering would move the spectrum at the rebin-error
+    scale the pRT verification tolerances live at. Grouped contract: full ==
+    naive fold, every wo row == naive refold with the zero operand, order is
+    load-bearing, empty wo_idx returns the full fold only, out-of-range
+    indices refuse."""
+    import jax.numpy as jnp
+    rng = np.random.default_rng(3)
+    nl, ng, nb, n = 3, 8, 4, 5
+    g, w = ckd.gauss_legendre(ng)
+    gg, gw = jnp.asarray(g), jnp.asarray(w)
+    dts = [jnp.asarray(np.sort(rng.lognormal(-1.0, 1.0, size=(nl, ng, nb)),
+                               axis=1)) for _ in range(n)]
+    zero = jnp.zeros((nl, ng, nb))
+
+    def naive(seq):
+        tot = None
+        for d in seq:
+            tot = d if tot is None else ckd.overlap(tot, d, gg, gw)
+        return tot
+
+    wo_idx = [0, 2, 4]
+    full, wo = ckd._fold_wo(dts, lambda i: zero, gg, gw, wo_idx)
+    assert np.array_equal(np.asarray(full), np.asarray(naive(dts)))
+    assert [i for i, _ in wo] == wo_idx
+    for i, got in wo:
+        want = naive([zero if j == i else dts[j] for j in range(n)])
+        assert np.array_equal(np.asarray(got), np.asarray(want)), i
+    # order is load-bearing: permuting the operands changes bits
+    perm, _ = ckd._fold_wo(dts[::-1], lambda i: zero, gg, gw, [])
+    assert not np.array_equal(np.asarray(perm), np.asarray(full))
+    # empty wo_idx: full only; finish is applied per wo row
+    full2, none = ckd._fold_wo(dts, lambda i: zero, gg, gw, [])
+    assert none == [] and np.array_equal(np.asarray(full2), np.asarray(full))
+    _, summed = ckd._fold_wo(dts, lambda i: zero, gg, gw, [1],
+                             finish=lambda t: float(jnp.sum(t)))
+    assert isinstance(summed[0][1], float)
+    with pytest.raises(ValueError, match="outside"):
+        ckd._fold_wo(dts, lambda i: zero, gg, gw, [n])
+
+
 def test_interp_logk_clamps_outside_the_table_rather_than_extrapolating():
     """Extrapolating log k off the end of a k-table produces nonsense opacity;
     clamping is the documented behaviour and the caller validates the span."""

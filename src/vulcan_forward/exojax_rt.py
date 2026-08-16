@@ -389,16 +389,31 @@ def _accumulate_dtau_ckd(art, pack, mols, molmass, opacia, opacia_he,
     P = jnp.asarray(art.pressure)
     tot = None
     for key in mols:
-        lk = _ckd._interp_logk(pack.logk[key], pack.t_grid, pack.p_grid,
-                               T_art, P)                    # (nlayer, ng, nb)
-        mmr = vmr_to_mmr(vmr[key], molmass[key], mmw_art)
-        # layer_optical_depth_ckd multiplies a (nlayer, ng, nband) tensor by
-        # dParr[:, None, None] / gravity, so gravity needs the third axis too;
-        # the continuum terms below stay on the 2-D (nlayer, nband) form.
-        dt = art.opacity_profile_xs_ckd(jnp.exp(lk), mmr, molmass[key],
-                                        g_btm[..., None])
+        dt = _ckd_dt_one(art, pack, key, molmass, vmr[key], T_art, mmw_art,
+                         g_btm, P)
         tot = dt if tot is None else _ckd.overlap(tot, dt, pack.gg, pack.gw)
+    cont = _ckd_continuum(art, pack, opacia, opacia_he, vmr_h2, vmr_he,
+                          T_art, mmw_art, g_btm, cloud, rayleigh_xs)
+    return tot + cont[:, None, :]
 
+
+def _ckd_dt_one(art, pack, key, molmass, vmr_key, T_art, mmw_art, g_btm, P):
+    """One molecule's (nlayer, ng, nband) optical-depth tensor."""
+    from vulcan_forward import ckd as _ckd
+
+    lk = _ckd._interp_logk(pack.logk[key], pack.t_grid, pack.p_grid,
+                           T_art, P)                        # (nlayer, ng, nb)
+    mmr = vmr_to_mmr(vmr_key, molmass[key], mmw_art)
+    # layer_optical_depth_ckd multiplies a (nlayer, ng, nband) tensor by
+    # dParr[:, None, None] / gravity, so gravity needs the third axis too;
+    # the continuum terms stay on the 2-D (nlayer, nband) form.
+    return art.opacity_profile_xs_ckd(jnp.exp(lk), mmr, molmass[key],
+                                      g_btm[..., None])
+
+
+def _ckd_continuum(art, pack, opacia, opacia_he, vmr_h2, vmr_he,
+                   T_art, mmw_art, g_btm, cloud, rayleigh_xs):
+    """Band continuum (nlayer, nband): CIA + Rayleigh + power-law cloud."""
     def _cia(opa_, va, vb):
         return art.opacity_profile_cia(opa_.logacia_matrix(T_art), T_art,
                                        va, vb, mmw_art[:, None], g_btm)
@@ -421,7 +436,48 @@ def _accumulate_dtau_ckd(art, pack, mols, molmass, opacia, opacia_he,
                                   nuc0=constants.CLOUD_NUC0, alphac=cloud[1])
         dP = jnp.asarray(art.dParr)
         cont = cont + kappa_c[None, :] * (dP[:, None] * _BAR_CGS / g_btm)
-    return tot + cont[:, None, :]
+    return cont
+
+
+def _ckd_dtau_batch(art, pack, mols, molmass, opacia, opacia_he,
+                    vmr, vmr_h2, vmr_he, T_art, mmw_art, g_btm,
+                    wo_mols, finish, cloud=None, rayleigh_xs=None):
+    """Full + leave-one-out observables in one pass over the k-fold.
+
+    ``finish(dtau_g)`` maps a (nlayer, ng, nband) optical depth to its
+    observable. Returns ``(finish(full), [finish(wo) ...])`` with the wo list
+    aligned to ``wo_mols``. Each wo fold keeps today's semantics exactly — the
+    dropped molecule is still folded, as the zero tensor its zeroed VMR
+    produces through the SAME op pipeline — so every output is bit-identical
+    to a from-scratch solve with that VMR zeroed; only the shared fold prefix
+    is reused (see ckd._fold_wo). The per-molecule tensors are held for the
+    fold tails (~n x 35 MB at planner defaults); wo totals are finished and
+    freed one at a time.
+    """
+    from vulcan_forward import ckd as _ckd
+
+    bad = [m for m in wo_mols if m not in mols]
+    if bad or len(set(wo_mols)) != len(wo_mols):
+        raise ValueError(
+            f"wo_mols {list(wo_mols)!r} must be unique members of the RT "
+            f"molecule set {list(mols)!r}")
+    P = jnp.asarray(art.pressure)
+    dts = [_ckd_dt_one(art, pack, k, molmass, vmr[k], T_art, mmw_art, g_btm, P)
+           for k in mols]
+    cont3 = _ckd_continuum(art, pack, opacia, opacia_he, vmr_h2, vmr_he,
+                           T_art, mmw_art, g_btm, cloud,
+                           rayleigh_xs)[:, None, :]
+
+    def zero_of(i):
+        return _ckd_dt_one(art, pack, mols[i], molmass,
+                           jnp.zeros_like(vmr[mols[i]]), T_art, mmw_art,
+                           g_btm, P)
+
+    wo_idx = [mols.index(m) for m in wo_mols]
+    full_tot, wo = _ckd._fold_wo(dts, zero_of, pack.gg, pack.gw, wo_idx,
+                                 finish=lambda t: finish(t + cont3))
+    by_idx = dict(wo)
+    return finish(full_tot + cont3), [by_idx[i] for i in wo_idx]
 
 
 def _run_emis_ckd_linsap(art, dtau_g, T_boundary, nu_bands, gw):
@@ -748,14 +804,20 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
         return Rp2 * (Rp_btm / rstar_cm) ** 2                       # (radius/R_star)^2
 
     def transmission_depth_r(vmr, vmr_h2, T_art, mmw_art, lnR0, vmr_he=None,
-                             cloud=None, mie=None):
+                             cloud=None, mie=None, wo_mols=None):
         """transmission_depth with a reference-radius scaling: the radius at the bottom
         pressure P_btm is Rp_btm * e^lnR0 (gravity held fixed -- the standard xR_p
         normalization nuisance, cf. Batalha & Line 2017). lnR0 = 0 reproduces
         transmission_depth exactly; the lnR0 jvp is the exact geometric+hydrostatic
         response, RT-only (chemistry profiles enter frozen). Because gravity is held
         fixed, lnR0 must be read as a pressure-radius normalization, NOT a physical
-        planet-radius change at fixed mass."""
+        planet-radius change at fixed mass.
+
+        wo_mols: None (default) returns the depth (n_nu,) exactly as before.
+        A list of molecule names returns ``(depth, depth_wo)`` with one row per
+        entry, each the depth with that molecule's VMR zeroed -- bit-identical
+        to a separate call on the zeroed profile, but reusing the shared
+        correlated-k fold prefix (~2x fewer overlap folds for a full set)."""
         _require_he(vmr_he)
         Rp_btm, g_btm = _anchor_to_grid_bottom(
             lnp_art, T_art, mmw_art, Rp_ref, g_ref, p_ref_bar)
@@ -765,6 +827,13 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
         # inverse-square, matching the g(r) art.run uses for the heights (see
         # transmission_depth; art.gravity_profile is 1/r-linear and is NOT used).
         g_prof = _gravity_profile_invsq(art, T_art, mmw_art, Rp_r, g_btm)  # (nlayer,1)
+
+        def _depth_of(Rp2):
+            # identical expression and op order to the pre-batch return, so the
+            # single and wo paths agree bitwise
+            return (Rp2 * (Rp_btm / rstar_cm) ** 2                  # (radius/R_star)^2
+                    * jnp.exp(2.0 * lnR0))
+
         if is_ckd:
             if mie is not None:
                 raise ValueError(
@@ -772,22 +841,43 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
                     "extinction has structure across a band, so folding it "
                     "into a k-distribution built from line opacity would be "
                     "wrong. Use opacity_mode='lbl' for a Mie deck.")
-            dtau_g = _accumulate_dtau_ckd(
+
+            def _finish(dtau_g):
+                return _depth_of(art.run_ckd(dtau_g, T_art, mmw_art, Rp_r,
+                                             g_btm, ckd_pack.gw))
+
+            if wo_mols is None:
+                dtau_g = _accumulate_dtau_ckd(
+                    art, ckd_pack, mols, molmass, opacia, opacia_he,
+                    vmr, vmr_h2, vmr_he, T_art, mmw_art, g_prof,
+                    cloud=cloud, rayleigh_xs=rayleigh_xs)
+                return _finish(dtau_g)
+            depth, rows = _ckd_dtau_batch(
                 art, ckd_pack, mols, molmass, opacia, opacia_he,
                 vmr, vmr_h2, vmr_he, T_art, mmw_art, g_prof,
-                cloud=cloud, rayleigh_xs=rayleigh_xs)
-            Rp2 = art.run_ckd(dtau_g, T_art, mmw_art, Rp_r, g_btm,
-                              ckd_pack.gw)
-            return (Rp2 * (Rp_btm / rstar_cm) ** 2
-                    * jnp.exp(2.0 * lnR0))
-        dtau = _accumulate_dtau(art, nu_grid, mols, opas, molmass, opacia, g_prof,
-                                vmr, vmr_h2, T_art, mmw_art,
-                                opacia_he=opacia_he, vmr_he=vmr_he, cloud=cloud,
-                                rayleigh_xs=rayleigh_xs,
-                                mie_pack=mie_pack, mie=mie)
-        Rp2 = art.run(dtau, T_art, mmw_art, Rp_r, g_btm)            # (radius/Rp_r)^2
-        return (Rp2 * (Rp_btm / rstar_cm) ** 2                      # (radius/R_star)^2
-                * jnp.exp(2.0 * lnR0))
+                list(wo_mols), _finish, cloud=cloud, rayleigh_xs=rayleigh_xs)
+            return depth, (jnp.stack(rows) if rows
+                           else jnp.zeros((0,) + depth.shape))
+
+        def _one(vmr_):
+            dtau = _accumulate_dtau(art, nu_grid, mols, opas, molmass, opacia,
+                                    g_prof, vmr_, vmr_h2, T_art, mmw_art,
+                                    opacia_he=opacia_he, vmr_he=vmr_he,
+                                    cloud=cloud, rayleigh_xs=rayleigh_xs,
+                                    mie_pack=mie_pack, mie=mie)
+            return _depth_of(art.run(dtau, T_art, mmw_art, Rp_r, g_btm))
+
+        depth = _one(vmr)
+        if wo_mols is None:
+            return depth
+        bad = [m for m in wo_mols if m not in mols]
+        if bad or len(set(wo_mols)) != len(wo_mols):
+            raise ValueError(
+                f"wo_mols {list(wo_mols)!r} must be unique members of the RT "
+                f"molecule set {list(mols)!r}")
+        rows = [_one({**vmr, m: jnp.zeros_like(vmr[m])}) for m in wo_mols]
+        return depth, (jnp.stack(rows) if rows
+                       else jnp.zeros((0,) + depth.shape))
 
     return SimpleNamespace(
         transmission_depth=transmission_depth,
@@ -1011,8 +1101,77 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
                                 mie_pack=mie_pack, mie=mie)
         return jnp.sum(dtau, axis=0)
 
+    def emission_flux_tau(vmr, vmr_h2, T_art, mmw_art, vmr_he=None, cloud=None,
+                          mie=None, wo_mols=None):
+        """Emergent flux AND bottom optical depth from ONE optical-depth build.
+
+        Returns ``(flux, tau_bottom)`` -- bitwise what the separate
+        ``emission_flux`` / ``tau_bottom`` calls return, without building the
+        same optical depth twice. With ``wo_mols`` (a list of molecule names)
+        returns ``(flux, tau_bottom, flux_wo, tau_wo)``, the wo rows aligned to
+        ``wo_mols``: each is the observable with that molecule's VMR zeroed,
+        bit-identical to a from-scratch call on the zeroed profile but reusing
+        the shared correlated-k fold prefix (see ckd._fold_wo).
+        """
+        if vmr_he is None:
+            raise ValueError(
+                "vmr_he is required: pass the He VMR profile so the H2-He CIA term "
+                "is included in the emission opacity (parity with transmission).")
+        if mie is not None:
+            raise ValueError(
+                "Mie cloud is not supported in EMISSION: ArtEmisPure is a "
+                "pure-absorption solver, so Mie scattering would be counted as "
+                "thermal absorption and violate the conservative-scattering "
+                "zero-emission limit. Use transmission, or the (absorbing) "
+                "power-law cloud, until a scattering-aware emission solver "
+                "lands.")
+        _, g_em = _emission_anchor(T_art, mmw_art)
+        if ckd_mode:
+            def _finish(dtau_g):
+                return (_run_emis_ckd_linsap(art, dtau_g,
+                                             _boundary_temperature(T_art),
+                                             nu_grid, ckd_pack.gw),
+                        jnp.min(jnp.sum(dtau_g, axis=0), axis=0))
+
+            if wo_mols is None:
+                dtau_g = _accumulate_dtau_ckd(
+                    art, ckd_pack, mols, molmass, opacia, opacia_he,
+                    vmr, vmr_h2, vmr_he, T_art, mmw_art, g_em, cloud=cloud,
+                    rayleigh_xs=None)
+                return _finish(dtau_g)
+            (flux, tau), rows = _ckd_dtau_batch(
+                art, ckd_pack, mols, molmass, opacia, opacia_he,
+                vmr, vmr_h2, vmr_he, T_art, mmw_art, g_em,
+                list(wo_mols), _finish, cloud=cloud, rayleigh_xs=None)
+        else:
+            def _one(vmr_):
+                dtau = _accumulate_dtau(art, nu_grid, mols, opas, molmass,
+                                        opacia, g_em, vmr_, vmr_h2, T_art,
+                                        mmw_art, opacia_he=opacia_he,
+                                        vmr_he=vmr_he, cloud=cloud,
+                                        mie_pack=mie_pack, mie=None)
+                return (art.run(dtau, _boundary_temperature(T_art)),
+                        jnp.sum(dtau, axis=0))
+
+            flux, tau = _one(vmr)
+            if wo_mols is None:
+                return flux, tau
+            bad = [m for m in wo_mols if m not in mols]
+            if bad or len(set(wo_mols)) != len(wo_mols):
+                raise ValueError(
+                    f"wo_mols {list(wo_mols)!r} must be unique members of the "
+                    f"RT molecule set {list(mols)!r}")
+            rows = [_one({**vmr, m: jnp.zeros_like(vmr[m])}) for m in wo_mols]
+        nb = tau.shape[0]
+        flux_wo = (jnp.stack([f for f, _ in rows]) if rows
+                   else jnp.zeros((0, nb)))
+        tau_wo = (jnp.stack([t for _, t in rows]) if rows
+                  else jnp.zeros((0, nb)))
+        return flux, tau, flux_wo, tau_wo
+
     return SimpleNamespace(
         emission_flux=emission_flux,
+        emission_flux_tau=emission_flux_tau,
         emission_radius=emission_radius,
         tau_bottom=tau_bottom,
         nu_grid=np.asarray(nu_grid),

@@ -188,6 +188,59 @@ def test_emission_isothermal_atmosphere_radiates_pi_planck():
         "isothermal flux depends on opacity; k must cancel exactly")
 
 
+def test_wo_batch_is_bit_identical_to_separate_solves():
+    """The leave-one-out batch (transmission_depth_r / emission_flux_tau with
+    wo_mols) must reproduce, BITWISE, what separate single solves return: the
+    full spectrum unchanged, and every wo row equal to a from-scratch solve
+    with that molecule's VMR zeroed. That is the whole contract of the fold
+    prefix reuse -- fewer folds, zero numerical change. Grouped: transmission
+    full + rows, emission flux/tau full + rows, and the unknown-molecule
+    refusal."""
+    mols = ["H2O"] + (["CO2"] if exomolop.table_path("CO2").exists() else [])
+    nlay = 40
+    prof = dict(molecules=mols, nu_min=1.0e4 / 5.0, nu_max=1.0e4 / 3.0,
+                opacity_mode="exomolop", art_nlayer=nlay,
+                art_ptop_bar=1.0e-6, art_pbtm_bar=1.0e2,
+                rp_cm=7.1492e9, gs_cgs=1.0e3, rstar_cm=RSTAR_W39)
+    trt = exojax_rt.build_rt_model(prof)
+    emod = exojax_rt.build_emis_model(trt, prof)
+    zeros = jnp.zeros(nlay)
+    T = jnp.linspace(900.0, 2200.0, nlay)
+    mmw = jnp.full(nlay, 2.33)
+    vmr = {m: jnp.full(nlay, v) for m, v in zip(mols, (1.0e-3, 3.0e-4))}
+
+    def wo_vmr(m):
+        return {**vmr, m: jnp.zeros_like(vmr[m])}
+
+    d_full, d_wo = trt.transmission_depth_r(vmr, zeros, T, mmw, 0.0,
+                                            vmr_he=zeros, wo_mols=mols)
+    assert np.array_equal(
+        np.asarray(d_full),
+        np.asarray(trt.transmission_depth_r(vmr, zeros, T, mmw, 0.0,
+                                            vmr_he=zeros)))
+    for i, m in enumerate(mols):
+        assert np.array_equal(
+            np.asarray(d_wo[i]),
+            np.asarray(trt.transmission_depth_r(wo_vmr(m), zeros, T, mmw, 0.0,
+                                                vmr_he=zeros))), m
+
+    f, tau, f_wo, tau_wo = emod.emission_flux_tau(vmr, zeros, T, mmw,
+                                                  vmr_he=zeros, wo_mols=mols)
+    assert np.array_equal(np.asarray(f), np.asarray(
+        emod.emission_flux(vmr, zeros, T, mmw, vmr_he=zeros)))
+    assert np.array_equal(np.asarray(tau), np.asarray(
+        emod.tau_bottom(vmr, zeros, T, mmw, zeros)))
+    for i, m in enumerate(mols):
+        assert np.array_equal(np.asarray(f_wo[i]), np.asarray(
+            emod.emission_flux(wo_vmr(m), zeros, T, mmw, vmr_he=zeros))), m
+        assert np.array_equal(np.asarray(tau_wo[i]), np.asarray(
+            emod.tau_bottom(wo_vmr(m), zeros, T, mmw, zeros))), m
+
+    with pytest.raises(ValueError, match="wo_mols"):
+        trt.transmission_depth_r(vmr, zeros, T, mmw, 0.0, vmr_he=zeros,
+                                 wo_mols=["NOT_A_MOLECULE"])
+
+
 def test_emission_h2o_matches_prt():
     z, meta = _load("prt_ref_emission_h2o.npz")
     nlay = 80

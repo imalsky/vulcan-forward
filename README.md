@@ -223,6 +223,21 @@ and tables have to be per species because the composition changes every run.
 The rebin is written in JAX and is differentiable, so forward-mode tangents
 still reach the spectrum.
 
+Leave-one-out spectra reuse the fold (0.9.0): `transmission_depth_r` and the
+emission model's `emission_flux_tau` take a `wo_mols` list and compute the
+full spectrum plus every removed-molecule spectrum in one pass. The fold is a
+fixed-order left fold, so the running prefix over molecules 0..i-1 is shared
+between the full spectrum and every wo spectrum with a later drop index; the
+dropped molecule is still folded, as the exact-zero tensor its zeroed VMR
+produces, so each output is bit-identical to a from-scratch solve (op order
+is load-bearing -- the rebin is neither associative nor an exact identity on
+a zero operand; `ckd._fold_wo` documents and `tests/test_ckd.py` pins the
+contract). `emission_flux_tau` also builds the optical depth once for the
+flux and the bottom-tau certificate, where the separate calls built it twice.
+Measured on the planner's default 5-molecule WASP-39 b case: the emission
+run's spectrum block fell from ~150 s to ~50 s, transmission's from ~56 s to
+~42 s, bit-identical outputs.
+
 ### Emission uses it too (0.7.0), and needed it more
 
 Emission was hit far harder than transmission, because flux carries
