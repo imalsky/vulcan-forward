@@ -89,7 +89,12 @@ def test_set_data_root_is_honored(tmp_path, monkeypatch):
         paths.set_data_root(root)
         assert paths.data_root() == root
     finally:
-        monkeypatch.setattr(paths, "_root_override", None, raising=False)
+        # PLAIN assignment, not monkeypatch.setattr: monkeypatch records the
+        # value it finds (already set to `root` by the call above) as the
+        # original and restores it at teardown, so cleaning up through
+        # monkeypatch here actually leaked this now-deleted tmp_path into
+        # paths._root_override for every later test in the session.
+        paths._root_override = None
 
 
 def test_geometry_is_required_not_wasp39b():

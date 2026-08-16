@@ -10,6 +10,9 @@ CONTRACT (deliberately explicit -- no inference, no silent fallback):
     $VULCAN_FORWARD_DATA   the data root. Expected layout:
                              <root>/exojax_linelists/    line-list caches
                              <root>/opacity_cache/       offline caches + CIA
+                             <root>/exomolop/            ExoMolOP k-tables
+                                 (~389 MB/species; python -m
+                                 vulcan_forward.fetch_exomolop)
 
     Individual trees can be overridden independently:
       $VULCAN_FORWARD_LINELISTS      overrides <root>/exojax_linelists
@@ -107,6 +110,7 @@ def ensure_layout() -> Path:
         override = os.environ.get(env_var, "").strip()
         target = Path(override).expanduser() if override else root / subdir
         target.mkdir(parents=True, exist_ok=True)
+    (root / "exomolop").mkdir(parents=True, exist_ok=True)
     return root
 
 
@@ -130,6 +134,17 @@ def linelist_dir() -> Path:
 def opacity_cache_dir() -> Path:
     """Offline opacity cache: the cached CO ExoMol tree and the CIA tables."""
     return _tree(ENV_OPACITY_CACHE, "opacity_cache", what="opacity-cache")
+
+
+def exomolop_dir() -> Path:
+    """ExoMolOP k-table tree (<MOL>.ktable.h5 + provenance.json).
+
+    No existence check HERE, unlike the ``_tree`` accessors: the loud
+    FileNotFoundError with the exact fetch command lives in
+    ``exomolop.load_tables``, and datacheck wants the path even when the
+    tree is absent so it can report per-molecule MISSING items.
+    """
+    return data_root() / "exomolop"
 
 
 def cia_h2h2_file() -> Path:

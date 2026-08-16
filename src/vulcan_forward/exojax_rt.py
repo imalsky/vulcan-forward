@@ -31,6 +31,8 @@ from exojax.atm.simple_clouds import powerlaw_clouds
 from exojax.opacity.rayleigh import xsvector_rayleigh_gas
 from exojax.atm.polarizability import polarizability as _POLARIZABILITY
 from exojax.database.contdb import CdbCIA
+from exojax.rt.planck import piBarr
+from exojax.rt.rtransfer import rtrun_emis_pureabs_ibased_linsap
 
 _H2_MOLMASS, _HE_MOLMASS = 2.016, 4.0026   # g/mol, for the Rayleigh mmr conversion
 
@@ -366,6 +368,92 @@ def _accumulate_dtau(art, nu_grid, mols, opas, molmass, opacia, g_btm,
     return dtau
 
 
+def _accumulate_dtau_ckd(art, pack, mols, molmass, opacia, opacia_he,
+                         vmr, vmr_h2, vmr_he, T_art, mmw_art, g_btm,
+                         cloud=None, rayleigh_xs=None):
+    """Per-layer, per-g-ordinate, per-band optical depth ``(nlayer, ng, nband)``.
+
+    The line opacity of each molecule comes from its k-table, interpolated to
+    the layer (T, P) and combined across molecules by random-overlap
+    resort-rebin (see ``vulcan_forward.ckd``). The continua -- CIA, Rayleigh,
+    the power-law cloud -- are smooth across a band, so their band value adds
+    identically to every g-ordinate; that is exact, not an approximation, to
+    the accuracy of a smooth function over one R=500 band.
+
+    Mie is deliberately unsupported here: its extinction has structure across a
+    band and folding it into a k-distribution built from line opacity alone
+    would be wrong. The caller refuses instead of silently approximating.
+    """
+    from vulcan_forward import ckd as _ckd
+
+    P = jnp.asarray(art.pressure)
+    tot = None
+    for key in mols:
+        lk = _ckd._interp_logk(pack.logk[key], pack.t_grid, pack.p_grid,
+                               T_art, P)                    # (nlayer, ng, nb)
+        mmr = vmr_to_mmr(vmr[key], molmass[key], mmw_art)
+        # layer_optical_depth_ckd multiplies a (nlayer, ng, nband) tensor by
+        # dParr[:, None, None] / gravity, so gravity needs the third axis too;
+        # the continuum terms below stay on the 2-D (nlayer, nband) form.
+        dt = art.opacity_profile_xs_ckd(jnp.exp(lk), mmr, molmass[key],
+                                        g_btm[..., None])
+        tot = dt if tot is None else _ckd.overlap(tot, dt, pack.gg, pack.gw)
+
+    def _cia(opa_, va, vb):
+        return art.opacity_profile_cia(opa_.logacia_matrix(T_art), T_art,
+                                       va, vb, mmw_art[:, None], g_btm)
+
+    cont = _cia(opacia, vmr_h2, vmr_h2)
+    if opacia_he is not None and vmr_he is not None:
+        cont = cont + _cia(opacia_he, vmr_h2, vmr_he)
+    if rayleigh_xs is not None:
+        xs_h2, xs_he = rayleigh_xs
+        nl, nb = art.pressure.shape[0], xs_h2.shape[0]
+        cont = cont + art.opacity_profile_xs(
+            jnp.broadcast_to(xs_h2[None, :], (nl, nb)),
+            vmr_to_mmr(vmr_h2, _H2_MOLMASS, mmw_art), _H2_MOLMASS, g_btm)
+        if vmr_he is not None:
+            cont = cont + art.opacity_profile_xs(
+                jnp.broadcast_to(xs_he[None, :], (nl, nb)),
+                vmr_to_mmr(vmr_he, _HE_MOLMASS, mmw_art), _HE_MOLMASS, g_btm)
+    if cloud is not None:
+        kappa_c = powerlaw_clouds(pack.nu_bands_j, kappac0=10.0 ** cloud[0],
+                                  nuc0=constants.CLOUD_NUC0, alphac=cloud[1])
+        dP = jnp.asarray(art.dParr)
+        cont = cont + kappa_c[None, :] * (dP[:, None] * _BAR_CGS / g_btm)
+    return tot + cont[:, None, :]
+
+
+def _run_emis_ckd_linsap(art, dtau_g, T_boundary, nu_bands, gw):
+    """Emergent flux (nband,) from a ``(nlayer, ng, nband)`` CKD optical depth,
+    solved with the LINEAR-SOURCE scheme.
+
+    exojax's ``ArtEmisPure.run_ckd`` hard-codes ``rtrun_emis_pureabs_ibased``,
+    which has no bottom-boundary term, so every photon entering the grid from
+    below is lost (measured flux deficits: README, "Emission uses it too").
+    This is upstream's own flatten-solve-reweight structure with
+    ``ibased_linsap`` in its place, so CKD emission keeps the interior source
+    the line-by-line path has carried since 0.5.0.
+
+    The flatten is g-major / band-minor, matching ``jnp.tile``'s last-axis
+    tiling of the source, exactly as upstream's version does it: element
+    ``(g, b)`` of the (ng, nband) block lands at flat index ``g * nband + b``
+    on both sides.
+
+    Weighting the FLUX by the g-weights (rather than some intermediate) is what
+    makes this correct: the k-distribution is a reordering of wavenumber within
+    the band, the solver is linear in nothing but acts wavenumber-by-
+    wavenumber, and the band-integrated flux is the g-average of the flux
+    computed at each k. Same identity the transmission path uses.
+    """
+    nlayer, ng, nband = dtau_g.shape
+    # piBarr -> (nlayer + 1, nband); tile the last axis to (nlayer + 1, ng*nband)
+    src = jnp.tile(piBarr(T_boundary, nu_bands), ng)
+    flux = rtrun_emis_pureabs_ibased_linsap(
+        dtau_g.reshape((nlayer, ng * nband)), src, art.mus, art.weights)
+    return jnp.einsum("g,gb->b", gw, flux.reshape((ng, nband)))
+
+
 def _require_geometry(profile: dict, *keys: str) -> None:
     """Refuse a profile missing planet geometry.
 
@@ -393,18 +481,69 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
         molecules : list[str]
     """
     t0 = time.time()
-    nu_grid, wav, resolution = wavenumber_grid(
-        profile["nu_min"], profile["nu_max"], profile["nu_pts"],
-        unit="cm-1", xsmode="premodit")
-    print(f"[rt] nu_grid {nu_grid.shape[0]} pts, R~{resolution:.0f}, "
-          f"lambda[{1e4/profile['nu_max']:.2f},{1e4/profile['nu_min']:.2f}] um", flush=True)
-
+    mode = str(profile.get("opacity_mode", "lbl"))
+    if mode not in ("lbl", "exomolop"):
+        raise ValueError(
+            f"opacity_mode={mode!r}: choose 'exomolop' (correlated-k from the "
+            "published ExoMolOP high-temperature tables -- the accurate "
+            "default) or 'lbl' (direct line-by-line sampling on the output "
+            "grid, which is only correct at R >= 700,000; kept for the Mie "
+            "deck -- see vulcan_forward.ckd). The interim 'ckd' mode "
+            "(correlated-k built here from HITRAN) was removed in 0.8.0: its "
+            "line data was measurably wrong for a hot hydrogen atmosphere.")
+    # Asked once here rather than by string comparison at each use: a missed
+    # comparison would silently take the line-by-line branch with a band
+    # grid, which is not a mode this engine supports.
+    is_ckd = mode == "exomolop"
     mols = list(profile["molecules"])
+    ckd_pack = None
+    if is_ckd:
+        # Published ExoMol/HITEMP opacities with H2/He broadening already
+        # applied. See vulcan_forward.exomolop for the three measured defects
+        # this closes over building tables from HITRAN; the band grid and the
+        # split quadrature come from the files.
+        from vulcan_forward import exomolop as _exo
+        ckd_pack = _exo.load_tables(
+            mols, float(profile["nu_min"]), float(profile["nu_max"]),
+            molecule_table=profile.get("molecule_table"))
+        nu_grid = jnp.asarray(ckd_pack.nu_bands)
+        ckd_pack.nu_bands_j = nu_grid
+        # The band R actually in force, DERIVED from the file's edges rather
+        # than hard-coded: a future non-R1000 table variant must not mis-echo.
+        resolution = float(
+            1.0 / np.median(np.diff(np.log(ckd_pack.band_edges))))
+    else:
+        nu_grid, wav, resolution = wavenumber_grid(
+            profile["nu_min"], profile["nu_max"], profile["nu_pts"],
+            unit="cm-1", xsmode="premodit")
+        if resolution < 7.0e5:
+            # exojax's own critical resolution (utils.grids.warn_resolution).
+            # It emits a UserWarning that is easily lost in the build log; say
+            # it loudly, because below it the sampled spectrum is biased
+            # (measurements: README, "Opacity: correlated-k").
+            print(f"[rt] WARNING: line-by-line grid R~{resolution:.0f} is below "
+                  "exojax's critical resolution 700000. The sampled cross "
+                  "section is biased (too opaque, and more so in strong-line "
+                  "regions, which inflates spectral contrast). Use "
+                  "opacity_mode='exomolop'.", flush=True)
+        print(f"[rt] nu_grid {nu_grid.shape[0]} pts, R~{resolution:.0f}, "
+              f"lambda[{1e4/profile['nu_max']:.2f},{1e4/profile['nu_min']:.2f}] um",
+              flush=True)
     broadening = str(profile.get("broadening", constants.BROADENING))
-    print(f"[rt] pressure broadening: {broadening}"
-          + (" (terrestrial-air widths -- documented approximation; set "
-             "broadening='h2he' for HITRAN planetary H2/He widths)"
-             if broadening == "air" else ""), flush=True)
+    if mode == "exomolop":
+        # The knob does not apply: ExoMolOP's tables were integrated with H2/He
+        # broadening already baked in. Printing "air" here would be a false
+        # statement about the model that just got built.
+        broadening = "h2he (from the ExoMolOP tables)"
+        print("[rt] pressure broadening: H2/He, as published in the ExoMolOP "
+              "tables; the 'broadening' profile key does not apply in this "
+              "mode", flush=True)
+    else:
+        print(f"[rt] pressure broadening: {broadening}"
+              + (" (terrestrial-air widths -- documented approximation, and "
+                 "WRONG for a hydrogen atmosphere; measurements in the README, "
+                 "'Opacity data: ExoMolOP'. Use opacity_mode='exomolop'.)"
+                 if broadening == "air" else ""), flush=True)
     # Profile-overridable RT knobs (defaults = the historical hard-coded
     # values, so every existing consumer is byte-unchanged). Validated
     # loudly here -- an out-of-range value must never build a wrong model.
@@ -438,11 +577,15 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
     opas, molmass = {}, {}
     for key in mols:
         spec = mol_table[key]
+        molmass[key] = float(spec["molmass"])
+        if is_ckd:
+            # the line opacity already lives in the k-table; building a
+            # premodit object here would cost minutes and be unused
+            continue
         tb = time.time()
         opa, n_lines = _build_opa(key, spec, nu_grid, broadening=broadening,
                                   dit_grid_resolution=dit_res)
         opas[key] = opa
-        molmass[key] = float(spec["molmass"])
         print(f"[rt]   {key}: {n_lines} lines, opa built in {time.time()-tb:.1f}s", flush=True)
 
     art = ArtTransPure(
@@ -581,6 +724,21 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
         # is 1/r-linear and is NOT this profile (see _gravity_profile_invsq).
         # Emission is plane-parallel and correctly keeps constant g_btm.
         g_prof = _gravity_profile_invsq(art, T_art, mmw_art, Rp_btm, g_btm)  # (nlayer,1)
+        if is_ckd:
+            if mie is not None:
+                raise ValueError(
+                    "Mie cloud is not supported on the correlated-k path: its "
+                    "extinction has structure across a band, so folding it "
+                    "into a k-distribution built from line opacity would be "
+                    "wrong. Use opacity_mode='lbl' for a Mie deck, or the "
+                    "power-law cloud, which is smooth across a band.")
+            dtau_g = _accumulate_dtau_ckd(
+                art, ckd_pack, mols, molmass, opacia, opacia_he,
+                vmr, vmr_h2, vmr_he, T_art, mmw_art, g_prof,
+                cloud=cloud, rayleigh_xs=rayleigh_xs)
+            Rp2 = art.run_ckd(dtau_g, T_art, mmw_art, Rp_btm, g_btm,
+                              ckd_pack.gw)
+            return Rp2 * (Rp_btm / rstar_cm) ** 2
         dtau = _accumulate_dtau(art, nu_grid, mols, opas, molmass, opacia, g_prof,
                                 vmr, vmr_h2, T_art, mmw_art,
                                 opacia_he=opacia_he, vmr_he=vmr_he, cloud=cloud,
@@ -607,6 +765,21 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
         # inverse-square, matching the g(r) art.run uses for the heights (see
         # transmission_depth; art.gravity_profile is 1/r-linear and is NOT used).
         g_prof = _gravity_profile_invsq(art, T_art, mmw_art, Rp_r, g_btm)  # (nlayer,1)
+        if is_ckd:
+            if mie is not None:
+                raise ValueError(
+                    "Mie cloud is not supported on the correlated-k path: its "
+                    "extinction has structure across a band, so folding it "
+                    "into a k-distribution built from line opacity would be "
+                    "wrong. Use opacity_mode='lbl' for a Mie deck.")
+            dtau_g = _accumulate_dtau_ckd(
+                art, ckd_pack, mols, molmass, opacia, opacia_he,
+                vmr, vmr_h2, vmr_he, T_art, mmw_art, g_prof,
+                cloud=cloud, rayleigh_xs=rayleigh_xs)
+            Rp2 = art.run_ckd(dtau_g, T_art, mmw_art, Rp_r, g_btm,
+                              ckd_pack.gw)
+            return (Rp2 * (Rp_btm / rstar_cm) ** 2
+                    * jnp.exp(2.0 * lnR0))
         dtau = _accumulate_dtau(art, nu_grid, mols, opas, molmass, opacia, g_prof,
                                 vmr, vmr_h2, T_art, mmw_art,
                                 opacia_he=opacia_he, vmr_he=vmr_he, cloud=cloud,
@@ -636,13 +809,22 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
         p_ref_bar=p_ref_bar,
         rt_integration=integration,
         dit_grid_resolution=dit_res,
+        # which opacity path actually ran. A consumer that asked for 'ckd' and
+        # silently got sampled line-by-line would be modelling a spectrum with
+        # ~1500 ppm of grid bias, so the echo is checked, not assumed.
+        opacity_mode=mode,
+        ckd_ng=(int(ckd_pack.ng) if ckd_pack is not None else 0),
+        # ExoMolOP's band grid is fixed by the published tables (R = 1000), so
+        # echo the resolution actually in force rather than a profile key the
+        # engine would have ignored in that mode.
+        ckd_r_band=(float(resolution) if ckd_pack is not None else 0.0),
         has_cia_h2he=opacia_he is not None,
         # Mie deck echo: "" when no Mie cloud was built -- consumers verify it
         # against what they requested (the echo makes a silent ignore loud)
         mie_condensate=str(mie_cond or ""),
         # internals reused by build_emis_model (so opacities aren't rebuilt)
         _nu_grid=nu_grid, _opas=opas, _molmass=molmass, _opacia=opacia,
-        _opacia_he=opacia_he, _mie_pack=mie_pack,
+        _opacia_he=opacia_he, _mie_pack=mie_pack, _ckd_pack=ckd_pack,
     )
 
 
@@ -659,6 +841,19 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
     _accumulate_dtau -- a pure-absorption solver must not count scattering as
     thermal absorption, and it is negligible in the thermal bands).
     """
+    # CKD emission runs through _run_emis_ckd_linsap, NOT ArtEmisPure.run_ckd:
+    # upstream's version hard-codes the "ibased" solver, which has no interior
+    # source term. Using it here would have silently undone the 0.5.0 linsap
+    # fix, so 0.7.0 reimplements the same flatten-solve-reweight with linsap
+    # instead. Before that this branch refused outright, which left emission
+    # sampling line-by-line at R = 1,477 and carrying the full grid bias.
+    ckd_mode = getattr(trt, "opacity_mode", "lbl") == "exomolop"
+    ckd_pack = getattr(trt, "_ckd_pack", None)
+    if ckd_mode and ckd_pack is None:
+        raise ValueError(
+            "transmission model reports a correlated-k opacity_mode but "
+            "carries no k-table pack; it was not built by this engine's "
+            "build_rt_model.")
     nu_grid = trt._nu_grid
     opas, molmass, opacia, mols = trt._opas, trt._molmass, trt._opacia, trt.molecules
     opacia_he = trt._opacia_he
@@ -751,14 +946,22 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
                 "power-law cloud, until a scattering-aware emission solver "
                 "lands.")
         _, g_em = _emission_anchor(T_art, mmw_art)
-        dtau = _accumulate_dtau(art, nu_grid, mols, opas, molmass, opacia, g_em,
-                                vmr, vmr_h2, T_art, mmw_art,
-                                opacia_he=opacia_he, vmr_he=vmr_he, cloud=cloud,
-                                mie_pack=mie_pack, mie=None)
         # linsap wants the source at the layer BOUNDARIES (nlayer + 1), not at
         # the representative centres. Passing the centres raises a broadcasting
         # error rather than modelling the wrong column, so a half-done switch
         # cannot ship quietly.
+        if ckd_mode:
+            dtau_g = _accumulate_dtau_ckd(
+                art, ckd_pack, mols, molmass, opacia, opacia_he,
+                vmr, vmr_h2, vmr_he, T_art, mmw_art, g_em, cloud=cloud,
+                rayleigh_xs=None)
+            return _run_emis_ckd_linsap(art, dtau_g,
+                                        _boundary_temperature(T_art),
+                                        nu_grid, ckd_pack.gw)
+        dtau = _accumulate_dtau(art, nu_grid, mols, opas, molmass, opacia, g_em,
+                                vmr, vmr_h2, T_art, mmw_art,
+                                opacia_he=opacia_he, vmr_he=vmr_he, cloud=cloud,
+                                mie_pack=mie_pack, mie=None)
         return art.run(dtau, _boundary_temperature(T_art))
 
     def _emission_anchor(T_art, mmw_art):
@@ -780,12 +983,28 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
 
     def tau_bottom(vmr, vmr_h2, T_art, mmw_art, vmr_he, cloud=None, mie=None):
         """Total vertical optical depth at the BOTTOM of the RT column,
-        per wavenumber (n_nu,). ArtEmisPure has NO surface/interior source
-        term, so its flux is only trustworthy where the column is optically
-        thick at the bottom -- a caller must check min(tau_bottom) and
-        refuse/flag windows that see through the grid (the flux there is
-        silently underestimated). Not on the hot AD path (diagnostic)."""
+        per wavenumber (n_nu,).
+
+        The linsap solver DOES carry an interior source term, so a transparent
+        column returns the deep boundary blackbody rather than nothing. That
+        makes this a statement about assumption sensitivity, not about lost
+        flux: where tau_bottom is small the emergent flux is set by an
+        extrapolated boundary temperature standing in for everything below the
+        grid, so a caller should check min(tau_bottom) and flag windows that
+        see through it. Not on the hot AD path (diagnostic).
+
+        In CKD mode the return is per BAND, reduced over the g-ordinates by the
+        MINIMUM. That is the analogue of the line-by-line form: a caller takes
+        min over wavenumber, and within a band the smallest g is the least
+        opaque wavenumber, so the gate stays conservative in the same sense.
+        """
         _, g_em = _emission_anchor(T_art, mmw_art)
+        if ckd_mode:
+            dtau_g = _accumulate_dtau_ckd(
+                art, ckd_pack, mols, molmass, opacia, opacia_he,
+                vmr, vmr_h2, vmr_he, T_art, mmw_art, g_em, cloud=cloud,
+                rayleigh_xs=None)
+            return jnp.min(jnp.sum(dtau_g, axis=0), axis=0)
         dtau = _accumulate_dtau(art, nu_grid, mols, opas, molmass, opacia, g_em,
                                 vmr, vmr_h2, T_art, mmw_art,
                                 opacia_he=opacia_he, vmr_he=vmr_he, cloud=cloud,
@@ -802,5 +1021,9 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
         art_pbtm_bar=float(trt.art_pbtm_bar),
         # echoed so a consumer can verify the engine honored the key
         p_ref_emission_bar=p_ref_em,
+        # which opacity path actually ran, same contract as transmission: a
+        # consumer that asked for 'ckd' and silently got sampled line-by-line
+        # would be modelling a spectrum with the full grid bias in it
+        opacity_mode=str(getattr(trt, "opacity_mode", "lbl")),
         molecules=mols,
     )

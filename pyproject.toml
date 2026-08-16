@@ -24,6 +24,11 @@ dependencies = [
     # package exists.
     "exojax==2.2.3",
     "vulcan-jax>=0.3.0",
+    # Core, not an extra: the default opacity_mode of every consumer reads
+    # ExoMolOP HDF5 k-tables. The import stays function-local in
+    # exomolop.load_tables, so the import-without-data contract is untouched;
+    # an extra would just recreate the silent-skip CI hole this closes.
+    "h5py>=3.9",
 ]
 classifiers = [
     "Programming Language :: Python :: 3",

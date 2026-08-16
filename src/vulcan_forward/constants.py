@@ -156,6 +156,24 @@ MOLECULES = {
     # Simple hydrocarbons: photochemical CH4-destruction products.
     "C2H4": {"vulcan": "C2H4", "molmass": 28.054, "source": "hitran", "db": "C2H4"},
     "C2H6": {"vulcan": "C2H6", "molmass": 30.069, "source": "hitran", "db": "C2H6"},
+    # RADICALS (added with the ExoMolOP ingestion). All four are species in
+    # VULCAN's SNCHO network, and the published Tsai et al. 2023 WASP-39 b
+    # output carries SH and SO, so they are part of an apples-to-apples
+    # comparison with that model -- species coverage was one of the three
+    # measured reasons this engine's spectra had too much contrast.
+    #
+    # Their "db" entries are the ExoMol datasets ExoMolOP itself built from, so
+    # opacity_mode="lbl" and opacity_mode="exomolop" name the same line data.
+    # HITRAN is deliberately not used here: it has no SH at all, and these are
+    # exactly the high-temperature species its 296 K tabulation serves worst.
+    "OH": {"vulcan": "OH", "molmass": 17.007, "source": "exomol",
+           "db": "OH/16O-1H/MoLLIST-OH"},
+    "SH": {"vulcan": "SH", "molmass": 33.073, "source": "exomol",
+           "db": "SH/32S-1H/GYT"},
+    "SO": {"vulcan": "SO", "molmass": 48.064, "source": "exomol",
+           "db": "SO/32S-16O/SOLIS"},
+    "NO": {"vulcan": "NO", "molmass": 30.006, "source": "exomol",
+           "db": "NO/14N-16O/XABC"},
 }
 
 # Bulk gas used for CIA + the dominant background (H2).

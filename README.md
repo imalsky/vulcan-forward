@@ -30,6 +30,9 @@ The package name is `vulcan-forward`. The import name is `vulcan_forward`.
 | `vulcan_chem` | The chemistry driver. It computes converged volume mixing ratios from the model parameters |
 | `interp_map` | Interpolation from the chemistry pressure grid to the radiative-transfer pressure grid |
 | `exojax_rt` | Opacities, collision-induced absorption, and the radiative transfer. It returns a transit depth or an emergent flux |
+| `ckd` | Correlated-k core: the quadrature, the band grid, the (T, P) interpolation, and the mixture overlap |
+| `exomolop` | Adapter for the published ExoMolOP k-tables (the default opacity source) |
+| `fetch_exomolop` | Offline command that resolves and downloads those tables |
 
 ## Install
 
@@ -67,9 +70,10 @@ variable, not the import order.
 
 ## Data files
 
-This package needs three sets of data files at run time:
+This package needs four sets of data files at run time:
 
-- the HITRAN and ExoMol line lists,
+- the ExoMolOP k-tables (the default opacity source),
+- the HITRAN and ExoMol line lists (the `lbl` fallback path),
 - the offline opacity cache, which holds the cached carbon-monoxide line list,
 - the two collision-induced absorption (CIA) tables, for H2-H2 and H2-He.
 
@@ -80,12 +84,17 @@ package where they are:
 export VULCAN_FORWARD_DATA="$HOME/vulcan/forward-data"
 ```
 
-The package expects two directories below that root:
+The package expects three directories below that root:
 
 ```
 exojax_linelists/     HITRAN and ExoMol caches (downloaded on first use)
 opacity_cache/        cached carbon-monoxide line list, H2-H2 and H2-He CIA tables
+exomolop/             ExoMolOP k-tables (fetched offline; ~389 MB per species)
 ```
+
+Loading a k-table reads its wavelength window into memory as float64: about
+200 MB per species over the full 1-15 um planner window, so budget a few GB of
+RAM for a many-species run.
 
 You can move one directory without moving the other. Set
 `VULCAN_FORWARD_LINELISTS` or `VULCAN_FORWARD_OPACITY_CACHE` to do this. An
@@ -167,6 +176,224 @@ consumer gate typically admits that is 12 to 52 percent of the flux. `linsap` is
 also the more accurate scheme at production layer counts: at 60 layers and
 bottom optical depth 10 it sits within 0.13 to 0.40 percent of its own converged
 answer where `ibased` sits 2.9 to 5.3 percent away.
+
+## Opacity: correlated-k, not sampled line-by-line
+
+exojax evaluates a cross section **on the wavenumber grid it is handed**. There
+is no internal high-resolution grid, and its own `wavenumber_grid` calls
+`warn_resolution(R, crit=700000.0)`, so any grid below R = 700,000 is outside
+the regime its opacity calculators are built for. A JWST-band model at
+R ~ 1,500 is therefore not line-by-line: it is a strided sample of a spectrum
+that was never resolved, and the error does not average out. It is worst where
+lines are strong and sparse, so it inflates spectral **contrast**, not just the
+level.
+
+Measured on WASP-39 b, with the published Tsai et al. 2023 chemistry, T-P
+profile, geometry and pressure grid held fixed, binned to R = 100 over
+1.02-5.3 um and compared with the JWST NIRSpec PRISM data:
+
+| opacity path | contrast vs data | fitted radius offset |
+|---|---|---|
+| R = 1,477 (the old default) | 2.80x | -2995 ppm |
+| R = 700,000 line by line | 1.93x | -1483 ppm |
+
+Reaching R = 700,000 over 1-15 um is 5.1 million grid points, which does not
+fit in one array and takes ~20 minutes per spectrum even chunked. Correlated-k
+does that integration **once, offline**, and compresses each band to `ng`
+Gauss-Legendre ordinates. Validated against the R = 700,000 line-by-line
+spectrum on the same atmosphere, ng = 16, R = 500 bands: **32 ppm rms, 171 ppm
+worst bin**, against a 105 ppm median data uncertainty, in **2.8 s** per
+spectrum.
+
+The k-tables themselves come from ExoMolOP (next section), fetched once into
+`$VULCAN_FORWARD_DATA/exomolop/`. `load_tables` **raises** with the exact
+fetch command if one is missing: tables are never fetched at run time, because
+a silent download would turn a one-line config error into 389 MB of network
+traffic behind the caller's back.
+
+(History: 0.6.0-0.7.x carried an interim `opacity_mode="ckd"` that built
+k-tables locally from HITRAN at R = 700,000; the numbers above were measured
+with it and validate the correlated-k machinery itself. It was removed in
+0.8.0 -- ExoMolOP superseded its line data, which was measurably wrong for a
+hot hydrogen atmosphere in the three ways the next section quantifies.)
+
+Mixtures use **random-overlap resort-rebin** (`ckd.overlap`). exojax 2.2.3
+ships no overlap treatment at all: `opacity_profile_xs_ckd` takes one species,
+and tables have to be per species because the composition changes every run.
+The rebin is written in JAX and is differentiable, so forward-mode tangents
+still reach the spectrum.
+
+### Emission uses it too (0.7.0), and needed it more
+
+Emission was hit far harder than transmission, because flux carries
+`exp(-tau)` where a transit depth carries `ln(tau)`: the same "too opaque"
+sampling bias that costs transmission a percent-level contrast error
+suppresses most of the emergent flux. Measured over 3-5 um against an
+R = 700,000 emission reference on the identical atmosphere:
+
+| opacity path | band-integrated flux | rms per R=100 bin | spectral contrast |
+|---|---|---|---|
+| R = 1,477 sampled | **45%** of correct | 58.7% | 69.9% |
+| correlated-k | 100.5% of correct | 1.9% | 47.3% |
+| R = 700,000 reference | (definition) | -- | 47.5% |
+
+The path is `_run_emis_ckd_linsap`, **not** exojax's `ArtEmisPure.run_ckd` --
+upstream's version hard-codes `rtrun_emis_pureabs_ibased`, the solver with no
+interior source term, and calling it would silently undo the `ibased_linsap`
+fix (measured: it returns 22-99% less flux on a thin column). Ours is
+upstream's own flatten-solve-reweight with `ibased_linsap` substituted.
+
+Emission's 1.9% is looser than transmission's 32 ppm (0.16%), and that is
+physics rather than a plumbing defect: a transit depth is a chord integral
+that saturates, while the emergent flux weights every layer by a source
+function, so it feels the correlated-k assumption -- that the k-ordering is
+the same at every level -- much more directly. The worst bins are 4.2-4.4 um,
+the CO2 band edge, which is exactly where a strong band's wings decorrelate
+across the column. For scale, the single-radius eclipse prefactor this engine
+already documents is a ~5% effect on the same spectrum.
+
+## Opacity data: ExoMolOP, not HITRAN
+
+Correlated-k fixed HOW the opacity is integrated. It did not fix WHAT is
+integrated, and the line data was wrong for this problem in three measured
+ways, all pushing opacity DOWN in the windows and so inflating contrast:
+
+| defect | measured |
+|---|---|
+| HITRAN is a 296 K database | H2O band-mean cross section vs POKAZATEL at 1200 K: 0.01 dex low in the 2.7 um core, 0.20 at 1.65, 0.45 at 3.7, **0.85 dex at 1.03 um** |
+| the perturber was terrestrial **air**, in a hydrogen atmosphere | CO2's H2/He Lorentz widths are **1.46x** the air widths at 100% line coverage; **H2O has 0% H2/He coverage in HITRAN**, so `broadening="h2he"` returns a ratio of exactly 1.000 and cannot fix the dominant absorber |
+| 5 species | against the published comparison model's 24 |
+
+**ExoMolOP** (Chubb et al. 2021, A&A 646, A21) closes all three at once. It
+publishes pre-computed opacities for ~80 species, built from the ExoMol and
+HITEMP high-temperature line lists with H2/He broadening already applied, free
+and with no account, in each RT code's native format. Fetch them once:
+
+    python -m vulcan_forward.fetch_exomolop --molecules H2O,CO2,CO,CH4,SO2,H2S
+
+About 389 MB per species into `$VULCAN_FORWARD_DATA/exomolop/`, with a
+`provenance.json` recording which ExoMol dataset each file came from. The
+download URLs are resolved by walking ExoMolOP's pages, never guessed: the
+filenames do not follow one pattern (H2O uses `__R1000`, everything else
+`.R1000`). Where ExoMolOP publishes a natural-abundance file it is preferred
+over the principal isotopologue, because VULCAN tracks a total molecular VMR.
+
+`vulcan_forward.exomolop` is an adapter, not a second opacity implementation:
+it returns the pack the correlated-k core (`vulcan_forward.ckd`) consumes, so
+the random-overlap mixing, the (T, P) interpolation and both solvers are
+shared code. Two things
+about their tables genuinely differ and both are handled rather than assumed:
+their quadrature is petitRADTRANS' split scheme (8 Gauss-Legendre points on
+[0, 0.9] plus 8 on [0.9, 1], which resolves the strong-line tail better than a
+flat rule), and their pressure grid stops at 1e-5 bar so layers above it reuse
+that entry, which `load_tables` prints. Their units were verified empirically
+against our own HITRAN table rather than taken on trust: cm^2 per molecule.
+
+Measured on WASP-39 b with the published Tsai et al. 2023 chemistry, T-P,
+geometry and grid held fixed, R = 100 over 1.02-5.26 um:
+
+| opacity | spectral amplitude | vs the PRISM data |
+|---|---|---|
+| R = 1,477 sampled, HITRAN | 1256 ppm | 2.80x |
+| R = 700,000, HITRAN | 870 ppm | 1.94x |
+| ExoMolOP, 5 species | 695 ppm | 1.55x |
+| ExoMolOP, + H2S | 663 ppm | 1.48x |
+| published gCMCRT | 622 ppm | 1.39x |
+| the data itself | 448 ppm | 1.00x |
+
+## The transmission RT is verified against petitRADTRANS
+
+The engine's transmission path was checked against petitRADTRANS 3.4.0 reading
+the **same k-table file**, so only the radiative transfer differs. Transit
+radius, R = 100 to R = 1000, cloud-free:
+
+| case | exojax vs pRT amplitude | rms |
+|---|---|---|
+| isothermal 1000 K, H2O only | 1.0002 | 0.0013% |
+| isothermal 1000 K, 6 species | 1.0010 | 0.021% |
+| Tsai et al. 2023 W39 b profile, 8 species | 0.986 | 24 ppm on 23,000 ppm |
+
+Against the closed-form grey-absorber solution (Lecavelier des Etangs et al.
+2008; de Wit & Seager 2013), with H/R small enough that the constant-gravity
+assumption of that formula holds, `art.run` reproduces the analytic transit
+radius to **0.012 scale heights** over five decades of opacity, with the exact
+`dz/dln(kappa) = H` slope.
+
+Hydrostatic geometry agrees with pRT to 0.04% in radius, and with Tsai et al.'s
+own published z column to 0.5% in z(P) and a few percent in scale height across
+the photosphere.
+
+## Emission is verified the same way
+
+Two checks, both on the emission path this package actually ships
+(`_run_emis_ckd_linsap`):
+
+- **Blackbody limit.** An isothermal column must emit exactly `pi*B(T)`
+  wherever it is optically thick, whatever the opacity is. Measured at total
+  optical depths of 1e2, 1e4 and 1e6: max error **6.7e-16**, machine precision.
+- **Against petitRADTRANS**, same H2O k-table, a 900-2200 K profile over 1e-6
+  to 100 bar, 3-5 um: bias **+0.034%**, rms 0.020%, worst band 0.091%,
+  band-integrated flux ratio 1.00036, and the spectral contrast (std/mean)
+  ratio 1.0004.
+
+Units, since they are the usual trap: exojax returns flux per cm^-1 and
+petitRADTRANS (`frequencies_to_wavelengths=True`) returns flux per cm of
+wavelength. Convert with `F_lambda = F_nu_tilde * nu_tilde^2`.
+
+## Comparing against the published gCMCRT spectra
+
+Driven by the published Tsai et al. 2023 chemistry, T-P profile and geometry,
+R = 100 over 3.05-4.95 um, terminator-averaged:
+
+| | std | amplitude |
+|---|---|---|
+| published gCMCRT | 538 ppm | 2185 ppm |
+| this engine | 622 ppm | 2361 ppm |
+| the PRISM data | 444 ppm | 1776 ppm |
+
+Amplitude ratio to the published spectrum 1.080, std ratio 1.155, shape
+correlation 0.9949, and the scatter about a fitted offset is 102 ppm, 19% of the
+spectral variation. The SO2-only differential the Zenodo set allows (east minus
+east_nSO2) agrees to the same 7%: 233 ppm peak here against their 218 ppm.
+
+Both models are cloud-free and both exceed the data's amplitude, the published
+one by 1.04-1.11x and this engine by 1.18-1.23x. With the usual fitted offset,
+chi2/N is 1.56 for the published spectrum and 2.65 here on G395H; 1.83 and 3.58
+on PRISM over 3.05-4.95 um.
+
+### Reading the published spectra correctly
+
+**This is the single biggest trap in the whole comparison, and getting it wrong
+manufactures a 2.2x discrepancy that is not real.** The convention is fixed by
+gCMCRT's own source, `src_gCMCRT/exp_3D_sph_atm_trans.f90`:
+
+- L306 writes the header: `n_wl, H(1), H(n_lev)`, the grid's INNER and OUTER
+  radii in cm.
+- L403 sets `norm = (H(n_lev)^2 - H(1)^2) / (2 * Nph)`.
+- L429 writes `wl, norm*T_trans, norm*T_trans_east, norm*T_trans_west`.
+- `mc_k_source_pac_inc.f90` L86 samples the impact parameter uniformly in b^2,
+  and `mc_k_raytrace.f90` L274-277 sets each packet's contribution to
+  `wght * (1 - exp(-tau))`.
+
+So column 2 is the Monte Carlo estimate of `int (1 - T(b)) b db`, an area over
+2 pi, and the transit depth is
+
+    depth = (H(1)^2 + 2 * col2) / Rstar^2
+
+with `H(1)` the header's FIRST number, per file. Not `R_ref^2 + col2`: that
+drops a factor of two on the atmospheric annulus and anchors to the wrong
+radius, which halves the apparent amplitude.
+
+Three independent checks that the above is right: it is what the source says; it
+puts their 3-5 um photosphere at 7.1 to 0.0195 mbar, matching the paper's own
+statement that transmission probes "between 10 and 0.01 mbar", where the wrong
+reading gives 4 to 0.195 mbar; and it brings the amplitude into 8% agreement
+with two independent radiative transfer codes instead of 2.2x disagreement.
+
+Note that `H(1)` differs per file because the runs use different grid bottoms
+(8.459827e9 for the full-range VULCAN east file, 9.143827e9 for the G395H one),
+so two published files are NOT directly comparable without applying each file's
+own header.
 
 ## The exojax version
 

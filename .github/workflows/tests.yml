@@ -33,7 +33,7 @@ jobs:
       # fixed index, which is the contract most expensive to break silently.
       - name: Install (contract only, no exojax)
         run: |
-          pip install pytest numpy "jax>=0.6"
+          pip install pytest numpy "jax>=0.6" h5py
           pip install --no-deps -e .
       - name: Run contract tests
         run: python -m pytest tests -q -ra

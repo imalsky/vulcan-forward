@@ -126,3 +126,122 @@ def test_is_differentiable_through_the_boundary_source():
 
     d = float(jax.grad(f)(float(T[-1])))
     assert np.isfinite(d) and d > 0.0
+
+
+# --------------------------------------------------------------------------
+# Correlated-k emission (v0.7.0)
+#
+# Before 0.7.0 this path did not exist: build_emis_model REFUSED a CKD parent,
+# because exojax's own ArtEmisPure.run_ckd hard-codes the "ibased" solver and
+# would have silently undone the interior-source fix above. So emission stayed
+# on sampled line-by-line at R = 1,477 and kept the full grid bias that
+# transmission had just been fixed for.
+#
+# _run_emis_ckd_linsap is upstream's flatten-solve-reweight with "ibased_linsap"
+# in its place. The tests below pin the two things that can regress silently:
+# the flatten/tile index convention (a transpose here mixes bands into
+# g-ordinates and still returns plausible numbers), and the presence of the
+# interior term.
+# --------------------------------------------------------------------------
+
+from vulcan_forward.exojax_rt import _run_emis_ckd_linsap    # noqa: E402
+from vulcan_forward import ckd                               # noqa: E402
+
+
+def _gquad(ng=16):
+    g, w = ckd.gauss_legendre(ng)
+    return jnp.asarray(g), jnp.asarray(w)
+
+
+def test_ckd_emission_matches_line_by_line_when_every_g_is_identical():
+    """If k does not vary across the band, the k-distribution is degenerate and
+    the CKD flux MUST equal the plain line-by-line flux on the same bands.
+
+    This is the index-convention test. dtau is reshaped (nlayer, ng*nband) and
+    the source is tiled along its last axis; if either side flattened
+    band-major instead of g-major, bands would be paired with the wrong source
+    and this identity would break. Measured max relative difference: 3.3e-16.
+    """
+    art = _art()
+    ng = 16
+    gg, gw = _gquad(ng)
+    rng = np.random.default_rng(0)
+    base = np.abs(rng.lognormal(-3.0, 1.5, size=(NLAYER, NU.size)))
+    T = jnp.asarray(np.linspace(900.0, 2600.0, NLAYER))
+    Tb = _boundary_temperature(T)
+
+    dtau_g = jnp.asarray(np.repeat(base[:, None, :], ng, axis=1))
+    got = np.asarray(_run_emis_ckd_linsap(art, dtau_g, Tb, NU, gw))
+    want = np.asarray(art.run(jnp.asarray(base), Tb))
+    assert np.allclose(got, want, rtol=1e-12, atol=0.0)
+
+
+def test_ckd_emission_keeps_the_interior_source_upstream_run_ckd_drops():
+    """The reason we do not call ArtEmisPure.run_ckd. On a thin column its
+    "ibased" solver loses the interior blackbody entirely; measured, it returns
+    22-99% less flux than the linsap version over the band. If this test ever
+    fails because the two agree, someone has routed emission back through
+    upstream's CKD entry point.
+    """
+    art = _art()
+    art_ibased = ArtEmisPure(nu_grid=NU, pressure_top=1e-8, pressure_btm=100.0,
+                             nlayer=NLAYER, rtsolver="ibased", nstream=8)
+    ng = 16
+    gg, gw = _gquad(ng)
+    T = jnp.asarray(np.linspace(900.0, 2600.0, NLAYER))
+    thin = jnp.full((NLAYER, ng, NU.size), 1e-4 / NLAYER)
+
+    ours = np.asarray(_run_emis_ckd_linsap(art, thin, _boundary_temperature(T),
+                                           NU, gw))
+    upstream = np.asarray(art_ibased.run_ckd(thin, T, gw, NU))
+    assert np.all(ours > upstream)
+    assert (1.0 - upstream / ours).min() > 0.05
+
+
+def test_ckd_emission_is_not_the_same_as_using_the_band_mean_opacity():
+    """Sanity that the k-distribution is doing work. A real k(g) spread at
+    FIXED band-mean optical depth must give a different flux from running that
+    mean directly -- that gap (measured 24-38% here) is precisely the grey
+    within-band averaging error correlated-k exists to remove. If these agreed,
+    the g-axis would be decorative.
+    """
+    art = _art()
+    ng = 16
+    gg, gw = _gquad(ng)
+    rng = np.random.default_rng(1)
+    w = np.asarray(gw)
+    base = np.abs(rng.lognormal(-3.0, 1.5, size=(NLAYER, NU.size)))
+    T = jnp.asarray(np.linspace(900.0, 2600.0, NLAYER))
+    Tb = _boundary_temperature(T)
+
+    kg = np.sort(rng.lognormal(0.0, 2.0, size=(NLAYER, ng, NU.size)), axis=1)
+    kg *= base[:, None, :] / np.einsum("g,lgb->lb", w, kg)[:, None, :]
+    spread = np.asarray(_run_emis_ckd_linsap(art, jnp.asarray(kg), Tb, NU, gw))
+    grey = np.asarray(art.run(jnp.asarray(base), Tb))
+    assert np.median(np.abs(spread / grey - 1.0)) > 0.05
+
+
+def test_ckd_emission_tangent_sign_follows_the_lapse_rate():
+    """Differentiability plus a physics check in one. More opacity moves the
+    photosphere UP; on a normal profile that is into cooler gas so the flux
+    dims, and on an inversion it is into hotter gas so the flux brightens.
+    Getting both signs right is what shows the solver tracks where the
+    photosphere actually sits, rather than merely returning a finite number.
+    """
+    art = _art()
+    ng = 8
+    gg, gw = _gquad(ng)
+    rng = np.random.default_rng(2)
+    base = np.abs(rng.lognormal(-3.0, 1.5, size=(NLAYER, NU.size)))
+    dtau_g = jnp.asarray(np.repeat(base[:, None, :], ng, axis=1))
+
+    # index 0 is the TOP of exojax's column
+    for t_top, t_btm in ((900.0, 2600.0), (2600.0, 900.0)):
+        Tb = _boundary_temperature(jnp.asarray(np.linspace(t_top, t_btm, NLAYER)))
+
+        def f(scale, _Tb=Tb):
+            return jnp.sum(_run_emis_ckd_linsap(art, dtau_g * scale, _Tb, NU, gw))
+
+        _, tan = jax.jvp(f, (1.0,), (1.0,))
+        assert np.isfinite(float(tan)) and float(tan) != 0.0
+        assert (float(tan) < 0.0) == (t_top < t_btm), (t_top, t_btm, float(tan))
