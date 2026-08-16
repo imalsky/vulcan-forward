@@ -350,8 +350,11 @@ H2S 0.001, and SO2, the subject of their paper, 0.006.
 
 The three species with visible photosphere differences (CH4 0.072, H2S
 0.134, SO2 0.144 dex) are the quench- and photochemistry-sensitive ones,
-and the difference is model-domain provenance, not the solver: their model
-spans 50 to 5e-9 bar where this configuration runs 7.6 to 1e-7 bar. Two
+and the difference is input provenance, not the solver: their model spans
+50 to 5e-9 bar where this configuration runs 7.6 to 1e-7 bar, and the
+shipped Kzz table constant-extends above its 5.35e-6 bar top row where
+their Kzz formula keeps rising (up to 7x stronger mixing in the overlap's
+top 1.3 decades). Two
 matched-input controls pin that down. Upstream VULCAN run here on
 byte-identical inputs agrees to **0.0048 dex** median (89 species, and it
 reproduces the recorded 1202-step convergence). And on the Wogan et al.
