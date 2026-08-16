@@ -154,6 +154,40 @@ def test_transmission_w39b_8species_matches_prt():
     _assert_stats(r, meta, "Tsai W39b 8-species depth vs pRT")
 
 
+def test_emission_isothermal_atmosphere_radiates_pi_planck():
+    """Absolute physics check, no reference code involved: an isothermal
+    pure-absorption column must emit exactly pi*B(T) at every wavenumber,
+    INDEPENDENT of its opacity (the source equals the sink everywhere, so k
+    cancels). Measured through the full public path with real H2O k-tables:
+    machine precision, max |ratio-1| = 6.7e-16 at VMR 1e-3 and 1e-5 alike.
+    A g-weight normalization error, a flux unit slip, or a wrong boundary
+    temperature each break this by orders of magnitude, which is why the
+    tolerance is 1e-12 and not something forgiving."""
+    nlay = 80
+    prof = dict(molecules=["H2O"], nu_min=1.0e4 / 5.0, nu_max=1.0e4 / 3.0,
+                opacity_mode="exomolop", art_nlayer=nlay,
+                art_ptop_bar=1.0e-6, art_pbtm_bar=1.0e2,
+                rp_cm=100 * 7.1492e9, gs_cgs=1.0e3, rstar_cm=RSTAR_W39)
+    trt = exojax_rt.build_rt_model(prof)
+    emod = exojax_rt.build_emis_model(trt, prof)
+    from exojax.rt.planck import piBarr
+    T = 1500.0
+    zeros = jnp.zeros(nlay)
+    want = np.asarray(piBarr(jnp.asarray([T]), jnp.asarray(emod.nu_grid)))[0]
+    flux = {vmr: np.asarray(emod.emission_flux(
+                {"H2O": jnp.full(nlay, vmr)}, zeros, jnp.full(nlay, T),
+                jnp.full(nlay, 2.33), vmr_he=zeros))
+            for vmr in (1.0e-3, 1.0e-5)}
+    for vmr, f in flux.items():
+        dev = np.max(np.abs(f / want - 1.0))
+        assert dev < 1e-12, (
+            f"isothermal column at VMR {vmr:.0e} deviates from pi*B(T) by "
+            f"{dev:.3e}; the emission path has a normalization, unit, or "
+            "boundary-source error")
+    assert np.max(np.abs(flux[1.0e-3] / flux[1.0e-5] - 1.0)) < 1e-12, (
+        "isothermal flux depends on opacity; k must cancel exactly")
+
+
 def test_emission_h2o_matches_prt():
     z, meta = _load("prt_ref_emission_h2o.npz")
     nlay = 80
