@@ -318,58 +318,52 @@ geometry and grid held fixed, R = 100 over 1.02-5.26 um:
 
 ## Validation
 
-Six figures, code-to-code first. The chemistry (computed by `vulcan-jax`,
-which this package drives) is checked against VULCAN runs published by the
-code's own authors; the radiative transfer is checked against petitRADTRANS
-3.4.0 on identical inputs and against two closed-form answers. Comparisons
-to observed spectra are an appendix: real data folds in aerosols, the
+Code-to-code, one figure per claim. The chemistry (computed by
+`vulcan-jax`, which this package drives) is checked against VULCAN 2.0 on
+identical inputs, with the authors' published runs as secondary numeric
+checks; the radiative transfer is checked against petitRADTRANS 3.4.0 on
+identical inputs and against two closed-form answers. Comparisons to
+observed spectra are an appendix: real data folds in aerosols, the
 reduction, and correlated noise, which these tests are not trying to
 measure.
 
 | test | agreement |
 |---|---|
-| Chemistry, WASP-39 b vs Tsai et al. 2023 | 0.068 dex median (photosphere) |
-| Chemistry, HD 189733 b vs Tsai et al. 2021 | 0.0046 dex median |
-| Chemistry, upstream VULCAN on byte-identical inputs | 0.0048 dex median |
+| Chemistry, the port vs VULCAN 2.0, identical inputs | max abs VMR diff 1.2e-08 |
+| Chemistry, upstream VULCAN run here, byte-identical inputs | 0.0048 dex median |
 | Chemistry, archived VULCAN, matched inputs (Wogan et al.) | 0.01-0.05 dex per species |
+| Chemistry, WASP-39 b vs Tsai et al. 2023's released output | 0.068 dex median (photosphere) |
+| Chemistry, HD 189733 b vs Tsai et al. 2021's released output | 0.0046 dex median |
 | Transmission vs petitRADTRANS, same k-tables | mean ratio 1.00003, rms 0.0013% |
 | Emission vs petitRADTRANS, same k-tables | mean ratio 1.00034, rms 0.020% |
 | Transmission vs the analytic grey solution | 0.016 scale heights over 7 decades |
 | Emission vs the blackbody limit | 6.7e-16, machine precision |
 | Four real planets, both geometries, vs petitRADTRANS | 0.02-0.57% rms |
 
-### Chemistry against the authors' published VULCAN runs
+### Chemistry: the port against VULCAN 2.0
 
-![WASP-39 b chemistry vs Tsai et al. 2023](validation/figures/chemistry_wasp39b_vs_tsai2023.png)
+![VULCAN 3.0 vs VULCAN 2.0, identical inputs](validation/figures/chemistry_w39b_vulcan2_vs_vulcan3.png)
 
-WASP-39 b against the run Tsai et al. 2023 (Nature 617, 483) released with
-the paper: same T-P table, 10x solar, SNCHO network. **0.068 dex** median
-over 11 species in the transmission photosphere (shaded). At the abundance
-peaks, which are what a spectrum sees: H2O and CO 0.000 dex, CH4 0.002,
-H2S 0.001, and SO2, the subject of their paper, 0.006.
+The port question ("does VULCAN 3.0 compute what VULCAN 2.0 computes")
+is answered on identical inputs: the WASP-39 b run pair from the
+paper-match rework (same network bytes, same T-P/Kzz, same domain,
+`jax_paper/data/W39b_paper_match_comparison.md`) agrees to a
+**maximum absolute VMR difference of 1.2e-08** across all 89 species and
+150 layers; every per-species median |dlog10| rounds to 0.000000. A
+second, independent control reaches the same verdict: a clean clone of
+upstream VULCAN run here on byte-identical staged inputs agrees to
+0.0048 dex median and reproduces the recorded 1202-step convergence.
 
-The three species with visible photosphere differences (CH4 0.072, H2S
-0.134, SO2 0.144 dex) are the quench- and photochemistry-sensitive ones,
-and the difference is input provenance, not the solver: their model spans
-50 to 5e-9 bar where this configuration runs 7.6 to 1e-7 bar, and the
-shipped Kzz table constant-extends above its 5.35e-6 bar top row where
-their Kzz formula keeps rising (up to 7x stronger mixing in the overlap's
-top 1.3 decades). Two
-matched-input controls pin that down. Upstream VULCAN run here on
-byte-identical inputs agrees to **0.0048 dex** median (89 species, and it
-reproduces the recorded 1202-step convergence). And on the Wogan et al.
-re-run of this planet (11 bar to 5e-9 bar, their Kzz), VULCAN-JAX equals
-local VULCAN-master to 0.000 dex and both match the archived published
-VULCAN output to 0.01-0.05 dex per species, SO2 at 0.012
-(`jax_paper/data/W39b_paper_match_comparison.md`).
-
-![HD 189733 b chemistry vs Tsai et al. 2021](validation/figures/chemistry_hd189733b_vs_tsai2021.png)
-
-HD 189733 b against Tsai et al. 2021 (ApJ 923, 264), matched to their
-released config key for key: **0.0046 dex** median for the 17 species
-peaking above 1e-6, over 11 decades of pressure. A different planet and a
-different network (NCHO, no sulfur), so the WASP-39 b agreement is not a
-one-case coincidence.
+Agreement against the authors' *released* outputs is a different, weaker
+class of comparison (their 2021/2023-era code and rate files, their
+deeper-and-higher domains) and is quoted as numbers, not figures:
+WASP-39 b vs Tsai et al. 2023 at 0.068 dex median in the transmission
+photosphere (H2O and CO 0.000 dex at their peaks, SO2 0.006; the
+CH4/H2S/SO2 residuals trace to their 50-to-5e-9-bar domain and the
+shipped Kzz table's constant extension above 5.35e-6 bar), and
+HD 189733 b vs Tsai et al. 2021 at 0.0046 dex median (different planet,
+different network). Profile-level figures for both live in the
+maintainer's validation bundle.
 
 ### The transmission RT is verified against petitRADTRANS
 
@@ -449,14 +443,12 @@ chi2/N = 1.3 for their best-fit model). Every dataset improved with the
 ExoMolOP opacity switch: WASP-39 b PRISM chi2/N 60.4 to 7.7 with the
 contrast excess falling 1.80 to 1.17; HD 189733 b emission 930 to 24.
 
-![WASP-39 b before and after the radius-anchoring fix](validation/figures/wasp39b_before_after_vs_ers.png)
-
-The record of the headline finding from the 2026-08-14 validation pass:
-the first time the forward model met a published spectrum, the WASP-39 b
-transit depth was 25% high with twice the spectral contrast, from a radius
-anchored at the 7 bar column bottom instead of the millibar photosphere.
-The chi2 numbers printed on this figure are HITRAN-era; the current
-default scores 7.7 on the same bins (figure above).
+(The 2026-08-14 validation pass also caught a geometry bug here: the
+radius used to anchor at the 7 bar column bottom instead of the millibar
+photosphere, putting the transit depth 25% high. The fix is the
+`p_ref_bar` section above; the historical before/after figure lives in
+the maintainer's validation bundle, with HITRAN-era scores superseded by
+the table above.)
 
 ### Comparing against the published gCMCRT spectra
 
