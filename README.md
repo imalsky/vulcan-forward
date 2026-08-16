@@ -340,6 +340,20 @@ Units, since they are the usual trap: exojax returns flux per cm^-1 and
 petitRADTRANS (`frequencies_to_wavelengths=True`) returns flux per cm of
 wavelength. Convert with `F_lambda = F_nu_tilde * nu_tilde^2`.
 
+### Reference fixtures keep this verification testable
+
+Three of the comparisons above are pinned as end-to-end tests
+(`tests/test_e2e_rt_reference.py`): the isothermal H2O transit radius, the
+Tsai et al. 2023 WASP-39 b 8-species transit depth, and the H2O emission
+flux, each asserted per band against a committed petitRADTRANS spectrum in
+`tests/data/prt_ref_*.npz`. Each fixture's `meta` (JSON inside the npz)
+records the pRT version, the opacity files, the case constants, the full
+generating pRT script, the achieved agreement and the asserted tolerances
+(3x achieved). petitRADTRANS is never a test dependency; the pRT side
+regenerates from the recorded scripts. A numpy-only companion
+(`tests/test_e2e_fixtures.py`) runs in the dependency-light CI and refuses
+silently regenerated or incomplete fixtures.
+
 ## Comparing against the published gCMCRT spectra
 
 Driven by the published Tsai et al. 2023 chemistry, T-P profile and geometry,
