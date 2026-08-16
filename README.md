@@ -316,7 +316,61 @@ geometry and grid held fixed, R = 100 over 1.02-5.26 um:
 | published gCMCRT | 622 ppm | 1.39x |
 | the data itself | 448 ppm | 1.00x |
 
-## The transmission RT is verified against petitRADTRANS
+## Validation
+
+Six figures, code-to-code first. The chemistry (computed by `vulcan-jax`,
+which this package drives) is checked against VULCAN runs published by the
+code's own authors; the radiative transfer is checked against petitRADTRANS
+3.4.0 on identical inputs and against two closed-form answers. Comparisons
+to observed spectra are an appendix: real data folds in aerosols, the
+reduction, and correlated noise, which these tests are not trying to
+measure.
+
+| test | agreement |
+|---|---|
+| Chemistry, WASP-39 b vs Tsai et al. 2023 | 0.068 dex median (photosphere) |
+| Chemistry, HD 189733 b vs Tsai et al. 2021 | 0.0046 dex median |
+| Chemistry, upstream VULCAN on byte-identical inputs | 0.0048 dex median |
+| Chemistry, archived VULCAN, matched inputs (Wogan et al.) | 0.01-0.05 dex per species |
+| Transmission vs petitRADTRANS, same k-tables | mean ratio 1.00003, rms 0.0013% |
+| Emission vs petitRADTRANS, same k-tables | mean ratio 1.00034, rms 0.020% |
+| Transmission vs the analytic grey solution | 0.016 scale heights over 7 decades |
+| Emission vs the blackbody limit | 6.7e-16, machine precision |
+| Four real planets, both geometries, vs petitRADTRANS | 0.02-0.57% rms |
+
+### Chemistry against the authors' published VULCAN runs
+
+![WASP-39 b chemistry vs Tsai et al. 2023](validation/figures/chemistry_wasp39b_vs_tsai2023.png)
+
+WASP-39 b against the run Tsai et al. 2023 (Nature 617, 483) released with
+the paper: same T-P table, 10x solar, SNCHO network. **0.068 dex** median
+over 11 species in the transmission photosphere (shaded). At the abundance
+peaks, which are what a spectrum sees: H2O and CO 0.000 dex, CH4 0.002,
+H2S 0.001, and SO2, the subject of their paper, 0.006.
+
+The three species with visible photosphere differences (CH4 0.072, H2S
+0.134, SO2 0.144 dex) are the quench- and photochemistry-sensitive ones,
+and the difference is model-domain provenance, not the solver: their model
+spans 50 to 5e-9 bar where this configuration runs 7.6 to 1e-7 bar. Two
+matched-input controls pin that down. Upstream VULCAN run here on
+byte-identical inputs agrees to **0.0048 dex** median (89 species, and it
+reproduces the recorded 1202-step convergence). And on the Wogan et al.
+re-run of this planet (11 bar to 5e-9 bar, their Kzz), VULCAN-JAX equals
+local VULCAN-master to 0.000 dex and both match the archived published
+VULCAN output to 0.01-0.05 dex per species, SO2 at 0.012
+(`jax_paper/data/W39b_paper_match_comparison.md`).
+
+![HD 189733 b chemistry vs Tsai et al. 2021](validation/figures/chemistry_hd189733b_vs_tsai2021.png)
+
+HD 189733 b against Tsai et al. 2021 (ApJ 923, 264), matched to their
+released config key for key: **0.0046 dex** median for the 17 species
+peaking above 1e-6, over 11 decades of pressure. A different planet and a
+different network (NCHO, no sulfur), so the WASP-39 b agreement is not a
+one-case coincidence.
+
+### The transmission RT is verified against petitRADTRANS
+
+![RT vs petitRADTRANS and theory](validation/figures/rt_verification_vs_petitradtrans.png)
 
 The engine's transmission path was checked against petitRADTRANS 3.4.0 reading
 the **same k-table file**, so only the radiative transfer differs. Transit
@@ -338,7 +392,7 @@ Hydrostatic geometry agrees with pRT to 0.04% in radius, and with Tsai et al.'s
 own published z column to 0.5% in z(P) and a few percent in scale height across
 the photosphere.
 
-## Emission is verified the same way
+### Emission is verified the same way
 
 Two checks, both on the emission path this package actually ships
 (`_run_emis_ckd_linsap`):
@@ -355,7 +409,7 @@ Units, since they are the usual trap: exojax returns flux per cm^-1 and
 petitRADTRANS (`frequencies_to_wavelengths=True`) returns flux per cm of
 wavelength. Convert with `F_lambda = F_nu_tilde * nu_tilde^2`.
 
-### Reference fixtures keep this verification testable
+#### Reference fixtures keep this verification testable
 
 Three of the comparisons above are pinned as end-to-end tests
 (`tests/test_e2e_rt_reference.py`): the isothermal H2O transit radius, the
@@ -369,7 +423,39 @@ regenerates from the recorded scripts. A numpy-only companion
 (`tests/test_e2e_fixtures.py`) runs in the dependency-light CI and refuses
 silently regenerated or incomplete fixtures.
 
-## Comparing against the published gCMCRT spectra
+### Both geometries, four planets, the tool's own atmospheres
+
+![RT across four planets](validation/figures/rt_verification_six_atmospheres.png)
+
+The atmospheres the JWST tool itself converges to (P, T, mean molecular
+weight, all VMRs, geometry) handed identically to both codes, four planets
+spanning g = 270-2190 cm/s^2 and T = 637-2246 K, over 3.03-5.17 um where
+CIA and Rayleigh measure under 1 ppm. Transmission agrees to 0.02-0.25%
+rms with mean ratios 0.998-1.000; emission to 0.18-0.57% rms. Feature
+amplitude, the quantity a detection significance depends on, agrees to
+0.5-2.2%.
+
+### Appendix: against observed spectra
+
+![Six published datasets](validation/figures/observed_spectra_v30.png)
+
+Context, not the validation. Each model is blurred to the instrument
+line-spread function, integrated exactly over the published bins, and
+scored with one estimator (validated by recovering the ERS team's own
+chi2/N = 1.3 for their best-fit model). Every dataset improved with the
+ExoMolOP opacity switch: WASP-39 b PRISM chi2/N 60.4 to 7.7 with the
+contrast excess falling 1.80 to 1.17; HD 189733 b emission 930 to 24.
+
+![WASP-39 b before and after the radius-anchoring fix](validation/figures/wasp39b_before_after_vs_ers.png)
+
+The record of the headline finding from the 2026-08-14 validation pass:
+the first time the forward model met a published spectrum, the WASP-39 b
+transit depth was 25% high with twice the spectral contrast, from a radius
+anchored at the 7 bar column bottom instead of the millibar photosphere.
+The chi2 numbers printed on this figure are HITRAN-era; the current
+default scores 7.7 on the same bins (figure above).
+
+### Comparing against the published gCMCRT spectra
 
 Driven by the published Tsai et al. 2023 chemistry, T-P profile and geometry,
 R = 100 over 3.05-4.95 um, terminator-averaged:
@@ -390,7 +476,7 @@ one by 1.04-1.11x and this engine by 1.18-1.23x. With the usual fitted offset,
 chi2/N is 1.56 for the published spectrum and 2.65 here on G395H; 1.83 and 3.58
 on PRISM over 3.05-4.95 um.
 
-### Reading the published spectra correctly
+#### Reading the published spectra correctly
 
 **This is the single biggest trap in the whole comparison, and getting it wrong
 manufactures a 2.2x discrepancy that is not real.** The convention is fixed by
