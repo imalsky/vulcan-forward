@@ -19,10 +19,26 @@ of physical invariants, with no line lists, no opacity build and no network.
 """
 from __future__ import annotations
 
+import importlib.util
+
 import numpy as np
 import pytest
 
+# The geometry helpers live in exojax_rt, whose MODULE imports exojax -- so
+# light CI (jax but no exojax) must skip here, and the import-order contract
+# applies (see CLAUDE.md): check with find_spec, never importorskip("exojax"),
+# and load vulcan_chem before anything exojax.
+if importlib.util.find_spec("exojax") is None:              # pragma: no cover
+    pytest.skip("exojax not installed (light-CI environment)",
+                allow_module_level=True)
 pytest.importorskip("jax", reason="the RT geometry helpers are JAX code")
+if importlib.util.find_spec("vulcan_jax") is not None:      # pragma: no cover
+    from vulcan_forward import vulcan_chem  # noqa: F401
+else:                                                        # pragma: no cover
+    import jax as _jax
+
+    _jax.config.update("jax_enable_x64", True)
+
 import jax.numpy as jnp                                    # noqa: E402
 
 from vulcan_forward import constants                       # noqa: E402
