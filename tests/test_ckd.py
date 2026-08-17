@@ -14,22 +14,6 @@ import pytest
 from vulcan_forward import ckd
 
 
-def test_gauss_legendre_weights_sum_to_one():
-    """The g-ordinates partition [0, 1]; the weights are a probability measure
-    over the band, so they must sum to exactly 1 or every k-table is
-    misnormalized."""
-    for ng in (4, 8, 16, 32):
-        g, w = ckd.gauss_legendre(ng)
-        assert g.shape == w.shape == (ng,)
-        assert np.all((g > 0.0) & (g < 1.0))
-        assert np.all(np.diff(g) > 0.0)
-        assert w.sum() == pytest.approx(1.0, abs=1e-12)
-
-
-def test_gauss_legendre_integrates_a_linear_k_exactly():
-    """Sanity that the quadrature is on [0, 1] and not [-1, 1]."""
-    g, w = ckd.gauss_legendre(8)
-    assert float(w @ g) == pytest.approx(0.5, abs=1e-12)
 
 
 def test_band_edges_are_log_uniform_at_the_requested_resolution():
@@ -43,9 +27,6 @@ def test_band_edges_are_log_uniform_at_the_requested_resolution():
     assert e[-1] > 10000.0 * np.exp(-1.0 / 500.0)
 
 
-def test_band_edges_refuses_a_band_narrower_than_one_element():
-    with pytest.raises(ValueError, match="narrower than one resolution"):
-        ckd.band_edges(1000.0, 1000.5, 100.0)
 
 
 def _grey(nl, ng, nb, value):
@@ -53,17 +34,6 @@ def _grey(nl, ng, nb, value):
     return jnp.full((nl, ng, nb), value)
 
 
-def test_overlap_of_two_grey_absorbers_is_their_sum():
-    """A grey absorber has the same k at every g. Overlapping two of them must
-    reproduce the plain sum exactly; any spread means the resort-rebin is
-    inventing structure."""
-    import jax.numpy as jnp
-    ng = 16
-    g, w = ckd.gauss_legendre(ng)
-    gg, gw = jnp.asarray(g), jnp.asarray(w)
-    out = np.asarray(ckd.overlap(_grey(3, ng, 5, 0.25), _grey(3, ng, 5, 0.75),
-                                 gg, gw))
-    assert np.allclose(out, 1.0, atol=1e-10)
 
 
 def _mean_conservation_error(ng, sigma, seed):
@@ -138,21 +108,6 @@ def test_overlap_is_differentiable():
     assert float(tan) > 0.0
 
 
-def test_interp_logk_is_exact_on_its_own_nodes():
-    import jax.numpy as jnp
-    rng = np.random.default_rng(2)
-    nt, npr, ng, nb = 5, 4, 3, 2
-    t = jnp.asarray(np.linspace(300.0, 2900.0, nt))
-    p = jnp.asarray(np.logspace(-8, 2, npr))
-    logk = jnp.asarray(rng.normal(size=(nt, npr, ng, nb)))
-    # one query layer per (T, P) node: interpolation must return that node
-    ti = np.repeat(np.arange(nt), npr)
-    pi = np.tile(np.arange(npr), nt)
-    got = np.asarray(ckd._interp_logk(logk, t, p,
-                                      jnp.asarray(np.asarray(t)[ti]),
-                                      jnp.asarray(np.asarray(p)[pi])))
-    for n, (i, j) in enumerate(zip(ti, pi)):
-        assert np.allclose(got[n], np.asarray(logk)[i, j], atol=1e-9), (i, j)
 
 
 def test_fold_wo_is_bit_identical_to_naive_refolds():

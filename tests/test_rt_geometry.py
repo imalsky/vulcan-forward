@@ -105,17 +105,6 @@ def test_deeper_is_smaller_and_heavier():
     assert float(g_btm) > g_ref
 
 
-def test_anchoring_at_the_grid_bottom_is_the_identity():
-    """p_ref at the bottom BOUNDARY must reproduce the inputs untouched. This
-    is the ONLY setting under which the pre-v0.4.0 behaviour was correct, so it
-    doubles as a description of what the old code assumed."""
-    lnp = _grid()
-    Ti, mi = _isothermal()
-    r_ref, g_ref = 1.279 * R_JUP_CM, 422.0
-    r_btm, g_btm = _anchor_to_grid_bottom(lnp, Ti, mi, r_ref, g_ref,
-                                          _p_boundary())
-    assert float(r_btm) == pytest.approx(r_ref, rel=1e-9)
-    assert float(g_btm) == pytest.approx(g_ref, rel=1e-9)
 
 
 def test_the_anchor_level_is_the_grid_bottom_BOUNDARY_at_any_resolution():

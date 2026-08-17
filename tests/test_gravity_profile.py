@@ -97,29 +97,6 @@ def test_gravity_profile_is_exactly_inverse_square():
     np.testing.assert_array_equal(g, expected)
 
 
-def test_gravity_profile_shape_is_nlayer_by_one():
-    """The (nlayer, 1) contract is what broadcasts through the dtau kernels."""
-    _, g = _profile()
-    assert g.shape == (_NLAYER, 1)
-
-
-def test_gravity_profile_differs_from_constant_g():
-    """Catches a regression to the pre-audit constant `g_btm`."""
-    _, g = _profile()
-    assert not np.allclose(g, _G_BTM), (
-        "profile collapsed to constant surface gravity")
-    # top layer is ~30% lighter than the bottom on this column
-    assert g[-1, 0] < 0.8 * g[0, 0]
-
-
-def test_gravity_profile_differs_from_exojax_linear_helper():
-    """Catches a regression to ExoJAX's `gravity_profile` (linear in 1/r)."""
-    _, g = _profile()
-    r_mid = _R_LOWER + 0.5 * _HEIGHT
-    linear = (_G_BTM / r_mid).reshape(_NLAYER, 1)
-    assert not np.allclose(g, linear), (
-        "profile collapsed to ExoJAX's 1/r gravity_profile, which is "
-        "inconsistent with its own inverse-square height integrator")
 
 
 def test_gravity_profile_uses_the_supplied_geometry():

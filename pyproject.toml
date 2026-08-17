@@ -14,7 +14,7 @@ dependencies = [
     "numpy>=1.26",
     "jax>=0.6.2",
     # The RT layer is built on exojax and the PIN IS LOAD-BEARING in four
-    # independent places (see README "The exojax pin"): the local
+    # independent places (see README (exojax pin note)): the local
     # inverse-square gravity profile that works around exojax's own linear-1/r
     # gravity_profile, the routing around the deprecated dit_grid_resolution
     # kwarg, two imports through compatibility shims slated for removal in
