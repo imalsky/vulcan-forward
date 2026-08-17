@@ -173,6 +173,10 @@ MOLECULES = {
            "db": "SH/32S-1H/GYT"},
     "SO": {"vulcan": "SO", "molmass": 48.064, "source": "exomol",
            "db": "SO/32S-16O/SOLIS"},
+    # NO is the one EXOMOL-SOURCE species where the two modes do not name the
+    # same line data. (The `source: "hitran"` entries above all diverge too, by
+    # design: their lbl db is a HITRAN name while their k-table is ExoMol. The
+    # agreement claimed here is only ever within the exomol-source group.)
     # NO is the one species where the two opacity modes DO NOT name the same
     # line data, found 2026-08-17 by diffing this table against the shipped
     # tables' provenance.json. ExoMolOP's recommended NO opacity is built from
@@ -183,6 +187,13 @@ MOLECULES = {
     # a real ExoMol dataset the lbl fetch can resolve; "HITEMP" is not a path
     # on exomol.com. NO peaks at 2.0e-08 (W39b), so this is a provenance
     # correction, not a spectrum-moving one.
+    # That HITEMP k-table also carries mol_mass = 46 (NO is 30) -- an upstream
+    # metadata error, INERT here: exomolop.load_tables reads only bin_edges /
+    # samples / weights / t / p / kcoeff, and their kcoeff is cm^2 per
+    # MOLECULE, so no mass enters the opacity. Identity confirmed from the
+    # data instead: peak at 1924 cm^-1 (5.20 um) with an overtone at 2.66 um
+    # is the NO fundamental, not NO2 or NS. Do not "fix" molmass below to
+    # match the file.
     "NO": {"vulcan": "NO", "molmass": 30.006, "source": "exomol",
            "db": "NO/14N-16O/XABC"},
     # SECOND-TIER SPECIES (2026-08-17), from sweeping every IR-active SNCHO
