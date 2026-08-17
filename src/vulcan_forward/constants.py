@@ -163,7 +163,8 @@ MOLECULES = {
     # measured reasons this engine's spectra had too much contrast.
     #
     # Their "db" entries are the ExoMol datasets ExoMolOP itself built from, so
-    # opacity_mode="lbl" and opacity_mode="exomolop" name the same line data.
+    # opacity_mode="lbl" and opacity_mode="exomolop" name the same line data --
+    # WITH ONE EXCEPTION, NO (see below).
     # HITRAN is deliberately not used here: it has no SH at all, and these are
     # exactly the high-temperature species its 296 K tabulation serves worst.
     "OH": {"vulcan": "OH", "molmass": 17.007, "source": "exomol",
@@ -172,8 +173,52 @@ MOLECULES = {
            "db": "SH/32S-1H/GYT"},
     "SO": {"vulcan": "SO", "molmass": 48.064, "source": "exomol",
            "db": "SO/32S-16O/SOLIS"},
+    # NO is the one species where the two opacity modes DO NOT name the same
+    # line data, found 2026-08-17 by diffing this table against the shipped
+    # tables' provenance.json. ExoMolOP's recommended NO opacity is built from
+    # HITEMP (`14N-16O__HITEMP.R1000_0.3-50mu...`), while the lbl path below
+    # requests ExoMol's XABC list. Both are legitimate high-temperature NO
+    # data, so neither mode is wrong -- but they are not the same, and the
+    # blanket claim above used to say they were. Left as XABC because that is
+    # a real ExoMol dataset the lbl fetch can resolve; "HITEMP" is not a path
+    # on exomol.com. NO peaks at 2.0e-08 (W39b), so this is a provenance
+    # correction, not a spectrum-moving one.
     "NO": {"vulcan": "NO", "molmass": 30.006, "source": "exomol",
            "db": "NO/14N-16O/XABC"},
+    # SECOND-TIER SPECIES (2026-08-17), from sweeping every IR-active SNCHO
+    # species against ExoMolOP. Present so the menu is COMPLETE, not because
+    # each is expected to matter; which ones default ON is decided by measured
+    # ppm, in vulcan-jwst-tool forward.EXTRA_MOLECULES_DEFAULT. "db" is the
+    # ExoMol dataset the table was built from, and every isotopologue is the
+    # PRINCIPAL one (fetch_exomolop enforces it).
+    #
+    # CANNOT be added, checked 2026-08-17, do not re-sweep: O2 (published only
+    # at R15000_0.2-30mu -- different band grid), CS2 (no ExoMol line list;
+    # pRT's is HITRAN 296 K, declined), C2H6 / CH3OH / CH3CN / HC3N / NO2 /
+    # C6H6 / CH3CHO / HO2 (page, no petitRADTRANS file), and ~19 radicals and
+    # nitriles absent entirely. The painful two are HSO (1.2e-4) and S2
+    # (9.7e-5), both MORE abundant than SO2 on W39b: S2 is homonuclear so it
+    # has no IR dipole, HSO has no published list. Full record: notes.md.
+    "NS":   {"vulcan": "NS",   "molmass": 46.072, "source": "exomol",
+             "db": "NS/14N-32S/SNaSH"},
+    "CH3":  {"vulcan": "CH3",  "molmass": 15.035, "source": "exomol",
+             "db": "CH3/12C-1H3/AYYJ"},
+    "NH":   {"vulcan": "NH",   "molmass": 15.015, "source": "exomol",
+             "db": "NH/14N-1H/MoLLIST-NH"},
+    "CN":   {"vulcan": "CN",   "molmass": 26.018, "source": "exomol",
+             "db": "CN/12C-14N/MoLLIST-CN"},
+    "H2CO": {"vulcan": "H2CO", "molmass": 30.026, "source": "exomol",
+             "db": "H2CO/1H2-12C-16O/AYTY"},
+    "CS":   {"vulcan": "CS",   "molmass": 44.076, "source": "exomol",
+             "db": "CS/12C-32S/JnK"},
+    "N2O":  {"vulcan": "N2O",  "molmass": 44.013, "source": "exomol",
+             "db": "N2O/14N2-16O/TYM"},
+    "CH":   {"vulcan": "CH",   "molmass": 13.019, "source": "exomol",
+             "db": "CH/12C-1H/MoLLIST"},
+    "C2":   {"vulcan": "C2",   "molmass": 24.022, "source": "exomol",
+             "db": "C2/12C2/8states"},
+    "H2O2": {"vulcan": "H2O2", "molmass": 34.015, "source": "exomol",
+             "db": "H2O2/1H2-16O2/APTY"},
 }
 
 # Bulk gas used for CIA + the dominant background (H2).

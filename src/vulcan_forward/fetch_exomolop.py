@@ -15,7 +15,11 @@ deep and the filenames do not follow one pattern (H2O is
     /data/data-types/opacity/<MOL>/<ISO>/        -> dataset pages
     /data/data-types/opacity/<MOL>/<ISO>/<SET>/  -> the /db/... file links
 
-Two selection rules, both deliberate:
+Three selection rules, all deliberate:
+  * the ISOTOPOLOGUE must be the PRINCIPAL one (most abundant isotope of every
+    element), and an unrecognised naming form RAISES rather than guessing.
+    Taking the first sorted entry instead picked N2O's ~0.4%-abundance
+    ``14N-15N-16O``, understating its opacity ~1e2 (fixed 2026-08-17).
   * the dataset ExoMol marks "recommended" wins when there is one;
   * within it, the NATURAL-ABUNDANCE file ("<MOL>-all__", "*-NatAbund__")
     wins over the principal isotopologue, because VULCAN tracks a total
@@ -42,6 +46,10 @@ UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
 BASE = "https://www.exomol.com"
 ROOT = f"{BASE}/data/data-types/opacity"
+# The ONE product this engine can mix: R=1000 bands over 0.3-50 um. Every
+# table in a correlated-k mixture must share a band grid, so a file at another
+# resolution or span is not a substitute -- see resolve().
+GRID_TOKEN = "R1000_0.3-50mu"
 
 
 def _get(url, retries=3):
@@ -65,12 +73,56 @@ def _get(url, retries=3):
         "network and re-run rather than skipping.") from last
 
 
+# Most abundant isotope of each element, by mass number. Used to identify the
+# PRINCIPAL isotopologue among ExoMol's listings; see the module docstring for
+# the N2O case that made this necessary.
+_PRINCIPAL_ISOTOPE = {
+    "H": 1, "He": 4, "Li": 7, "C": 12, "N": 14, "O": 16, "F": 19, "Na": 23,
+    "Mg": 24, "Al": 27, "Si": 28, "P": 31, "S": 32, "Cl": 35, "K": 39,
+    "Ca": 40, "Ti": 48, "V": 51, "Cr": 52, "Fe": 56,
+}
+_ISO_TOKEN = re.compile(r"^(\d+)([A-Z][a-z]?)(\d*)$")
+
+
+def _is_principal(iso: str) -> bool:
+    """True if every element in ``iso`` carries its most abundant isotope.
+
+    ``iso`` is ExoMol's isotopologue token, e.g. ``1H2-16O``, ``14N2-16O``,
+    ``12C-32S``. An unparseable token returns False, which makes the caller
+    raise rather than silently accept an unknown naming form.
+    """
+    parts = iso.split("-")
+    if not parts:
+        return False
+    for tok in parts:
+        m = _ISO_TOKEN.match(tok)
+        if not m:
+            return False
+        mass, elem = int(m.group(1)), m.group(2)
+        if _PRINCIPAL_ISOTOPE.get(elem) != mass:
+            return False
+    return True
+
+
 def resolve(mol: str):
     """(url, dataset, iso, natural_abundance) for ``mol``, or None."""
     html = _get(f"{ROOT}/{mol}/")
     isos = [i for i in sorted(set(re.findall(r'href="([0-9A-Za-z-]+)(?:#[^"]*)?"\s',
                                              html))) if re.match(r"^\d", i)]
-    for iso in isos[:1]:                       # principal isotopologue page
+    principal = [i for i in isos if _is_principal(i)]
+    if isos and not principal:
+        raise RuntimeError(
+            f"{mol}: none of the isotopologues ExoMolOP lists {isos} parses as "
+            "the principal one (most abundant isotope of every element). "
+            "Refusing to guess: a rare isotopologue's cross section paired "
+            "with a total molecular VMR understates the opacity by orders of "
+            "magnitude. Extend _PRINCIPAL_ISOTOPE or name the isotopologue "
+            "explicitly.")
+    if len(principal) > 1:
+        raise RuntimeError(
+            f"{mol}: {principal} all parse as principal isotopologues, which "
+            "should be impossible. Refusing to pick one arbitrarily.")
+    for iso in principal:                      # principal isotopologue page
         sets = []
         dhtml = _get(f"{ROOT}/{mol}/{iso}/")
         for m in re.finditer(r'href="([A-Za-z0-9_-]+)(?:#[^"]*)?"[^>]*>(.*?)</a>',
@@ -86,9 +138,51 @@ def resolve(mol: str):
                if "petitRADTRANS" in h and h.endswith(".h5")]
         if not prt:
             return None
-        nat = [h for h in prt if "-all__" in h or "NatAbund__" in h]
-        return BASE + (nat[0] if nat else prt[0]), ds, iso, bool(nat)
+        # More than one petitRADTRANS product per species, not interchangeable:
+        # O2's only k-table is R15000_0.2-30mu, 11.8 GB on a different grid.
+        # Taking prt[0] downloaded it until this filter existed (2026-08-17).
+        onthe = [h for h in prt if GRID_TOKEN in h]
+        if not onthe:
+            raise RuntimeError(
+                f"{mol}: ExoMolOP has petitRADTRANS files for {iso}/{ds} but "
+                f"none on the {GRID_TOKEN} grid this engine uses "
+                f"(found {[h.rsplit('/', 1)[1] for h in prt]}). A different "
+                "resolution or wavelength span is NOT a drop-in substitute -- "
+                "every table in a mixture must share one band grid.")
+        nat = [h for h in onthe if "-all__" in h or "NatAbund__" in h]
+        return BASE + (nat[0] if nat else onthe[0]), ds, iso, bool(nat)
     return None
+
+
+def _assert_grid_matches(mol, dest, dest_dir):
+    """Verify the DOWNLOADED file shares the grid of the tables already here.
+
+    ``resolve``'s filename filter is a convention check, which is exactly what
+    a wrong guess also passes; this opens the file and compares the arrays
+    ``load_tables`` will demand agree. Deletes the offender before raising --
+    left on disk, the next run finds it and skips the download.
+    """
+    import h5py                                    # offline step only
+    import numpy as np
+
+    peers = sorted(p for p in dest_dir.glob("*.ktable.h5") if p != dest)
+    if not peers:
+        return                                     # first table: nothing to compare
+    keys = ("bin_edges", "t", "p", "samples", "weights")
+    with h5py.File(peers[0], "r") as f:
+        ref = {k: np.asarray(f[k], dtype=np.float64) for k in keys}
+    with h5py.File(dest, "r") as f:
+        got = {k: np.asarray(f[k], dtype=np.float64) for k in keys}
+    for k in keys:
+        a, b = got[k], ref[k]
+        if a.shape != b.shape or not np.allclose(a, b, rtol=1e-12, atol=0.0):
+            os.unlink(dest)
+            raise RuntimeError(
+                f"{mol}: the downloaded table disagrees with {peers[0].name} "
+                f"on '{k}' (shape {a.shape} vs {b.shape}). Correlated-k tables "
+                "are mixed ordinate by ordinate, so they must share one band "
+                "grid, one (T, P) grid and one quadrature. The file has been "
+                "deleted. Re-fetch every table from the same ExoMolOP release.")
 
 
 def fetch(molecules, force=False):
@@ -104,7 +198,23 @@ def fetch(molecules, force=False):
     for mol in molecules:
         dest = exomolop.table_path(mol)
         if dest.exists() and not force:
-            print(f"{mol:6s} have  {dest.stat().st_size/1e6:7.1f} MB")
+            if mol in prov:
+                print(f"{mol:6s} have  {dest.stat().st_size/1e6:7.1f} MB")
+                continue
+            # Present but unattributed -- what an interrupted fetch leaves
+            # (provenance is written once, at the end). Record it without
+            # re-downloading, so provenance always describes what is on disk.
+            got = resolve(mol)
+            if got is None:
+                print(f"{mol:6s} have  {dest.stat().st_size/1e6:7.1f} MB  "
+                      "(provenance UNRESOLVED)")
+                continue
+            url, ds, iso, nat = got
+            prov[mol] = {"url": url, "dataset": ds, "iso": iso,
+                         "natural_abundance": nat,
+                         "file": url.rsplit("/", 1)[1]}
+            print(f"{mol:6s} have  {dest.stat().st_size/1e6:7.1f} MB  "
+                  f"(provenance backfilled: {ds} {iso})")
             continue
         got = resolve(mol)
         if got is None:
@@ -128,6 +238,7 @@ def fetch(molecules, force=False):
             if os.path.exists(tmp):
                 os.unlink(tmp)
             raise RuntimeError(f"failed to fetch {mol} from {url}: {e}") from e
+        _assert_grid_matches(mol, dest, dest_dir)
         prov[mol] = {"url": url, "dataset": ds, "iso": iso,
                      "natural_abundance": nat,
                      "file": url.rsplit("/", 1)[1]}
