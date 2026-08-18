@@ -250,6 +250,10 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         A caller-owned settings dict -- supplies ``use_photo`` and
         ``yconv_cri``. ``profile["abundance_mode"]`` selects "masks" (legacy) or
         "elemental" (exact conserved-inventory construction; see module docstring).
+        ``profile["skip_warmup"]`` (default False) skips the build-time
+        warm-up SOLVE and keeps only its runner-closure half: bit-identical
+        for consumers that never read ``baseline_conv_normal`` (which is then
+        None = not evaluated). Inference profiles must leave it False.
     tp_eval : callable or None, optional
         Temperature-profile hook. When ``None`` (default, unchanged behavior) the
         temperature is the validated uniform shift ``T = T_base + theta[3]`` (theta[3]
@@ -395,34 +399,48 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     _redirect_output_dirs(cfg)
     integ = outer_loop.OuterLoop(solver, op.Output(cfg=cfg), cfg=cfg)
     solver.naming_solver(para)
+    skip_warmup = bool(profile.get("skip_warmup", False))
     print(f"[chem] setup {time.time() - t0:.1f}s; nz={nz} ni={ni} photo={cfg.use_photo}; "
-          f"warming up runner ...", flush=True)
-    tw = time.time()
-    rs_warmup = integ(rs)
-    # Certify the warm-up exit (never claim it unchecked): recompute the
-    # runner's canonical two-branch certification host-side (same predicate as
-    # _conv_normal_at_exit below; keep in sync). Exported as
-    # ``baseline_conv_normal``; the inference path refuses an uncertified
-    # baseline, forward-only consumers get the loud print.
-    _w_ld = float(rs_warmup.step.longdy)
-    _w_lddt = float(rs_warmup.step.longdydt)
-    _w_af = (float(rs_warmup.photo_runtime.aflux_change)
-             if rs_warmup.photo_runtime is not None else 0.0)
-    _w_slope_min = max(min(float(np.min(
-        np.asarray(rs_warmup.atm.Kzz)
-        / (0.1 * np.asarray(rs_warmup.atm.Hp)[:-1]) ** 2)), 1e-8), 1e-10)
-    baseline_conv_normal = bool(
-        (((_w_ld < float(cfg.yconv_cri)) and (_w_lddt < float(cfg.slope_cri)))
-         or ((_w_ld < float(cfg.yconv_min)) and (_w_lddt < _w_slope_min)))
-        and (_w_af < float(cfg.flux_cri)))
-    if not baseline_conv_normal:
-        print(f"[chem] WARNING: warm-up baseline solve is NOT certified "
-              f"(longdy={_w_ld:.3e}, longdydt={_w_lddt:.3e}, "
-              f"aflux_change={_w_af:.3e}); every warm start seeds from a "
-              f"non-steady baseline. Inference builds refuse this state.",
-              flush=True)
-    print(f"[chem] warm-up converge {time.time() - tw:.1f}s "
-          f"(certified={baseline_conv_normal})", flush=True)
+          + ("runner closure only (skip_warmup)" if skip_warmup
+             else "warming up runner ..."), flush=True)
+    if skip_warmup:
+        # The warm-up's converged column is never consumed by this module
+        # (state0 packs from the pre-loop ``rs`` below), so a forward-only
+        # consumer can skip the full solve and keep just the runner-closure
+        # half of the warm-up. Host-side construction only, no solve; the
+        # XLA compile then happens on the first real solve, which the
+        # persistent compile cache already covers. baseline_conv_normal is
+        # None (= not evaluated, distinct from failed); the inference path
+        # must not set this flag.
+        integ._ensure_runner(var, atm)
+        baseline_conv_normal = None
+    else:
+        tw = time.time()
+        rs_warmup = integ(rs)
+        # Certify the warm-up exit (never claim it unchecked): recompute the
+        # runner's canonical two-branch certification host-side (same predicate as
+        # _conv_normal_at_exit below; keep in sync). Exported as
+        # ``baseline_conv_normal``; the inference path refuses an uncertified
+        # baseline, forward-only consumers get the loud print.
+        _w_ld = float(rs_warmup.step.longdy)
+        _w_lddt = float(rs_warmup.step.longdydt)
+        _w_af = (float(rs_warmup.photo_runtime.aflux_change)
+                 if rs_warmup.photo_runtime is not None else 0.0)
+        _w_slope_min = max(min(float(np.min(
+            np.asarray(rs_warmup.atm.Kzz)
+            / (0.1 * np.asarray(rs_warmup.atm.Hp)[:-1]) ** 2)), 1e-8), 1e-10)
+        baseline_conv_normal = bool(
+            (((_w_ld < float(cfg.yconv_cri)) and (_w_lddt < float(cfg.slope_cri)))
+             or ((_w_ld < float(cfg.yconv_min)) and (_w_lddt < _w_slope_min)))
+            and (_w_af < float(cfg.flux_cri)))
+        if not baseline_conv_normal:
+            print(f"[chem] WARNING: warm-up baseline solve is NOT certified "
+                  f"(longdy={_w_ld:.3e}, longdydt={_w_lddt:.3e}, "
+                  f"aflux_change={_w_af:.3e}); every warm start seeds from a "
+                  f"non-steady baseline. Inference builds refuse this state.",
+                  flush=True)
+        print(f"[chem] warm-up converge {time.time() - tw:.1f}s "
+              f"(certified={baseline_conv_normal})", flush=True)
 
     # Warm-capped twin runner for the mutation path. OuterLoop._Statics snapshots
     # int(cfg.count_max) at _ensure_runner time, so the temporary mutation is safe: the
@@ -864,7 +882,9 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         #                                            never longdy alone)
         audit_init=audit_init,
         baseline_conv_normal=baseline_conv_normal,  # warm-up exit certified?
-        #                                             (inference refuses False)
+        #                                             (inference refuses False;
+        #                                             None = skip_warmup, not
+        #                                             evaluated)
         conden_spec=conden_spec,   # static conden metadata (None when conden off)
         prep_pv=prep_pv,           # theta -> initial ProfileVars (no solve; tests)
         _integ=integ,              # the OuterLoop (baked statics access; tests only)
