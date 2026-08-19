@@ -19,7 +19,7 @@ Three selection rules, all deliberate:
   * the ISOTOPOLOGUE must be the PRINCIPAL one (most abundant isotope of every
     element), and an unrecognised naming form RAISES rather than guessing.
     Taking the first sorted entry instead picked N2O's ~0.4%-abundance
-    ``14N-15N-16O``, understating its opacity ~1e2 (fixed 2026-08-17).
+    ``14N-15N-16O``, understating its opacity ~1e2.
   * the dataset ExoMol marks "recommended" wins when there is one;
   * within it, the NATURAL-ABUNDANCE file ("<MOL>-all__", "*-NatAbund__")
     wins over the principal isotopologue, because VULCAN tracks a total
@@ -139,8 +139,8 @@ def resolve(mol: str):
         if not prt:
             return None
         # More than one petitRADTRANS product per species, not interchangeable:
-        # O2's only k-table is R15000_0.2-30mu, 11.8 GB on a different grid.
-        # Taking prt[0] downloaded it until this filter existed (2026-08-17).
+        # O2's only k-table is R15000_0.2-30mu, 11.8 GB on a different grid,
+        # which taking prt[0] would download.
         onthe = [h for h in prt if GRID_TOKEN in h]
         if not onthe:
             raise RuntimeError(

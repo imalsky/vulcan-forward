@@ -156,7 +156,7 @@ MOLECULES = {
     # Simple hydrocarbons: photochemical CH4-destruction products.
     "C2H4": {"vulcan": "C2H4", "molmass": 28.054, "source": "hitran", "db": "C2H4"},
     "C2H6": {"vulcan": "C2H6", "molmass": 30.069, "source": "hitran", "db": "C2H6"},
-    # RADICALS (added with the ExoMolOP ingestion). All four are species in
+    # RADICALS. All four are species in
     # VULCAN's SNCHO network, and the published Tsai et al. 2023 WASP-39 b
     # output carries SH and SO, so they are part of an apples-to-apples
     # comparison with that model -- species coverage was one of the three
@@ -177,16 +177,12 @@ MOLECULES = {
     # same line data. (The `source: "hitran"` entries above all diverge too, by
     # design: their lbl db is a HITRAN name while their k-table is ExoMol. The
     # agreement claimed here is only ever within the exomol-source group.)
-    # NO is the one species where the two opacity modes DO NOT name the same
-    # line data, found 2026-08-17 by diffing this table against the shipped
-    # tables' provenance.json. ExoMolOP's recommended NO opacity is built from
-    # HITEMP (`14N-16O__HITEMP.R1000_0.3-50mu...`), while the lbl path below
-    # requests ExoMol's XABC list. Both are legitimate high-temperature NO
-    # data, so neither mode is wrong -- but they are not the same, and the
-    # blanket claim above used to say they were. Left as XABC because that is
-    # a real ExoMol dataset the lbl fetch can resolve; "HITEMP" is not a path
-    # on exomol.com. NO peaks at 2.0e-08 (W39b), so this is a provenance
-    # correction, not a spectrum-moving one.
+    # ExoMolOP's recommended NO opacity is built from HITEMP
+    # (`14N-16O__HITEMP.R1000_0.3-50mu...`), while the lbl path below requests
+    # ExoMol's XABC list. Both are legitimate high-temperature NO data, so
+    # neither mode is wrong, but they are not the same. Left as XABC because
+    # that is a real ExoMol dataset the lbl fetch can resolve; "HITEMP" is not
+    # a path on exomol.com. NO peaks at 2.0e-08 (W39b).
     # That HITEMP k-table also carries mol_mass = 46 (NO is 30) -- an upstream
     # metadata error, INERT here: exomolop.load_tables reads only bin_edges /
     # samples / weights / t / p / kcoeff, and their kcoeff is cm^2 per

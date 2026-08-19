@@ -15,9 +15,7 @@ FRESH forward-model run raised
 
 while cached spectra kept loading. All three sibling suites stayed green: none of
 them calls `build_chem_model`, and the single test anywhere that does wraps it in
-`except Exception: pytest.skip(...)`, which would have turned the TypeError into a
-pass. The incompatible pair was even pinned together in the planner's deploy
-manifest.
+`except Exception: pytest.skip(...)`, which turns such a TypeError into a pass.
 
 This test needs no data, no network and no solve: it reads the call sites out of
 the source and checks each one against the live signature.

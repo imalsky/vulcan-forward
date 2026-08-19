@@ -224,8 +224,8 @@ def _redirect_output_dirs(cfg) -> None:
 
     ``op.Output``'s constructor creates ``cfg.output_dir`` and ``cfg.plot_dir``,
     and the shipped VULCAN-JAX configs make both RELATIVE -- so building a model
-    used to create ./output and ./plot wherever the caller happened to be
-    standing, twice (once per runner). A library has no business writing into a
+    would create ./output and ./plot wherever the caller happens to be
+    standing. A library has no business writing into a
     caller's working directory. This engine never writes .vul output or plots
     (the Output object exists only to satisfy ``OuterLoop``'s signature), so
     both are redirected to one per-process temp directory. Absolute paths a
@@ -255,7 +255,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         for consumers that never read ``baseline_conv_normal`` (which is then
         None = not evaluated). Inference profiles must leave it False.
     tp_eval : callable or None, optional
-        Temperature-profile hook. When ``None`` (default, unchanged behavior) the
+        Temperature-profile hook. When ``None`` (default) the
         temperature is the validated uniform shift ``T = T_base + theta[3]`` (theta[3]
         is a bulk offset; the demo's historical "T_int" label). When supplied,
         ``tp_eval(theta[3:3+n_tp_params], p_bar)`` returns the full (nz,) T-P profile
@@ -317,7 +317,6 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     for _k, _v in (profile.get("cfg_overrides") or {}).items():
         setattr(cfg, _k, _v)
 
-    import vulcan_jax
     from vulcan_jax.state import RunState, legacy_view
     from vulcan_jax import network as net_mod, composition, rates_jax
     from vulcan_jax import atm_jax, atm_refresh as atm_refresh_mod

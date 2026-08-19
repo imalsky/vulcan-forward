@@ -22,15 +22,12 @@ A consumer may also set these programmatically with ``set_data_root()`` before
 building a model, which is what an application with its own configuration
 surface should do.
 
-Why this shape. Before extraction these paths were computed at IMPORT time from
-``Path(__file__).parents[3]``, pinned to one repo's ``src/<pkg>/forward/``
-nesting, and the module RAISED unless a WASP-39b observed-spectra directory
-existed as a sibling -- so the engine could not be imported at all on a machine
-that merely wanted a spectrum, and a second consumer had to be handed a
-symlink farm to satisfy a marker it never read. Here nothing touches the
-filesystem until a path is actually needed, and then it fails loudly with the
-offending value and the remedy (the standing fail-fast rule in every sibling
-repo).
+Why this shape. These paths must never be resolved at import time, from this
+package's ``__file__``, or against a marker directory a consumer happens to
+own: the engine has to be importable on a machine with no data installed.
+Nothing touches the filesystem until a path is actually needed, and then it
+fails loudly with the offending value and the remedy (the standing fail-fast
+rule in every sibling repo).
 """
 from __future__ import annotations
 

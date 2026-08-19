@@ -1,10 +1,9 @@
 """The two engine kernels that fail SILENTLY when wrong.
 
-`interp_map.make_to_art` and `exojax_rt._blend_h2he_broadening` had no test in
-this repo or in either consumer (found by the 2026-08-14 bloat audit, whose
-only under-testing finding this was). Both are silent failure modes: a wrong
-interpolation returns a plausible profile, and a wrong broadening blend returns
-plausible line widths. Neither raises, so nothing downstream notices.
+`interp_map.make_to_art` and `exojax_rt._blend_h2he_broadening` are both silent
+failure modes: a wrong interpolation returns a plausible profile, and a wrong
+broadening blend returns plausible line widths. Neither raises, so nothing
+downstream notices.
 
 `make_to_art` needs jax (it returns a jnp interpolator) and runs in this repo's
 light CI. The blend BODY is pure numpy and runs against a stub `mdb`, but it

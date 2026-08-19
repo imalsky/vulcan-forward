@@ -29,12 +29,6 @@ def test_band_edges_are_log_uniform_at_the_requested_resolution():
 
 
 
-def _grey(nl, ng, nb, value):
-    import jax.numpy as jnp
-    return jnp.full((nl, ng, nb), value)
-
-
-
 
 def _mean_conservation_error(ng, sigma, seed):
     """Relative error in the g-weighted mean optical depth after resort-rebin."""

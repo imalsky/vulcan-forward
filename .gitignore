@@ -4,6 +4,7 @@ build/
 dist/
 *.egg-info/
 .pytest_cache/
+.DS_Store
 # Local-only under the 3-doc policy: README.md is the tracked consumer doc.
 notes.md
 CLAUDE.md

@@ -1,7 +1,7 @@
 """Contract tests for the shared engine.
 
-These are the properties that made extraction worth doing, so they are pinned
-here rather than left as prose: the package imports with no data installed, its
+These are the engine's library properties, pinned here rather than left as
+prose: the package imports with no data installed, its
 data-root contract fails loudly instead of guessing, the molecule table is
 injectable, and planet geometry is required rather than defaulted to WASP-39 b.
 
@@ -18,12 +18,7 @@ import pytest
 
 
 def test_constants_import_without_data_or_heavy_deps():
-    """constants must be importable with no data root set and no jax present.
-
-    Before extraction this was impossible: the config module resolved a repo
-    root from __file__ at import time and RAISED unless a WASP-39 b
-    observed-spectra directory existed as a sibling.
-    """
+    """constants must be importable with no data root set and no jax present."""
     from vulcan_forward import constants
 
     assert constants.MOLECULES["CO"]["source"] == "exomol_cached"
@@ -100,9 +95,8 @@ def test_set_data_root_is_honored(tmp_path, monkeypatch):
 def test_geometry_is_required_not_wasp39b():
     """The RT builder must refuse a profile with no planet geometry.
 
-    It used to fall back to WASP-39 b constants, so a caller who forgot rp_cm
-    silently modeled a different planet. Checked on the helper so the test
-    needs neither exojax nor a data tree.
+    A defaulted rp_cm would silently model a different planet. Checked on the
+    helper so the test needs neither exojax nor a data tree.
     """
     pytest.importorskip("exojax")
     from vulcan_forward import exojax_rt
@@ -135,12 +129,11 @@ def test_import_order_guard_is_documented_and_live():
 
 def test_chem_params_named_api_matches_the_vector_form():
     """The engine's primitive is named ChemParams; the positional vector stays
-    supported as the adapter a sampler or a jvp needs (2026-07-29).
+    supported as the adapter a sampler or a jvp needs.
 
     Runs in a SUBPROCESS on purpose. Importing vulcan_chem needs a clean
     interpreter: an earlier test in this file imports exojax_rt, and after that
-    the import-order guard correctly refuses vulcan_chem. (Discovering this the
-    hard way is a fair demonstration that the guard works.)
+    the import-order guard correctly refuses vulcan_chem.
     """
     pytest.importorskip("jax")
     import subprocess
@@ -178,9 +171,7 @@ def test_ensure_layout_creates_the_trees(tmp_path, monkeypatch):
     """A setup tool must be able to CREATE the layout.
 
     data_root() is strict on purpose, but a fetch command knows the directories
-    should exist. Before this existed, a first run reported the CIA tables as
-    failures because the data root the install instructions name did not exist
-    yet (2026-07-29).
+    should exist.
     """
     from vulcan_forward import paths
 
@@ -228,10 +219,8 @@ def _import_in_clean_cwd(modules, tmp_path, extra_env=None):
 def test_importing_the_engine_writes_nothing_to_the_callers_cwd(tmp_path):
     """A LIBRARY must not litter the directory its caller happens to be in.
 
-    CLAUDE.md has asserted this was pinned here since the 2026-07-29
-    extraction; it was not, until 2026-08-14. The light modules are checked
-    first because they are the ones a consumer imports merely to read a
-    constant or resolve a path.
+    The light modules are checked first because they are the ones a consumer
+    imports merely to read a constant or resolve a path.
     """
     work, r = _import_in_clean_cwd(
         ["vulcan_forward.constants", "vulcan_forward.paths",
@@ -248,9 +237,8 @@ def test_importing_the_engine_writes_nothing_to_the_callers_cwd(tmp_path):
 def test_the_engine_never_resolves_its_data_root_from___file__():
     """Data paths come from the environment / set_data_root, never __file__.
 
-    Before extraction `paths` computed the root from `Path(__file__).parents[3]`,
-    which pinned the engine to one repo's directory nesting and made it
-    unimportable elsewhere. `vulcan_chem` may still read
+    Resolving the root from this package's own `__file__` would pin the engine
+    to one repo's directory nesting. `vulcan_chem` may still read
     `vulcan_jax.__file__` -- that locates the SIBLING package's vendored
     thermo data, which is a different thing and is allowed.
     """

@@ -289,7 +289,7 @@ def _accumulate_dtau(art, nu_grid, mols, opas, molmass, opacia, g_btm,
     vmr : dict molecule -> (nlayer,) volume mixing ratio
     vmr_h2 : (nlayer,) H2 volume mixing ratio (both H2-H2 CIA collision partners)
     opacia_he, vmr_he : optional H2-He CIA table + He VMR profile (term skipped if
-        either is None -- keeps the parent demo callers byte-compatible)
+        either is None)
     cloud : optional (2,) array [log10 kappac0 (cm^2/g at constants.CLOUD_NUC0), alphac]
         for ``exojax.atm.simple_clouds.powerlaw_clouds`` (alphac=0 -> gray cloud;
         per-gram-of-atmosphere opacity, uniformly mixed: dtau = kappa(nu)*dP_cgs/g)
@@ -446,11 +446,11 @@ def _ckd_dtau_batch(art, pack, mols, molmass, opacia, opacia_he,
 
     ``finish(dtau_g)`` maps a (nlayer, ng, nband) optical depth to its
     observable. Returns ``(finish(full), [finish(wo) ...])`` with the wo list
-    aligned to ``wo_mols``. Each wo fold keeps today's semantics exactly — the
-    dropped molecule is still folded, as the zero tensor its zeroed VMR
-    produces through the SAME op pipeline — so every output is bit-identical
-    to a from-scratch solve with that VMR zeroed; only the shared fold prefix
-    is reused (see ckd._fold_wo). The per-molecule tensors are held for the
+    aligned to ``wo_mols``. The dropped molecule is still folded, as the zero
+    tensor its zeroed VMR produces through the SAME op pipeline, so every
+    output is bit-identical to a from-scratch solve with that VMR zeroed;
+    only the shared fold prefix is reused (see ckd._fold_wo). The
+    per-molecule tensors are held for the
     fold tails (~n x 35 MB at planner defaults); wo totals are finished and
     freed one at a time.
     """
@@ -489,7 +489,7 @@ def _run_emis_ckd_linsap(art, dtau_g, T_boundary, nu_bands, gw):
     below is lost (measured flux deficits: README, "Emission uses it too").
     This is upstream's own flatten-solve-reweight structure with
     ``ibased_linsap`` in its place, so CKD emission keeps the interior source
-    the line-by-line path has carried since 0.5.0.
+    the line-by-line path carries.
 
     The flatten is g-major / band-minor, matching ``jnp.tile``'s last-axis
     tiling of the source, exactly as upstream's version does it: element
@@ -513,10 +513,9 @@ def _run_emis_ckd_linsap(art, dtau_g, T_boundary, nu_bands, gw):
 def _require_geometry(profile: dict, *keys: str) -> None:
     """Refuse a profile missing planet geometry.
 
-    Before extraction these keys fell back to WASP-39 b constants, so a
-    caller who forgot ``rp_cm`` silently modeled a different planet. They
-    set the transit-depth normalization and the hydrostatic scale, so there
-    is no safe default (standing fail-loud rule).
+    These keys set the transit-depth normalization and the hydrostatic
+    scale, so there is no safe default (standing fail-loud rule). A missing
+    one must never fall back to another planet's constants.
     """
     missing = [k for k in keys if k not in profile]
     if missing:
@@ -600,9 +599,8 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
                  "WRONG for a hydrogen atmosphere; measurements in the README, "
                  "'Opacity data: ExoMolOP'. Use opacity_mode='exomolop'.)"
                  if broadening == "air" else ""), flush=True)
-    # Profile-overridable RT knobs (defaults = the historical hard-coded
-    # values, so every existing consumer is byte-unchanged). Validated
-    # loudly here -- an out-of-range value must never build a wrong model.
+    # Profile-overridable RT knobs, validated loudly here: an out-of-range
+    # value must never build a wrong model.
     dit_res = float(profile.get("dit_grid_resolution", 1.0))
     if not 0.05 <= dit_res <= 2.0:
         raise ValueError(
@@ -621,8 +619,7 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
             f"rt_integration={integration!r}: exojax ArtTransPure supports "
             "'simpson' (default) or 'trapezoid'")
     # The opacity table is INJECTABLE: a consumer adding a molecule passes its
-    # own table rather than editing a constant inside this package (which is
-    # what downstream tools had to do before extraction).
+    # own table rather than editing a constant inside this package.
     mol_table = profile.get("molecule_table") or constants.MOLECULES
     _unknown = [k for k in mols if k not in mol_table]
     if _unknown:
@@ -751,9 +748,9 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
             "gs_cgs are defined, so it must be a level the grid actually covers.")
 
     def _require_he(vmr_he):
-        # He is ~14% by number and its CIA is real continuum physics;
-        # an accidental None here used to SILENTLY drop the term (the sensitivity
-        # demo shipped that way). Fail loud instead -- standing repo rule.
+        # He is ~14% by number and its CIA is real continuum physics; an
+        # accidental None here would SILENTLY drop the term. Fail loud
+        # instead -- standing repo rule.
         if vmr_he is None:
             raise ValueError(
                 "vmr_he is required: pass the He VMR profile (chem.sidx['He']) so the "
@@ -829,8 +826,8 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
         g_prof = _gravity_profile_invsq(art, T_art, mmw_art, Rp_r, g_btm)  # (nlayer,1)
 
         def _depth_of(Rp2):
-            # identical expression and op order to the pre-batch return, so the
-            # single and wo paths agree bitwise
+            # one expression and op order for both paths, so the single and wo
+            # results agree bitwise
             return (Rp2 * (Rp_btm / rstar_cm) ** 2                  # (radius/R_star)^2
                     * jnp.exp(2.0 * lnR0))
 
@@ -933,10 +930,7 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
     """
     # CKD emission runs through _run_emis_ckd_linsap, NOT ArtEmisPure.run_ckd:
     # upstream's version hard-codes the "ibased" solver, which has no interior
-    # source term. Using it here would have silently undone the 0.5.0 linsap
-    # fix, so 0.7.0 reimplements the same flatten-solve-reweight with linsap
-    # instead. Before that this branch refused outright, which left emission
-    # sampling line-by-line at R = 1,477 and carrying the full grid bias.
+    # source term.
     ckd_mode = getattr(trt, "opacity_mode", "lbl") == "exomolop"
     ckd_pack = getattr(trt, "_ckd_pack", None)
     if ckd_mode and ckd_pack is None:
@@ -947,7 +941,7 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
     nu_grid = trt._nu_grid
     opas, molmass, opacia, mols = trt._opas, trt._molmass, trt._opacia, trt.molecules
     opacia_he = trt._opacia_he
-    mie_pack = getattr(trt, "_mie_pack", None)   # shared Mie deck (v16)
+    mie_pack = getattr(trt, "_mie_pack", None)   # shared Mie deck
     _require_geometry(profile, "gs_cgs")
     # Emission is plane-parallel, so ArtEmisPure needs ONE gravity for the whole
     # column: it converts pressure to column mass as dP/g. That gravity must be
@@ -995,7 +989,7 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
     # pressure bounds follow the transmission model's (possibly profile-
     # overridden) grid -- the two share opacities and must share the column
     #
-    # rtsolver "ibased_linsap", not "ibased" (v0.5.0). Two measured reasons.
+    # rtsolver "ibased_linsap", not "ibased". Two measured reasons.
     # (1) INTERIOR SOURCE. "ibased" drops the bottom-boundary term entirely
     # (rtransfer.py: its docstring says "with no surface"), so every photon
     # entering the grid from below is lost. At the tau_bottom = 3 the consumer

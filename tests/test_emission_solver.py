@@ -1,15 +1,13 @@
 """Contracts for the emission solver's bottom boundary.
 
-Until v0.5.0 the engine ran exojax's ``ibased`` solver, which drops the
-bottom-boundary term entirely ("with no surface", its own docstring). Every
-photon entering the model column from below was lost, so any wavelength that
-saw through the grid bottom was underestimated -- silently, because the number
-returned is a perfectly ordinary-looking flux. The consumer's answer was to
-REFUSE any column with min bottom optical depth below 3, which is honest but
-meant emission did not run at all on the shipped 7 bar grid.
+exojax's ``ibased`` solver drops the bottom-boundary term entirely ("with no
+surface", its own docstring). Every photon entering the model column from
+below is lost, so any wavelength that sees through the grid bottom is
+underestimated -- silently, because the number returned is a perfectly
+ordinary-looking flux.
 
-v0.5.0 switches to ``ibased_linsap``, which carries the interior source and is
-also the more accurate scheme at production layer counts. These tests pin the
+The engine runs ``ibased_linsap`` instead, which carries the interior source
+and is also the more accurate scheme at production layer counts. These tests pin the
 part that can regress silently: that the term is present, that it vanishes when
 the column is opaque, and that the boundary temperatures fed to it are right.
 
@@ -74,9 +72,8 @@ def test_boundary_temperatures_are_midpoints_with_extrapolated_ends():
 
 
 def test_a_transparent_column_returns_the_interior_blackbody():
-    """The whole point of the switch. With ``ibased`` this returned ~0: the
-    flux from below the grid was simply dropped, so a see-through window read
-    as an empty sky."""
+    """With ``ibased`` this returns ~0: the flux from below the grid is simply
+    dropped, so a see-through window reads as an empty sky."""
     art = _art()
     dtau = jnp.full((NLAYER, NU.size), 1e-12)
     T_btm = 2600.0
@@ -129,14 +126,10 @@ def test_is_differentiable_through_the_boundary_source():
 
 
 # --------------------------------------------------------------------------
-# Correlated-k emission (v0.7.0)
+# Correlated-k emission
 #
-# Before 0.7.0 this path did not exist: build_emis_model REFUSED a CKD parent,
-# because exojax's own ArtEmisPure.run_ckd hard-codes the "ibased" solver and
-# would have silently undone the interior-source fix above. So emission stayed
-# on sampled line-by-line at R = 1,477 and kept the full grid bias that
-# transmission had just been fixed for.
-#
+# exojax's own ArtEmisPure.run_ckd hard-codes the "ibased" solver, which would
+# silently undo the interior-source fix above.
 # _run_emis_ckd_linsap is upstream's flatten-solve-reweight with "ibased_linsap"
 # in its place. The tests below pin the two things that can regress silently:
 # the flatten/tile index convention (a transpose here mixes bands into

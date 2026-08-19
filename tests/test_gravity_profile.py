@@ -4,9 +4,7 @@
 that a refactor can silently undo. There are two wrong neighbours it could
 collapse onto, and neither raises:
 
-* constant `g_btm` -- what the code used before the 2026-07 audit, and what
-  `tests/parity_picaso/scripts/run_native_rt_parity.py` still claimed in its
-  docstring long after it stopped being true;
+* constant `g_btm`, which makes the upper layers' opacity columns too light;
 * `art.gravity_profile`, ExoJAX's own helper (<=2.2.3), which is LINEAR in
   1/r while its height integrator `normalized_layer_height` is inverse-square.
   Using it leaves heights and opacity columns on different gravities.
@@ -31,8 +29,7 @@ import pytest
 # `exojax_rt` imports exojax at module scope, so this file needs the RT stack.
 # Check WITHOUT importing: `vulcan_forward.vulcan_chem` refuses to load if exojax
 # reached sys.modules first, so an `importorskip` here would poison the ordering
-# contract for every later test in the session (the failure mode fixed in
-# vulcan-retrieval's test_condensation_inference_gate.py).
+# contract for every later test in the session.
 if importlib.util.find_spec("exojax") is None:                  # pragma: no cover
     pytest.skip(
         "RT stack (exojax) not installed; this is the one test in the package "

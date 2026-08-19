@@ -1,17 +1,13 @@
 """Geometry contracts for the transmission RT.
 
-These exist because of a real, shipped defect. Until v0.4.0 the engine handed
-exojax the consumer's ``rp_cm``/``gs_cgs`` directly as ``radius_btm``/
-``gravity_btm``, which exojax defines at the LOWER boundary of the bottom layer
-(7 bar). A catalogue planet radius is instead the transit radius, near the
-terminator photosphere at roughly a millibar. The engine therefore stacked the
-whole 7 bar -> mbar column on top of a radius that already was the photospheric
-one: WASP-39 b's modelled transit depth came out at 26,754 ppm against a
-published 21,381, with 1.42x too much spectral contrast.
-
-Nothing caught it. The two suites that could have (this one and the planner's)
-never called into the RT geometry at all, so the bug was invisible to CI while
-every published number it produced was wrong.
+These exist because of a real, shipped defect. Handing exojax the consumer's
+``rp_cm``/``gs_cgs`` directly as ``radius_btm``/``gravity_btm`` places them at
+the LOWER boundary of the bottom layer (7 bar). A catalogue planet radius is
+instead the transit radius, near the terminator photosphere at roughly a
+millibar. That stacks the whole 7 bar -> mbar column on top of a radius that
+already was the photospheric one: WASP-39 b's modelled transit depth came out
+at 26,754 ppm against a published 21,381, with 1.42x too much spectral
+contrast.
 
 The tests below are deliberately cheap: they exercise the real
 ``_anchor_to_grid_bottom`` against an independent closed-form solution and a set
@@ -110,9 +106,9 @@ def test_deeper_is_smaller_and_heavier():
 def test_the_anchor_level_is_the_grid_bottom_BOUNDARY_at_any_resolution():
     """``radius_btm`` means the radius at the bottom layer's LOWER BOUNDARY.
 
-    v0.4.0 anchored to the deepest layer CENTRE instead, half a log-layer
+    Anchoring to the deepest layer CENTRE instead is half a log-layer
     shallower, and the size of that half layer shrinks with resolution. A
-    requested 1 mbar reference therefore landed at 1.11 mbar on the planner's
+    requested 1 mbar reference then lands at 1.11 mbar on the planner's
     100-layer grid and 1.71 mbar on vulcan-retrieval's 20-layer SMOKE preset,
     which made the absolute transit depth depend on art_nlayer (+0.20% and
     +1.02%). Here _anchor_to_grid_bottom must agree with _radius_at aimed
