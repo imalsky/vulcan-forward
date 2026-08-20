@@ -1,63 +1,96 @@
 # vulcan-forward
 
-vulcan-forward computes exoplanet atmosphere spectra: VULCAN-JAX
-photochemical kinetics for the abundances, then ExoJAX radiative transfer for
-a transmission or emission spectrum. The whole chain is differentiable. Two
-applications build on it; neither depends on the other:
+`vulcan-forward` is the shared forward model that I'm using for different VULCAN work. It runs
+[VULCAN-JAX](https://github.com/imalsky/jax-vulcan) chemistry and then uses
+[ExoJAX](https://github.com/HajimeKawahara/exojax) radiative transfer to make
+a transmission or thermal-emission spectrum. I separated it here because I have
+several projects that need this forward model (a retrieval and a JWST
+observation planning tool).
 
-```
-vulcan-jax          chemistry kernels and the steady-state solver
-      |
-vulcan-forward      this package: chemistry driver and radiative transfer
-      |
-      +-- vulcan-retrieval     atmospheric retrieval (SMC sampler)
-      +-- vulcan-jwst-tool     JWST observation planner
+Two applications use this package:
+
+```text
+vulcan-jax          chemical kinetics
+    |
+vulcan-forward      chemistry driver and radiative transfer
+    |
+    +-- vulcan-retrieval    atmospheric retrieval
+    +-- vulcan-jwst-tool    JWST observation planning
 ```
 
-Modules: `constants` (physics constants + molecule table), `paths` (data
-locations), `vulcan_chem` (chemistry driver), `interp_map` (chemistry-to-RT
-grid map), `exojax_rt` (opacities, CIA, radiative transfer), `ckd`
-(correlated-k core), `exomolop` (published k-table adapter), and
-`fetch_exomolop` (offline k-table download).
+The model supports line-by-line opacity and ExoMolOP correlated-k tables. It
+includes molecular absorption, H2-H2 and H2-He collision-induced absorption,
+Rayleigh scattering, and optional cloud opacity. The main model parameters are
+metallicity, C/O, eddy diffusion, and temperature-profile parameters.
 
 ## Install
 
 ```bash
-pip install -i https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple vulcan-forward
+python -m pip install \
+  -i https://test.pypi.org/simple/ \
+  --extra-index-url https://pypi.org/simple/ \
+  vulcan-forward
 ```
 
-Import `vulcan_chem` before anything from exojax; it sets the import-frozen
-network selection and jax float64, and it stops with an error if the order is
-wrong. The exojax pin (2.2.3) has both a ceiling (four load-bearing
-workarounds, numpy<2) and a floor: forward-mode AD through exojax was
-NaN-poisoned before safe_sqrt landed in 2.1.
+The package pins ExoJAX 2.2.3. Do not replace this version without rerunning
+the radiative-transfer and derivative tests.
+
+Import `vulcan_chem` before ExoJAX. This sets the chemistry network and enables
+64-bit JAX calculations before those settings become fixed.
+
+```python
+from vulcan_forward import constants, vulcan_chem, interp_map, exojax_rt
+```
 
 ## Data
 
-Point `VULCAN_FORWARD_DATA` at a directory holding `exojax_linelists/`,
-`opacity_cache/`, and `exomolop/` (tens of GB; fetched, never bundled).
-Missing files stop the run with the path and the remedy.
+Opacity files are not included in the Python package. Set the data directory:
 
 ```bash
 export VULCAN_FORWARD_DATA="$HOME/vulcan/forward-data"
-python -m vulcan_forward.fetch_exomolop --molecules H2O,CO2,CO,CH4,SO2
+python -m vulcan_forward.fetch_exomolop \
+  --molecules H2O,CO2,CO,CH4,SO2
 ```
 
-## Use
+The directory can contain `exomolop/`, `exojax_linelists/`, and
+`opacity_cache/`. Missing data cause a clear error; the model does not silently
+omit an absorber.
 
-`vulcan_chem.ChemParams(lnZ, c_o, lnKzz, tp)` is the parameter type; every
-entry point also accepts the positional vector `[lnZ, c_o, lnKzz, *tp]` for
-samplers and forward-mode AD. Planet geometry (`rp_cm`, `gs_cgs`,
-`rstar_cm`) is required; there is no default planet.
+The model also needs planet geometry. Supply the planet radius and reference
+gravity, both quoted at the reference pressure, and the stellar radius. There
+is no default planet.
 
-The radiative transfer is verified against petitRADTRANS 3.4.0 in both
-observables, pinned by committed fixtures in `tests/`; the chemistry port is
-verified against VULCAN 2.0. Figures: `validation/figures/`.
+## Validation and limits
+
+The tests compare transmission and emission calculations with
+[petitRADTRANS](https://doi.org/10.1051/0004-6361/201935470), and compare the
+chemistry with VULCAN. The committed figures are in
+[`validation/figures/`](validation/figures/).
 
 ```bash
+python -m pip install -e ".[dev]"
 python -m pytest tests -q
 ```
 
+The result is only as complete as the selected reaction network, opacity
+tables, pressure grid, and cloud model. Check wavelength and temperature
+coverage before using a new molecule or atmosphere. Condensation is not
+validated for gradient inference.
+
+## Papers and citation
+
+Published work should cite the components used by the run:
+
+- VULCAN: [Tsai et al. (2017)](https://doi.org/10.3847/1538-4365/228/2/20)
+  and [Tsai et al. (2021)](https://doi.org/10.3847/1538-4357/ac29bc)
+- ExoJAX: [Kawahara et al. (2022)](https://arxiv.org/abs/2105.14782) and
+  [Kawahara et al. (2025)](https://arxiv.org/abs/2410.06900)
+- ExoMolOP tables: [Chubb et al. (2021)](https://doi.org/10.1051/0004-6361/202038350)
+- FastChem initialization: [Stock et al. (2018)](https://doi.org/10.1093/mnras/sty1531)
+
+Also record the package versions, opacity sources, reaction network, and model
+configuration.
+
 ## License
 
-GPLv3, inherited from VULCAN.
+`vulcan-forward` is released under GPLv3.
