@@ -51,6 +51,30 @@ ROOT = f"{BASE}/data/data-types/opacity"
 # resolution or span is not a substitute -- see resolve().
 GRID_TOKEN = "R1000_0.3-50mu"
 
+# Line-list DOIs for the datasets whose shipped k-table header carries a
+# PLACEHOLDER instead of a DOI (`x.xxxx/yyyyy`, `xxxxxxx/xxxxxxxxx/xxxxxx`).
+# Recorded here so provenance.json can supply what the file cannot; consumers
+# prefer this over the header. Correct headers are NOT duplicated -- they keep
+# flowing from the file, and exomolop.table_info() still reports every header
+# field verbatim. Keyed by ExoMol dataset name, the stable identity.
+_DATASET_DOI = {
+    "MM": "10.1093/mnras/stae148",       # CH4  Yurchenko+ 2024, MNRAS 528, 3719
+    "Dozen": "10.1093/mnras/staf2135",   # CO2  Yurchenko+ 2025, MNRAS 545
+    "TYM": "10.1093/mnras/stae2201",     # N2O  Yurchenko+ 2024, MNRAS 534, 1364
+    "OYT8": "10.1093/mnras/stae1110",    # OCS  Owens+ 2024, MNRAS 530, 4004
+}
+
+
+def _record(url, ds, iso, nat):
+    """One provenance.json entry. `doi` is present only for the datasets in
+    _DATASET_DOI; every other dataset is described by its header DOI."""
+    rec = {"url": url, "dataset": ds, "iso": iso, "natural_abundance": nat,
+           "file": url.rsplit("/", 1)[1]}
+    doi = _DATASET_DOI.get(ds)
+    if doi:
+        rec["doi"] = doi
+    return rec
+
 
 def _get(url, retries=3):
     """Fetch a page or RAISE. Swallowing a network failure into "" made an
@@ -199,6 +223,12 @@ def fetch(molecules, force=False):
         dest = exomolop.table_path(mol)
         if dest.exists() and not force:
             if mol in prov:
+                # Already attributed: no network, but still re-stamp the
+                # curated DOI so a change to _DATASET_DOI reaches records
+                # written before it existed. Nothing else is re-derived.
+                doi = _DATASET_DOI.get(prov[mol].get("dataset"))
+                if doi:
+                    prov[mol]["doi"] = doi
                 print(f"{mol:6s} have  {dest.stat().st_size/1e6:7.1f} MB")
                 continue
             # Present but unattributed -- what an interrupted fetch leaves
@@ -210,9 +240,7 @@ def fetch(molecules, force=False):
                       "(provenance UNRESOLVED)")
                 continue
             url, ds, iso, nat = got
-            prov[mol] = {"url": url, "dataset": ds, "iso": iso,
-                         "natural_abundance": nat,
-                         "file": url.rsplit("/", 1)[1]}
+            prov[mol] = _record(url, ds, iso, nat)
             print(f"{mol:6s} have  {dest.stat().st_size/1e6:7.1f} MB  "
                   f"(provenance backfilled: {ds} {iso})")
             continue
@@ -239,9 +267,7 @@ def fetch(molecules, force=False):
                 os.unlink(tmp)
             raise RuntimeError(f"failed to fetch {mol} from {url}: {e}") from e
         _assert_grid_matches(mol, dest, dest_dir)
-        prov[mol] = {"url": url, "dataset": ds, "iso": iso,
-                     "natural_abundance": nat,
-                     "file": url.rsplit("/", 1)[1]}
+        prov[mol] = _record(url, ds, iso, nat)
         tag = "natural-abundance" if nat else f"principal ({iso})"
         print(f"{mol:6s} GET   {dest.stat().st_size/1e6:7.1f} MB  "
               f"{time.time()-t0:5.1f}s  {ds} {tag}")
