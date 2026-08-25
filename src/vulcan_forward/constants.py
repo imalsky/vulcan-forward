@@ -53,15 +53,6 @@ ATOMIC_MASSES = [
 # sedimentation, or patchiness.
 CLOUD_NUC0 = 2857.0
 
-# Pressure-broadening perturber for the HITRAN opacities. "air" = HITRAN's
-# terrestrial gamma_air/n_air (a documented approximation for an H2/He
-# envelope); "h2he" = HITRAN's planetary-broadener H2/He widths where the
-# database provides them, blended with the number-fraction mix below (uncovered
-# lines keep air widths for that partner, reported loudly per molecule at
-# build). Callers may override per run via profile["broadening"].
-BROADENING = "air"
-H2HE_BROADENING_MIX = (0.85, 0.15)   # (f_H2, f_He) by number, ~solar envelope
-
 # ART pressure bounds (bar). The bottom stays inside VULCAN's envelope; the TOP
 # is set ABOVE VULCAN's 1e-7 bar chemistry top on purpose -- the log-P
 # interpolation CLAMPS the topmost VULCAN VMR/T over the extra decade, i.e. a
@@ -99,133 +90,97 @@ P_REF_EMISSION_BAR = 1.0e-1
 # vulcan_jax.phy_const carries the same values for the chemistry side.
 K_B_CGS = 1.380649e-16      # Boltzmann constant, erg/K
 M_U_CGS = 1.66053906660e-24  # atomic mass unit, g (mmw is in amu)
+
+# Temperature window the consumers treat as the valid RT range: the retrieval
+# derives its T-P prior window from these (draws outside are rejected, never
+# clipped). The ExoMolOP k-tables themselves span 100-3400 K and are clamped
+# at their edges by ckd._interp_logk.
 T_OPA_MIN_K = 300.0
 T_OPA_MAX_K = 3000.0
 
 # Supported wide band, 1-15 um, in wavenumber (cm^-1). The short edge is set by
-# the H2-H2 CIA table (stops at 1 um / 10000 cm^-1); line lists reach ~20 um.
+# the H2-H2 CIA table (stops at 1 um / 10000 cm^-1); the k-tables reach 50 um.
 # Consumers that want the full supported window start from these.
 WIDE_BAND_NU_MIN = 667.0     # 15 um
 WIDE_BAND_NU_MAX = 10000.0   # 1 um
 
 # ---------------------------------------------------------------------------
-# Molecule / opacity-source table
+# Molecule table
 # ---------------------------------------------------------------------------
-# Each molecule: VULCAN species name, molar mass (g/mol), and opacity source.
-# CO is fully offline (cached ExoMol Li2015). The rest use HITRAN, downloaded on
-# first run (small, public, no login -- only the main isotopologue, isotope=1;
-# HITRAN intensities already carry the terrestrial isotopic abundance factor, so
-# pairing them with the TOTAL molecular VMR is the standard slightly-
-# conservative treatment).
+# Each molecule: VULCAN species name and molar mass (g/mol). The opacity itself
+# is the published ExoMolOP k-table <MOL>.ktable.h5 (fetch_exomolop selects the
+# principal isotopologue and prefers the natural-abundance file; the dataset,
+# isotopologue and URL behind each table are recorded in the tree's
+# provenance.json, exposed by ``exomolop.provenance()``). molmass is explicit
+# and is the ONLY mass the engine uses: the k-tables are cm^2 per MOLECULE and
+# their own mol_mass header is not read (ExoMolOP's NO file carries 46, an
+# upstream metadata error; NO is 30). Do not "fix" molmass to match a file.
 #
-# KNOWN LIMITS for real-data inference, not just methodology: (1) HITRAN's 296 K
-# room-T lists under-represent hot bands at a ~770-1540 K limb relative to
-# HITEMP/ExoMol -- absolute abundances lean optimistic where hot bands matter;
-# swap "source" per molecule when the multi-GB ExoMol/HITEMP fetch is
-# acceptable. (2) Default broadening is terrestrial air; set
-# profile["broadening"]="h2he" for HITRAN's planetary H2/He widths where
-# available.
-#
-# "source" is one of {"exomol_cached", "exomol", "hitran"}. "db" is a path
-# suffix RESOLVED AGAINST THE DATA ROOTS in paths.py -- never an absolute path
-# here, so this table stays location-independent. molmass is explicit (exojax
-# isotope_molmass returns None for CH4).
+# Every table is the principal isotopologue except CO and CO2 (natural
+# abundance), paired with the TOTAL molecular VMR -- a <= ~2% opacity deficit
+# on the multi-carbon species, below the tables' own accuracy.
 #
 # Callers may pass their own table to build_rt_model via
 # profile["molecule_table"]; this is the default, not a hardcoded lookup.
 MOLECULES = {
-    "CO":  {"vulcan": "CO",  "molmass": 28.010, "source": "exomol_cached",
-            "db": "CO/12C-16O/Li2015"},
-    "H2O": {"vulcan": "H2O", "molmass": 18.015, "source": "hitran", "db": "H2O"},
-    "CO2": {"vulcan": "CO2", "molmass": 43.990, "source": "hitran", "db": "CO2"},
-    "CH4": {"vulcan": "CH4", "molmass": 16.043, "source": "hitran", "db": "CH4"},
-    "SO2": {"vulcan": "SO2", "molmass": 64.066, "source": "hitran", "db": "SO2"},
+    "CO":  {"vulcan": "CO",  "molmass": 28.010},
+    "H2O": {"vulcan": "H2O", "molmass": 18.015},
+    "CO2": {"vulcan": "CO2", "molmass": 43.990},
+    "CH4": {"vulcan": "CH4", "molmass": 16.043},
+    "SO2": {"vulcan": "SO2", "molmass": 64.066},
     # High-C/O + sulfur discriminators: C2H2/HCN carry the signal near C/O ~ 1,
     # H2S is the reduced-S reservoir.
-    "HCN":  {"vulcan": "HCN",  "molmass": 27.025, "source": "hitran", "db": "HCN"},
-    "C2H2": {"vulcan": "C2H2", "molmass": 26.037, "source": "hitran", "db": "C2H2"},
-    "H2S":  {"vulcan": "H2S",  "molmass": 34.081, "source": "hitran", "db": "H2S"},
+    "HCN":  {"vulcan": "HCN",  "molmass": 27.025},
+    "C2H2": {"vulcan": "C2H2", "molmass": 26.037},
+    "H2S":  {"vulcan": "H2S",  "molmass": 34.081},
     # Cool-planet nitrogen carrier (e.g. WASP-107b-class).
-    "NH3":  {"vulcan": "NH3",  "molmass": 17.031, "source": "hitran", "db": "NH3"},
+    "NH3":  {"vulcan": "NH3",  "molmass": 17.031},
     # Second equilibrium sulfur carrier (nu3 band ~4.85 um, inside G395H and
-    # PRISM). The SNCHO network names the species COS; the PICASO Visscher
-    # tables call it OCS (consumers alias the token).
-    "OCS":  {"vulcan": "COS",  "molmass": 60.075, "source": "hitran", "db": "OCS"},
-    # Photochemical sulfur carrier.
-    "CS2":  {"vulcan": "CS2",  "molmass": 76.131, "source": "hitran", "db": "CS2"},
-    # Simple hydrocarbons: photochemical CH4-destruction products.
-    "C2H4": {"vulcan": "C2H4", "molmass": 28.054, "source": "hitran", "db": "C2H4"},
-    "C2H6": {"vulcan": "C2H6", "molmass": 30.069, "source": "hitran", "db": "C2H6"},
-    # RADICALS. All four are species in
-    # VULCAN's SNCHO network, and the published Tsai et al. 2023 WASP-39 b
-    # output carries SH and SO, so they are part of an apples-to-apples
-    # comparison with that model -- species coverage was one of the three
-    # measured reasons this engine's spectra had too much contrast.
-    #
-    # Their "db" entries are the ExoMol datasets ExoMolOP itself built from, so
-    # opacity_mode="lbl" and opacity_mode="exomolop" name the same line data --
-    # WITH ONE EXCEPTION, NO (see below).
-    # HITRAN is deliberately not used here: it has no SH at all, and these are
-    # exactly the high-temperature species its 296 K tabulation serves worst.
-    "OH": {"vulcan": "OH", "molmass": 17.007, "source": "exomol",
-           "db": "OH/16O-1H/MoLLIST-OH"},
-    "SH": {"vulcan": "SH", "molmass": 33.073, "source": "exomol",
-           "db": "SH/32S-1H/GYT"},
-    "SO": {"vulcan": "SO", "molmass": 48.064, "source": "exomol",
-           "db": "SO/32S-16O/SOLIS"},
-    # NO is the one EXOMOL-SOURCE species where the two modes do not name the
-    # same line data. (The `source: "hitran"` entries above all diverge too, by
-    # design: their lbl db is a HITRAN name while their k-table is ExoMol. The
-    # agreement claimed here is only ever within the exomol-source group.)
+    # PRISM). The SNCHO network names the species COS (consumers alias the
+    # token).
+    "OCS":  {"vulcan": "COS",  "molmass": 60.075},
+    # Photochemical sulfur carrier and a CH4-destruction product. ExoMolOP
+    # publishes NO k-table for either (CS2: no ExoMol line list; C2H6: page but
+    # no petitRADTRANS file), so they are listed for completeness and refused
+    # at load with the fetch hint.
+    "CS2":  {"vulcan": "CS2",  "molmass": 76.131},
+    "C2H6": {"vulcan": "C2H6", "molmass": 30.069},
+    # Simple hydrocarbon: photochemical CH4-destruction product.
+    "C2H4": {"vulcan": "C2H4", "molmass": 28.054},
+    # RADICALS. All four are species in VULCAN's SNCHO network, and the
+    # published Tsai et al. 2023 WASP-39 b output carries SH and SO, so they are
+    # part of an apples-to-apples comparison with that model -- species coverage
+    # was one of the three measured reasons this engine's spectra had too much
+    # contrast.
+    "OH": {"vulcan": "OH", "molmass": 17.007},
+    "SH": {"vulcan": "SH", "molmass": 33.073},
+    "SO": {"vulcan": "SO", "molmass": 48.064},
     # ExoMolOP's recommended NO opacity is built from HITEMP
-    # (`14N-16O__HITEMP.R1000_0.3-50mu...`), while the lbl path below requests
-    # ExoMol's XABC list. Both are legitimate high-temperature NO data, so
-    # neither mode is wrong, but they are not the same. Left as XABC because
-    # that is a real ExoMol dataset the lbl fetch can resolve; "HITEMP" is not
-    # a path on exomol.com. NO peaks at 2.0e-08 (W39b).
-    # That HITEMP k-table also carries mol_mass = 46 (NO is 30) -- an upstream
-    # metadata error, INERT here: exomolop.load_tables reads only bin_edges /
-    # samples / weights / t / p / kcoeff, and their kcoeff is cm^2 per
-    # MOLECULE, so no mass enters the opacity. Identity confirmed from the
-    # data instead: peak at 1924 cm^-1 (5.20 um) with an overtone at 2.66 um
-    # is the NO fundamental, not NO2 or NS. Do not "fix" molmass below to
-    # match the file.
-    "NO": {"vulcan": "NO", "molmass": 30.006, "source": "exomol",
-           "db": "NO/14N-16O/XABC"},
-    # SECOND-TIER SPECIES (2026-08-17), from sweeping every IR-active SNCHO
-    # species against ExoMolOP. Present so the menu is COMPLETE, not because
-    # each is expected to matter; which ones default ON is decided by measured
-    # ppm, in vulcan-jwst-tool forward.EXTRA_MOLECULES_DEFAULT. "db" is the
-    # ExoMol dataset the table was built from, and every isotopologue is the
-    # PRINCIPAL one (fetch_exomolop enforces it).
+    # (14N-16O__HITEMP.R1000_0.3-50mu). Identity confirmed from the data: peak
+    # at 1924 cm^-1 (5.20 um) with an overtone at 2.66 um is the NO
+    # fundamental, not NO2 or NS. NO peaks at 2.0e-08 (W39b).
+    "NO": {"vulcan": "NO", "molmass": 30.006},
+    # SECOND-TIER SPECIES, from sweeping every IR-active SNCHO species against
+    # ExoMolOP. Present so the menu is COMPLETE, not because each is expected
+    # to matter; which ones default ON is decided by measured ppm, in
+    # vulcan-jwst-tool forward.EXTRA_MOLECULES_DEFAULT.
     #
-    # CANNOT be added, checked 2026-08-17, do not re-sweep: O2 (published only
-    # at R15000_0.2-30mu -- different band grid), CS2 (no ExoMol line list;
-    # pRT's is HITRAN 296 K, declined), C2H6 / CH3OH / CH3CN / HC3N / NO2 /
-    # C6H6 / CH3CHO / HO2 (page, no petitRADTRANS file), and ~19 radicals and
-    # nitriles absent entirely. The painful two are HSO (1.2e-4) and S2
-    # (9.7e-5), both MORE abundant than SO2 on W39b: S2 is homonuclear so it
-    # has no IR dipole, HSO has no published list. Full record: notes.md.
-    "NS":   {"vulcan": "NS",   "molmass": 46.072, "source": "exomol",
-             "db": "NS/14N-32S/SNaSH"},
-    "CH3":  {"vulcan": "CH3",  "molmass": 15.035, "source": "exomol",
-             "db": "CH3/12C-1H3/AYYJ"},
-    "NH":   {"vulcan": "NH",   "molmass": 15.015, "source": "exomol",
-             "db": "NH/14N-1H/MoLLIST-NH"},
-    "CN":   {"vulcan": "CN",   "molmass": 26.018, "source": "exomol",
-             "db": "CN/12C-14N/MoLLIST-CN"},
-    "H2CO": {"vulcan": "H2CO", "molmass": 30.026, "source": "exomol",
-             "db": "H2CO/1H2-12C-16O/AYTY"},
-    "CS":   {"vulcan": "CS",   "molmass": 44.076, "source": "exomol",
-             "db": "CS/12C-32S/JnK"},
-    "N2O":  {"vulcan": "N2O",  "molmass": 44.013, "source": "exomol",
-             "db": "N2O/14N2-16O/TYM"},
-    "CH":   {"vulcan": "CH",   "molmass": 13.019, "source": "exomol",
-             "db": "CH/12C-1H/MoLLIST"},
-    "C2":   {"vulcan": "C2",   "molmass": 24.022, "source": "exomol",
-             "db": "C2/12C2/8states"},
-    "H2O2": {"vulcan": "H2O2", "molmass": 34.015, "source": "exomol",
-             "db": "H2O2/1H2-16O2/APTY"},
+    # CANNOT be added, do not re-sweep: O2 (published only at R15000_0.2-30mu
+    # -- different band grid), CH3OH / CH3CN / HC3N / NO2 / C6H6 / CH3CHO / HO2
+    # (page, no petitRADTRANS file), and ~19 radicals and nitriles absent
+    # entirely. The painful two are HSO (1.2e-4) and S2 (9.7e-5), both MORE
+    # abundant than SO2 on W39b: S2 is homonuclear so it has no IR dipole, HSO
+    # has no published list. Full record: notes.md.
+    "NS":   {"vulcan": "NS",   "molmass": 46.072},
+    "CH3":  {"vulcan": "CH3",  "molmass": 15.035},
+    "NH":   {"vulcan": "NH",   "molmass": 15.015},
+    "CN":   {"vulcan": "CN",   "molmass": 26.018},
+    "H2CO": {"vulcan": "H2CO", "molmass": 30.026},
+    "CS":   {"vulcan": "CS",   "molmass": 44.076},
+    "N2O":  {"vulcan": "N2O",  "molmass": 44.013},
+    "CH":   {"vulcan": "CH",   "molmass": 13.019},
+    "C2":   {"vulcan": "C2",   "molmass": 24.022},
+    "H2O2": {"vulcan": "H2O2", "molmass": 34.015},
 }
 
 # Bulk gas used for CIA + the dominant background (H2).

@@ -1,21 +1,19 @@
 """Data-root contract for the shared forward engine.
 
-The engine needs three external data trees at RUN time: the HITRAN/ExoMol line
-lists it downloads into, the offline opacity cache (cached CO ExoMol lines), and
-the two H2-H2 / H2-He CIA tables. Together these are tens of gigabytes, so they
-are never vendored -- the consumer says where they live.
+The engine needs two external data trees at RUN time: the ExoMolOP k-tables
+(~389 MB per species) and the offline opacity cache holding the two H2-H2 /
+H2-He CIA tables. Together these are ~10 GB, so they are never vendored -- the
+consumer says where they live.
 
 CONTRACT (deliberately explicit -- no inference, no silent fallback):
 
     $VULCAN_FORWARD_DATA   the data root. Expected layout:
-                             <root>/exojax_linelists/    line-list caches
-                             <root>/opacity_cache/       offline caches + CIA
+                             <root>/opacity_cache/       CIA tables
                              <root>/exomolop/            ExoMolOP k-tables
-                                 (~389 MB/species; python -m
-                                 vulcan_forward.fetch_exomolop)
+                                 (<MOL>.ktable.h5 + provenance.json;
+                                 python -m vulcan_forward.fetch_exomolop)
 
-    Individual trees can be overridden independently:
-      $VULCAN_FORWARD_LINELISTS      overrides <root>/exojax_linelists
+    The cache tree can be overridden independently:
       $VULCAN_FORWARD_OPACITY_CACHE  overrides <root>/opacity_cache
 
 A consumer may also set these programmatically with ``set_data_root()`` before
@@ -35,7 +33,6 @@ import os
 from pathlib import Path
 
 ENV_ROOT = "VULCAN_FORWARD_DATA"
-ENV_LINELISTS = "VULCAN_FORWARD_LINELISTS"
 ENV_OPACITY_CACHE = "VULCAN_FORWARD_OPACITY_CACHE"
 
 # Programmatic override, for a consumer that owns its own config surface.
@@ -45,8 +42,8 @@ _root_override: Path | None = None
 def set_data_root(root: str | os.PathLike) -> None:
     """Point the engine at a data root for this process.
 
-    Takes precedence over $VULCAN_FORWARD_DATA. The per-tree env vars still
-    win, so a caller can relocate one tree without moving the rest.
+    Takes precedence over $VULCAN_FORWARD_DATA. The per-tree env var still
+    wins, so a caller can relocate the cache tree without moving the rest.
     """
     global _root_override
     _root_override = Path(root).expanduser()
@@ -66,16 +63,15 @@ def data_root() -> Path:
         if not env:
             raise RuntimeError(
                 f"vulcan_forward needs a data root: set ${ENV_ROOT} to the "
-                "directory holding exojax_linelists/ and opacity_cache/, or "
-                "call vulcan_forward.paths.set_data_root(...) before building "
-                "a model. (Line lists and CIA tables are tens of GB, so they "
-                "are never bundled with the package.)")
+                "directory holding opacity_cache/ and exomolop/, or call "
+                "vulcan_forward.paths.set_data_root(...) before building a "
+                "model. (The k-tables and CIA tables are ~10 GB, so they are "
+                "never bundled with the package.)")
         root = Path(env).expanduser()
     if not root.is_dir():
         raise RuntimeError(
             f"vulcan_forward data root does not exist: {root}. Set ${ENV_ROOT} "
-            "to an existing directory holding exojax_linelists/ and "
-            "opacity_cache/.")
+            "to an existing directory holding opacity_cache/ and exomolop/.")
     return root
 
 
@@ -98,15 +94,13 @@ def ensure_layout() -> Path:
         if not env:
             raise RuntimeError(
                 f"vulcan_forward needs a data root: set ${ENV_ROOT} to the "
-                "directory that should hold exojax_linelists/ and "
-                "opacity_cache/, then run the setup command again.")
+                "directory that should hold opacity_cache/ and exomolop/, "
+                "then run the setup command again.")
         root = Path(env).expanduser()
     root.mkdir(parents=True, exist_ok=True)
-    for env_var, subdir in ((ENV_LINELISTS, "exojax_linelists"),
-                            (ENV_OPACITY_CACHE, "opacity_cache")):
-        override = os.environ.get(env_var, "").strip()
-        target = Path(override).expanduser() if override else root / subdir
-        target.mkdir(parents=True, exist_ok=True)
+    override = os.environ.get(ENV_OPACITY_CACHE, "").strip()
+    cache = Path(override).expanduser() if override else root / "opacity_cache"
+    cache.mkdir(parents=True, exist_ok=True)
     (root / "exomolop").mkdir(parents=True, exist_ok=True)
     return root
 
@@ -123,20 +117,15 @@ def _tree(env_var: str, subdir: str, *, what: str) -> Path:
     return path
 
 
-def linelist_dir() -> Path:
-    """Where exojax/radis caches downloaded HITRAN + ExoMol line lists."""
-    return _tree(ENV_LINELISTS, "exojax_linelists", what="line-list")
-
-
 def opacity_cache_dir() -> Path:
-    """Offline opacity cache: the cached CO ExoMol tree and the CIA tables."""
+    """Offline opacity cache: the two CIA tables."""
     return _tree(ENV_OPACITY_CACHE, "opacity_cache", what="opacity-cache")
 
 
 def exomolop_dir() -> Path:
     """ExoMolOP k-table tree (<MOL>.ktable.h5 + provenance.json).
 
-    No existence check HERE, unlike the ``_tree`` accessors: the loud
+    No existence check HERE, unlike the ``_tree`` accessor: the loud
     FileNotFoundError with the exact fetch command lives in
     ``exomolop.load_tables``, and datacheck wants the path even when the
     tree is absent so it can report per-molecule MISSING items.
@@ -162,16 +151,3 @@ def cia_h2he_file() -> Path:
     continuum.
     """
     return opacity_cache_dir() / "H2-He_2011.cia"
-
-
-def resolve_db(spec_db: str, source: str) -> str:
-    """Resolve a molecule table's ``db`` suffix against the right data tree.
-
-    ``exomol_cached`` entries name a path under the offline opacity cache;
-    everything else names a per-molecule download directory under the line-list
-    tree. Keeping this out of the molecule table is what lets that table stay
-    location-independent.
-    """
-    if source == "exomol_cached":
-        return str(opacity_cache_dir() / spec_db)
-    return str(linelist_dir() / spec_db)

@@ -89,6 +89,25 @@ def test_emission_fixture_unit_conversion_is_recorded_and_consistent():
     assert "nu_tilde^2" in meta["units"]
 
 
+def test_exok_fixture_arrays_and_provenance():
+    """The exo_k oracle fixture (reader + interpolation + overlap, asserted
+    against the real tables in test_exomolop) stays parseable and complete in
+    the light CI."""
+    z = np.load(DATA / "exok_ref_overlap.npz")
+    meta = json.loads(bytes(np.asarray(z["meta"])))
+    assert meta["exo_k_version"] == "1.3.1"
+    assert meta["script_text"].strip() and "RandOverlap" in meta["script_text"]
+    assert meta["molecules"] == ["H2O", "CO2", "CH4"]
+    assert set(meta["vmr"]) == set(meta["molecules"])
+    assert set(meta["tables"]) == set(meta["molecules"])
+    for name, shape in (("k_on", (3, 3, 16, 58)), ("k_off", (3, 2, 16, 58)),
+                        ("k_mix_on", (3, 16, 58))):
+        a = np.asarray(z[name])
+        assert a.shape == shape and np.all(np.isfinite(a)) and np.all(a > 0), name
+    assert np.all(np.diff(z["wn_edges_lo"]) > 0)
+    assert np.asarray(z["weights"]).sum() == pytest.approx(1.0, abs=1e-12)
+
+
 def test_chemistry_table_parses():
     raw = np.genfromtxt(DATA / "wasp39b_10Xsolar_evening_vulcan.txt",
                         skip_header=2)

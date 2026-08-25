@@ -148,7 +148,7 @@ def _gquad(ng=16):
 
 def test_ckd_emission_matches_line_by_line_when_every_g_is_identical():
     """If k does not vary across the band, the k-distribution is degenerate and
-    the CKD flux MUST equal the plain line-by-line flux on the same bands.
+    the CKD flux MUST equal exojax's plain single-k flux on the same bands.
 
     This is the index-convention test. dtau is reshaped (nlayer, ng*nband) and
     the source is tiled along its last axis; if either side flattened

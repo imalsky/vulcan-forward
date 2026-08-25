@@ -2,16 +2,31 @@
 
 These run without exojax on purpose: ``vulcan_forward.ckd`` never imports it,
 so the quadrature, the band grid, the (T, P) interpolation and the overlap are
-all testable in a bare environment. (Never ``pytest.importorskip("exojax")``
-in this repo -- it poisons the import-order contract for every later module in
-the session.)
+all testable in a bare environment. The one exojax-backed test (the
+interpolation oracle) skips via ``find_spec``. (Never
+``pytest.importorskip("exojax")`` in this repo -- it poisons the import-order
+contract for every later module in the session.)
 """
 from __future__ import annotations
+
+import importlib.util
 
 import numpy as np
 import pytest
 
-from vulcan_forward import ckd
+import jax
+
+# x64 mirrors production; without it the 1e-12 oracle agreement below would
+# read ~1e-6 and fail loudly rather than pass silently, but set it anyway.
+jax.config.update("jax_enable_x64", True)
+
+HAVE_EXOJAX = importlib.util.find_spec("exojax") is not None
+if HAVE_EXOJAX and importlib.util.find_spec("vulcan_jax") is not None:
+    # import-order contract: vulcan_chem before anything exojax, in every
+    # collection order (test_contract's geometry test imports exojax_rt)
+    from vulcan_forward import vulcan_chem  # noqa: F401
+
+from vulcan_forward import ckd  # noqa: E402
 
 
 
@@ -161,3 +176,29 @@ def test_interp_logk_clamps_outside_the_table_rather_than_extrapolating():
                                      jnp.asarray([1e3])))
     assert np.allclose(lo[0], np.asarray(logk)[0, 0])
     assert np.allclose(hi[0], np.asarray(logk)[-1, -1])
+
+
+@pytest.mark.skipif(not HAVE_EXOJAX, reason="exojax not installed (light CI)")
+def test_interp_logk_matches_exojax_interpolate_log_k_2d():
+    """Independent implementation of the same algorithm. exojax's
+    ``interpolate_log_k_2d`` (opacity/ckd/core.py) is bilinear in (T, log P)
+    on log k with jnp.interp clamping, on the same (nT, nP, ng, nband)
+    layout, but interpolates over T per P-column and then over log P, where
+    ours forms fractional indices and blends four corners. Agreement is
+    float64 rounding: measured max |dlogk| 2.8e-14 (77% bit-identical) at
+    off-grid and out-of-range points; 1e-12 is 35x that and nine orders below
+    the float32 error the x64 contract exists to prevent."""
+    import jax.numpy as jnp
+    from exojax.opacity.ckd.core import interpolate_log_k_2d
+
+    rng = np.random.default_rng(0)
+    t = jnp.asarray(np.linspace(300.0, 3000.0, 6))
+    p = jnp.asarray(np.logspace(-5, 2, 5))
+    logk = jnp.asarray(rng.normal(-60.0, 20.0, size=(6, 5, 4, 7)))
+    T = jnp.asarray([100.0, 350.0, 1234.5, 2999.0, 3000.0, 5000.0])
+    P = jnp.asarray([1e-9, 1e-5, 3.3e-3, 0.7, 99.9, 1e3])
+    ours = np.asarray(ckd._interp_logk(logk, t, p, T, P))
+    ref = np.stack([np.asarray(interpolate_log_k_2d(logk, t, p, T[i], P[i]))
+                    for i in range(6)])
+    assert ours.dtype == np.float64
+    assert np.allclose(ours, ref, rtol=0.0, atol=1e-12)

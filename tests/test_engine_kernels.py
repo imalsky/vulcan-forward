@@ -1,19 +1,11 @@
-"""The two engine kernels that fail SILENTLY when wrong.
+"""The engine kernel that fails SILENTLY when wrong.
 
-`interp_map.make_to_art` and `exojax_rt._blend_h2he_broadening` are both silent
-failure modes: a wrong interpolation returns a plausible profile, and a wrong
-broadening blend returns plausible line widths. Neither raises, so nothing
-downstream notices.
-
-`make_to_art` needs jax (it returns a jnp interpolator) and runs in this repo's
-light CI. The blend BODY is pure numpy and runs against a stub `mdb`, but it
-lives in `exojax_rt`, which imports exojax at module scope, so reaching it
-needs the RT stack: those five skip where exojax is absent. See the comment
-above them.
+`interp_map.make_to_art` returns a plausible profile when its interpolation is
+wrong, and nothing downstream notices. It needs jax (it returns a jnp
+interpolator) and runs in this repo's light CI.
 """
-from __future__ import annotations
 
-import importlib.util
+from __future__ import annotations
 
 import numpy as np
 import pytest
@@ -93,105 +85,3 @@ def test_to_art_allows_a_shallower_art_top_with_a_notice(capsys):
     assert "above the" in capsys.readouterr().out
     out = np.asarray(fn(jnp.asarray(np.linspace(-3, -9, 20))))
     assert np.all(np.isfinite(out))
-
-
-# ---------------------------------------------------------------------------
-# exojax_rt._blend_h2he_broadening
-# ---------------------------------------------------------------------------
-# The blend body is pure numpy, but it lives in `exojax_rt`, which imports
-# exojax at MODULE scope -- so REACHING the function needs the RT stack even
-# though exercising it does not. Skip only these five: the make_to_art tests
-# above need no RT stack and must keep running in this repo's deliberately
-# light CI. Same treatment as test_gravity_profile.py and the two exojax cases
-# in test_contract.py, so the blend is covered wherever the stack is installed
-# (locally and in both consumers' environments). Moving the function somewhere
-# import-free was considered and rejected: it operates on an exojax mdb and
-# belongs beside it.
-needs_rt_stack = pytest.mark.skipif(
-    importlib.util.find_spec("exojax") is None,
-    reason="_blend_h2he_broadening is reached through exojax_rt, which imports "
-           "exojax at module scope; the blend itself needs no RT stack")
-
-
-class _StubMdb:
-    """Minimal stand-in for an exojax mdb: only the columns the blend reads."""
-
-    def __init__(self, n=6, **cols):
-        self.gamma_air = np.full(n, 0.05)
-        self.n_air = np.full(n, 0.60)
-        for k, v in cols.items():
-            setattr(self, k, np.asarray(v, float))
-
-
-def _blend(mdb, key="H2O"):
-    from vulcan_forward.exojax_rt import _blend_h2he_broadening
-    _blend_h2he_broadening(mdb, key)
-    return mdb
-
-
-@needs_rt_stack
-def test_blend_is_the_number_weighted_mix_when_both_partners_cover():
-    from vulcan_forward import constants
-    f_h2, f_he = constants.H2HE_BROADENING_MIX
-    n = 6
-    g_h2, g_he = 0.070, 0.030
-    n_h2, n_he = 0.70, 0.40
-    mdb = _StubMdb(n, gamma_h2=np.full(n, g_h2), n_h2=np.full(n, n_h2),
-                   gamma_he=np.full(n, g_he), n_he=np.full(n, n_he))
-    _blend(mdb)
-    want_g = f_h2 * g_h2 + f_he * g_he
-    # the exponent is the GAMMA-weighted mean, not the number-weighted one
-    want_n = (f_h2 * g_h2 * n_h2 + f_he * g_he * n_he) / want_g
-    assert np.allclose(mdb.gamma_air, want_g, rtol=1e-12)
-    assert np.allclose(mdb.n_air, want_n, rtol=1e-12)
-    # air must be genuinely replaced, not blended with
-    assert not np.isclose(mdb.gamma_air[0], 0.05)
-
-
-@needs_rt_stack
-def test_uncovered_lines_fall_back_to_air_for_that_partner_only():
-    """A line with an invalid H2 width keeps gamma_air for H2 and its real He."""
-    from vulcan_forward import constants
-    f_h2, f_he = constants.H2HE_BROADENING_MIX
-    n = 4
-    g_h2 = np.array([0.070, 0.070, np.nan, -1.0])   # last two invalid
-    g_he = np.full(n, 0.030)
-    mdb = _StubMdb(n, gamma_h2=g_h2, n_h2=np.full(n, 0.70),
-                   gamma_he=g_he, n_he=np.full(n, 0.40))
-    _blend(mdb)
-    covered = f_h2 * 0.070 + f_he * 0.030
-    fell_back = f_h2 * 0.05 + f_he * 0.030      # gamma_air for the H2 part
-    assert np.allclose(mdb.gamma_air[:2], covered, rtol=1e-12)
-    assert np.allclose(mdb.gamma_air[2:], fell_back, rtol=1e-12)
-    assert np.all(np.isfinite(mdb.gamma_air)), "a NaN width must never survive"
-
-
-@needs_rt_stack
-def test_a_missing_partner_column_still_blends_with_the_other():
-    """He-only coverage: the H2 share uses gamma_air, and nothing raises."""
-    from vulcan_forward import constants
-    f_h2, f_he = constants.H2HE_BROADENING_MIX
-    n = 5
-    mdb = _StubMdb(n, gamma_he=np.full(n, 0.030), n_he=np.full(n, 0.40))
-    _blend(mdb)
-    assert np.allclose(mdb.gamma_air, f_h2 * 0.05 + f_he * 0.030, rtol=1e-12)
-
-
-@needs_rt_stack
-def test_no_h2_or_he_columns_at_all_raises():
-    """Silently returning terrestrial-air widths is the failure to prevent."""
-    mdb = _StubMdb(4)
-    with pytest.raises(RuntimeError, match="no H2/He broadening"):
-        _blend(mdb, key="CO2")
-
-
-@needs_rt_stack
-def test_blend_reports_per_molecule_coverage(capsys):
-    """Coverage must be printed: a 3%-covered molecule is nearly air."""
-    n = 10
-    g_h2 = np.where(np.arange(n) < 3, 0.070, np.nan)   # 30% covered
-    mdb = _StubMdb(n, gamma_h2=g_h2, n_h2=np.full(n, 0.70),
-                   gamma_he=np.full(n, 0.030), n_he=np.full(n, 0.40))
-    _blend(mdb, key="CH4")
-    out = capsys.readouterr().out
-    assert "CH4" in out and "30.0%" in out and "He 100.0%" in out

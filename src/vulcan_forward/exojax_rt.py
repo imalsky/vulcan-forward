@@ -1,14 +1,23 @@
-"""ExoJax side of the demo: a differentiable ``ArtTransPure`` transmission model.
+"""ExoJax side of the engine: differentiable ``ArtTransPure`` / ``ArtEmisPure`` models.
 
-``build_rt_model(profile)`` builds (once) the wavenumber grid, one premodit opacity
-per molecule, the H2-H2 collision-induced-absorption table, and an ``ArtTransPure``
-radiative-transfer object. It returns a model whose ``transmission_depth(vmr, vmr_h2,
-T_art, mmw_art)`` maps per-layer VMR + temperature + mean-molecular-weight profiles
-(already interpolated onto the ART grid) to the transit depth ``(R_p(lambda)/R_star)^2``.
+``build_rt_model(profile)`` builds (once) the correlated-k band grid from the
+ExoMolOP k-tables of the molecules named in ``profile``, the H2-H2 and H2-He
+collision-induced-absorption tables, and an ``ArtTransPure`` radiative-transfer
+object. It returns a model whose ``transmission_depth(vmr, vmr_h2, T_art,
+mmw_art, vmr_he)`` maps per-layer VMR + temperature + mean-molecular-weight
+profiles (already interpolated onto the ART grid) to the transit depth
+``(R_p(lambda)/R_star)^2``. ``build_emis_model`` shares the opacities for the
+emergent-flux observable.
 
-Everything inside ``transmission_depth`` is pure JAX, so forward-mode tangents from the
-chemistry pass straight through to the spectrum. Opacities are built in float64 (x64 is
-globally enabled), matching the chemistry side -- no dtype break.
+Everything inside the run functions is pure JAX, so forward-mode tangents from
+the chemistry pass straight through to the spectrum. Opacities are float64 (x64
+is globally enabled), matching the chemistry side -- no dtype break.
+
+Correlated-k over the published ExoMolOP tables is the ONLY opacity path. The
+sampled line-by-line mode and the Mie condensate deck were removed in 0.11.0:
+sampling below exojax's critical R = 700,000 is measurably biased and the Mie
+deck was the only thing that still needed it. A profile that asks for either
+is refused, never silently mapped onto this path.
 """
 from __future__ import annotations
 
@@ -17,14 +26,12 @@ from types import SimpleNamespace
 
 import numpy as np
 import jax
-jax.config.update("jax_enable_x64", True)  # OpaPremodit refuses 32-bit; safe if already set
+jax.config.update("jax_enable_x64", True)  # the k-tables are float64; safe if already set
 import jax.numpy as jnp
 
 from vulcan_forward import constants, paths
 
-from exojax.utils.grids import wavenumber_grid
-from exojax.database.api import MdbExomol, MdbHitran
-from exojax.opacity import OpaPremodit, OpaCIA
+from exojax.opacity import OpaCIA
 from exojax.rt import ArtTransPure, ArtEmisPure
 from exojax.atm.atmconvert import vmr_to_mmr
 from exojax.atm.simple_clouds import powerlaw_clouds
@@ -41,116 +48,29 @@ _H2_MOLMASS, _HE_MOLMASS = 2.016, 4.0026   # g/mol, for the Rayleigh mmr convers
 # xs are per-molecule cross sections; a per-gram kappa must NOT pick up the 1/m_u.)
 _BAR_CGS = 1.0e6
 
-
-def _blend_h2he_broadening(mdb, key: str) -> None:
-    """Overwrite ``mdb.gamma_air``/``n_air`` with an H2/He-weighted Lorentz width.
-
-    HITRAN's default gamma_air/n_air describe TERRESTRIAL air, which is the wrong
-    perturber for an H2/He-dominated envelope. With ``nonair_broadening=True`` exojax
-    exposes the HITRAN planetary-broadener columns (gamma_h2/n_h2, gamma_he/n_he)
-    where the database provides them; this blends them with the fixed number-fraction
-    mix ``constants.H2HE_BROADENING_MIX`` and writes the result into the gamma_air/n_air
-    slots that OpaPremodit (and MDBSnapshot) consume, so the rest of the opacity
-    pipeline is untouched. Lines lacking a valid H2/He entry fall back to gamma_air
-    FOR THAT PARTNER, and the per-molecule coverage is printed loudly; a molecule
-    with NO coverage at all raises (use broadening="air" for it, knowingly).
-    The temperature exponent is the gamma-weighted mean (exact at T_ref, first-order
-    in the mix elsewhere).
-    """
-    g_air = np.asarray(mdb.gamma_air, dtype=np.float64)
-    n_air = np.asarray(mdb.n_air, dtype=np.float64)
-    f_h2, f_he = constants.H2HE_BROADENING_MIX
-    parts = []
-    for partner, frac in (("h2", f_h2), ("he", f_he)):
-        g = getattr(mdb, f"gamma_{partner}", None)
-        n = getattr(mdb, f"n_{partner}", None)
-        if g is None or n is None:
-            parts.append((frac, None, None, 0.0))
-            continue
-        g = np.asarray(g, dtype=np.float64)
-        n = np.asarray(n, dtype=np.float64)
-        ok = np.isfinite(g) & (g > 0.0)
-        n_ok = np.where(np.isfinite(n), n, n_air)
-        parts.append((frac, np.where(ok, g, g_air), np.where(ok, n_ok, n_air),
-                      float(ok.mean()) if g.size else 0.0))
-    if all(p[1] is None for p in parts):
-        raise RuntimeError(
-            f"broadening='h2he' requested but HITRAN supplies no H2/He broadening "
-            f"columns for {key} in this band (or the cache predates "
-            "nonair_broadening=True -- h2he mode uses a separate 'h2he/<db>' cache "
-            "dir precisely to force a fresh extended download). Either drop the "
-            f"molecule, or run it with broadening='air' knowingly.")
-    gamma_mix = np.zeros_like(g_air)
-    gn_mix = np.zeros_like(g_air)
-    for frac, g, n, _cov in parts:
-        g_eff = g_air if g is None else g
-        n_eff = n_air if n is None else n
-        gamma_mix = gamma_mix + frac * g_eff
-        gn_mix = gn_mix + frac * g_eff * n_eff
-    n_mix = gn_mix / np.where(gamma_mix > 0.0, gamma_mix, 1.0)
-    cov = {p: parts[i][3] for i, p in enumerate(("H2", "He"))}
-    print(f"[rt]   {key}: H2/He broadening blend f=({f_h2:.2f},{f_he:.2f}); line "
-          f"coverage H2 {cov['H2']:.1%}, He {cov['He']:.1%} (uncovered lines keep "
-          f"gamma_air for that partner); median gamma_mix/gamma_air = "
-          f"{np.median(gamma_mix / np.where(g_air > 0, g_air, np.nan)):.3f}", flush=True)
-    mdb.gamma_air = gamma_mix
-    mdb.n_air = n_mix
+# Profile keys of the removed line-by-line / Mie paths. Their presence means
+# the caller's code predates 0.11.0 and still expects a knob to do something;
+# refusing is the only honest answer (standing fail-loud rule).
+_REMOVED_PROFILE_KEYS = ("nu_pts", "broadening", "dit_grid_resolution",
+                         "mie_condensate", "mie_data_dir")
 
 
-def _build_opa(key: str, spec: dict, nu_grid, broadening: str = "air",
-               dit_grid_resolution: float = 1.0):
-    """Build one premodit opacity for ``key`` (CO cached; others downloaded).
-
-    ``broadening``: "air" (HITRAN default, terrestrial perturber -- documented
-    approximation) or "h2he" (HITRAN planetary H2/He widths where available, blended
-    per ``constants.H2HE_BROADENING_MIX``; separate ``h2he/<db>`` download cache).
-    ExoMol sources already carry their own default broadening and ignore the knob.
-    ``dit_grid_resolution``: the PreMODIT broadening-parameter grid spacing;
-    1.0 is this pipeline's long-standing value, smaller resolves the
-    pressure-broadening grid finer (exojax's own default is 0.2) at a slower
-    opacity build. Profile-overridable via ``profile["dit_grid_resolution"]``.
-    """
-    src = spec["source"]
-    if src in ("exomol", "exomol_cached"):
-        path = paths.resolve_db(spec["db"], src)
-        mdb = MdbExomol(path, nurange=nu_grid)
-    elif src == "hitran":
-        # isotope=1 (main isotopologue): isotope=0 pulls minor isotopologues whose
-        # TIPS partition functions are missing from hapi (e.g. SO2 (9,3) -> KeyError).
-        # HITRAN line intensities include the terrestrial isotopic abundance factor,
-        # so applying the main-isotopologue opacity to the TOTAL molecular VMR is the
-        # standard (slightly conservative) approximation documented in constants.py.
-        if broadening == "h2he":
-            # separate h2he/<db> cache dir: forces a fresh nonair_broadening
-            # download AND keeps the path stem a valid HITRAN molecule token
-            # (a "<db>_h2he" suffix breaks exojax>=2.x molecule parsing)
-            mdb = MdbHitran(str(paths.linelist_dir() / "h2he" / spec["db"]),
-                            nurange=nu_grid, isotope=1, nonair_broadening=True)
-            _blend_h2he_broadening(mdb, key)
-        elif broadening == "air":
-            mdb = MdbHitran(paths.resolve_db(spec["db"], src), nurange=nu_grid,
-                            isotope=1)
-        else:
-            raise ValueError(f"unknown broadening mode {broadening!r} "
-                             "(expected 'air' or 'h2he')")
-    else:
-        raise ValueError(f"unknown opacity source {src!r} for {key}")
-    # exojax >= 2.x deprecated the dit_grid_resolution= constructor argument:
-    # pass the SAME value through broadening_resolution. The public profile
-    # key stays "dit_grid_resolution" -- identical semantics.
-    _broad_res = {"mode": "manual", "value": float(dit_grid_resolution)}
-    try:
-        opa = OpaPremodit.from_snapshot(
-            mdb.to_snapshot(), nu_grid,
-            auto_trange=(constants.T_OPA_MIN_K, constants.T_OPA_MAX_K),
-            broadening_resolution=_broad_res)
-    except AttributeError:
-        opa = OpaPremodit(
-            mdb, nu_grid,
-            auto_trange=(constants.T_OPA_MIN_K, constants.T_OPA_MAX_K),
-            broadening_resolution=_broad_res)
-    n_lines = int(np.asarray(getattr(mdb, "nu_lines", np.zeros(0)).shape[0])) if hasattr(mdb, "nu_lines") else -1
-    return opa, n_lines
+def _refuse_removed_knobs(profile: dict) -> None:
+    mode = str(profile.get("opacity_mode", "exomolop"))
+    if mode != "exomolop":
+        raise ValueError(
+            f"opacity_mode={mode!r} is not available: the sampled line-by-line "
+            "mode ('lbl') and the Mie condensate deck were removed in "
+            "vulcan-forward 0.11.0. Correlated-k over the published ExoMolOP "
+            "tables ('exomolop', the default -- drop the key) is the only "
+            "opacity path.")
+    present = [k for k in _REMOVED_PROFILE_KEYS if k in profile]
+    if present:
+        raise ValueError(
+            f"profile keys {present} were removed in vulcan-forward 0.11.0 "
+            "together with the line-by-line mode and the Mie deck; under "
+            "correlated-k they never had an effect. Drop them rather than "
+            "carrying settings the model does not apply.")
 
 
 def _gravity_profile_invsq(art, T_art, mmw_art, radius_btm, gravity_btm):
@@ -269,105 +189,6 @@ def _radius_at(lnp_art, T_art, mmw_art, r_ref, g_ref, p_ref_bar, p_target_bar):
     return r, g_ref * (r_ref / r) ** 2
 
 
-def _accumulate_dtau(art, nu_grid, mols, opas, molmass, opacia, g_btm,
-                     vmr, vmr_h2, T_art, mmw_art,
-                     opacia_he=None, vmr_he=None, cloud=None, rayleigh_xs=None,
-                     mie_pack=None, mie=None):
-    """Per-layer optical-depth matrix ``dtau`` (nlayer, n_nu) on the ART pressure grid.
-
-    The sum of each molecule's line opacity plus the H2-H2 CIA continuum -- and,
-    optionally, H2-He CIA (``opacia_he`` + ``vmr_he``), the ExoJax power-law
-    retrieval cloud (``cloud``), and H2/He Rayleigh scattering (``rayleigh_xs``).
-    Shared by the transmission and emission models: line + CIA + cloud terms are
-    identical; Rayleigh is transmission-only BY DESIGN (it is scattering, not
-    absorption -- adding it to the pure-absorption ibased emission solver would
-    fake thermal extinction; it is also negligible at the >1 um thermal bands).
-
-    Parameters
-    ----------
-    art : ArtTransPure | ArtEmisPure   provides the pressure grid + opacity_profile_* ops
-    vmr : dict molecule -> (nlayer,) volume mixing ratio
-    vmr_h2 : (nlayer,) H2 volume mixing ratio (both H2-H2 CIA collision partners)
-    opacia_he, vmr_he : optional H2-He CIA table + He VMR profile (term skipped if
-        either is None)
-    cloud : optional (2,) array [log10 kappac0 (cm^2/g at constants.CLOUD_NUC0), alphac]
-        for ``exojax.atm.simple_clouds.powerlaw_clouds`` (alphac=0 -> gray cloud;
-        per-gram-of-atmosphere opacity, uniformly mixed: dtau = kappa(nu)*dP_cgs/g)
-
-    Pure JAX throughout, so forward-mode tangents from the chemistry pass straight through.
-
-    Each molecule's line-opacity term (and each CIA term) is wrapped in
-    ``jax.checkpoint``: reverse-mode differentiation otherwise stores every
-    molecule's PreMODIT intermediates until the backward pass (~30-50 GB per
-    spectrum on the gpu-preset grid; OOM'd a GH200 at a 6-wide particle
-    chunk). With checkpoint the backward recomputes one molecule at a time.
-    Exact same values; forward eval and forward-mode jvp are unaffected.
-    """
-    dtau = jnp.zeros((art.pressure.shape[0], nu_grid.shape[0]))
-    for key in mols:
-        def _line_term(T_art_, vmr_key_, mmw_art_, _key=key):
-            xs = opas[_key].xsmatrix(T_art_, art.pressure)         # (nlayer, n_nu)
-            mmr = vmr_to_mmr(vmr_key_, molmass[_key], mmw_art_)
-            return art.opacity_profile_xs(xs, mmr, molmass[_key], g_btm)
-        dtau = dtau + jax.checkpoint(_line_term)(T_art, vmr[key], mmw_art)
-    # opacity_profile_cia divides a (nlayer, n_nu) matrix by mmw, so mmw must broadcast
-    # as (nlayer, 1) here -- note art.run separately wants the 1-D (nlayer,) form.
-
-    def _cia_term(opacia_, T_art_, vmr_a, vmr_b, mmw_art_):
-        logacia_ = opacia_.logacia_matrix(T_art_)
-        return art.opacity_profile_cia(
-            logacia_, T_art_, vmr_a, vmr_b, mmw_art_[:, None], g_btm)
-
-    dtau = dtau + jax.checkpoint(
-        lambda t, va, vb, m: _cia_term(opacia, t, va, vb, m))(
-        T_art, vmr_h2, vmr_h2, mmw_art)
-    if opacia_he is not None and vmr_he is not None:
-        dtau = dtau + jax.checkpoint(
-            lambda t, va, vb, m: _cia_term(opacia_he, t, va, vb, m))(
-            T_art, vmr_h2, vmr_he, mmw_art)
-    if cloud is not None:
-        # ExoJax's shipped retrieval cloud (pRT convention, per gram of atmosphere).
-        kappa_c = powerlaw_clouds(nu_grid, kappac0=10.0 ** cloud[0],
-                                  nuc0=constants.CLOUD_NUC0, alphac=cloud[1])  # (n_nu,)
-        dP = jnp.asarray(art.dParr)                                # (nlayer,) bar
-        dtau = dtau + kappa_c[None, :] * (dP[:, None] * _BAR_CGS / g_btm)
-    if mie is not None:
-        # Mie cloud deck (exojax PdbCloud/OpaMie): column-uniform condensate
-        # MMR, one lognormal size distribution; mie = [log10 rg (cm), sigmag,
-        # log10 MMR]. sigma_extinction is the correct chord attenuation.
-        # Differentiable: the miegrid interp is piecewise-linear, edge-clamped
-        # (callers keep parameters strictly inside the grid).
-        if mie_pack is None:
-            raise ValueError(
-                "mie parameters passed but the RT was built without "
-                "mie_condensate: rebuild with profile['mie_condensate'] set "
-                "(never silently ignore a requested cloud).")
-        opa_mie_, rho_c = mie_pack
-        rg = 10.0 ** mie[0]
-        sigmag = mie[1]
-        mmr = 10.0 ** mie[2]
-        sig_ext, _sig_sca, _g_asym = opa_mie_.mieparams_vector(rg, sigmag)
-        mmr_prof = jnp.full((art.pressure.shape[0],), 1.0) * mmr
-        dtau = dtau + art.opacity_profile_cloud_lognormal(
-            sig_ext, rho_c, mmr_prof, rg, sigmag, g_btm)
-    if rayleigh_xs is not None:
-        # H2 (+He) Rayleigh scattering -- zero-free-parameter known physics that
-        # matters short of ~1.5 um; omitting it would bias the retrieved haze slope.
-        # rayleigh_xs = (xs_h2, xs_he), each (n_nu,) from exojax xsvector_rayleigh_gas.
-        xs_h2, xs_he = rayleigh_xs
-        nlayer = art.pressure.shape[0]
-        mmr_h2 = vmr_to_mmr(vmr_h2, _H2_MOLMASS, mmw_art)
-        dtau = dtau + art.opacity_profile_xs(
-            jnp.broadcast_to(xs_h2[None, :], (nlayer, xs_h2.shape[0])),
-            mmr_h2, _H2_MOLMASS, g_btm)
-        if vmr_he is not None:
-            mmr_he = vmr_to_mmr(vmr_he, _HE_MOLMASS, mmw_art)
-            dtau = dtau + art.opacity_profile_xs(
-                jnp.broadcast_to(xs_he[None, :], (nlayer, xs_he.shape[0])),
-                mmr_he, _HE_MOLMASS, g_btm)
-    return dtau
-
-
 def _accumulate_dtau_ckd(art, pack, mols, molmass, opacia, opacia_he,
                          vmr, vmr_h2, vmr_he, T_art, mmw_art, g_btm,
                          cloud=None, rayleigh_xs=None):
@@ -378,11 +199,12 @@ def _accumulate_dtau_ckd(art, pack, mols, molmass, opacia, opacia_he,
     resort-rebin (see ``vulcan_forward.ckd``). The continua -- CIA, Rayleigh,
     the power-law cloud -- are smooth across a band, so their band value adds
     identically to every g-ordinate; that is exact, not an approximation, to
-    the accuracy of a smooth function over one R=500 band.
+    the accuracy of a smooth function over one R=1000 band.
 
-    Mie is deliberately unsupported here: its extinction has structure across a
-    band and folding it into a k-distribution built from line opacity alone
-    would be wrong. The caller refuses instead of silently approximating.
+    Shared by the transmission and emission models. Rayleigh is
+    transmission-only BY DESIGN: it is scattering, not absorption, and the
+    pure-absorption emission solver must not count it as thermal extinction
+    (it is also negligible at the >1 um thermal bands).
     """
     from vulcan_forward import ckd as _ckd
 
@@ -413,8 +235,18 @@ def _ckd_dt_one(art, pack, key, molmass, vmr_key, T_art, mmw_art, g_btm, P):
 
 def _ckd_continuum(art, pack, opacia, opacia_he, vmr_h2, vmr_he,
                    T_art, mmw_art, g_btm, cloud, rayleigh_xs):
-    """Band continuum (nlayer, nband): CIA + Rayleigh + power-law cloud."""
+    """Band continuum (nlayer, nband): CIA + Rayleigh + power-law cloud.
+
+    ``cloud`` is the optional (2,) array [log10 kappac0 (cm^2/g at
+    constants.CLOUD_NUC0), alphac] for ``exojax.atm.simple_clouds.powerlaw_clouds``
+    (alphac=0 -> gray cloud; per-gram-of-atmosphere opacity, uniformly mixed:
+    dtau = kappa(nu)*dP_cgs/g). ``rayleigh_xs`` = (xs_h2, xs_he), each (nband,)
+    from exojax ``xsvector_rayleigh_gas`` -- zero-free-parameter known physics
+    that matters short of ~1.5 um; omitting it would bias a retrieved haze slope.
+    """
     def _cia(opa_, va, vb):
+        # opacity_profile_cia divides a (nlayer, nband) matrix by mmw, so mmw
+        # must broadcast as (nlayer, 1) here.
         return art.opacity_profile_cia(opa_.logacia_matrix(T_art), T_art,
                                        va, vb, mmw_art[:, None], g_btm)
 
@@ -432,6 +264,7 @@ def _ckd_continuum(art, pack, opacia, opacia_he, vmr_h2, vmr_he,
                 jnp.broadcast_to(xs_he[None, :], (nl, nb)),
                 vmr_to_mmr(vmr_he, _HE_MOLMASS, mmw_art), _HE_MOLMASS, g_btm)
     if cloud is not None:
+        # ExoJax's shipped retrieval cloud (pRT convention, per gram of atmosphere).
         kappa_c = powerlaw_clouds(pack.nu_bands_j, kappac0=10.0 ** cloud[0],
                                   nuc0=constants.CLOUD_NUC0, alphac=cloud[1])
         dP = jnp.asarray(art.dParr)
@@ -486,10 +319,10 @@ def _run_emis_ckd_linsap(art, dtau_g, T_boundary, nu_bands, gw):
 
     exojax's ``ArtEmisPure.run_ckd`` hard-codes ``rtrun_emis_pureabs_ibased``,
     which has no bottom-boundary term, so every photon entering the grid from
-    below is lost (measured flux deficits: README, "Emission uses it too").
+    below is lost (measured flux deficits: notes.md, "Emission uses it too").
     This is upstream's own flatten-solve-reweight structure with
     ``ibased_linsap`` in its place, so CKD emission keeps the interior source
-    the line-by-line path carries.
+    term the solver carries.
 
     The flatten is g-major / band-minor, matching ``jnp.tile``'s last-axis
     tiling of the source, exactly as upstream's version does it: element
@@ -529,84 +362,33 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
     """Build the transmission-spectrum model for the molecules named in ``profile``.
 
     Returns a SimpleNamespace with:
-        transmission_depth(vmr, vmr_h2, T_art, mmw_art) -> (n_nu,) transit depth
-        nu_grid : (n_nu,) wavenumber grid (cm^-1)
+        transmission_depth(vmr, vmr_h2, T_art, mmw_art, vmr_he) -> (n_nu,) transit depth
+        nu_grid : (n_nu,) band-centre wavenumber grid (cm^-1)
         wl_um   : (n_nu,) wavelength grid (micron), descending->ascending sorted handled by caller
         p_art_bar : (nlayer,) ART pressure grid (bar)
         molecules : list[str]
     """
     t0 = time.time()
-    mode = str(profile.get("opacity_mode", "lbl"))
-    if mode not in ("lbl", "exomolop"):
-        raise ValueError(
-            f"opacity_mode={mode!r}: choose 'exomolop' (correlated-k from the "
-            "published ExoMolOP high-temperature tables -- the accurate "
-            "default) or 'lbl' (direct line-by-line sampling on the output "
-            "grid, which is only correct at R >= 700,000; kept for the Mie "
-            "deck -- see vulcan_forward.ckd). The interim 'ckd' mode "
-            "(correlated-k built here from HITRAN) was removed in 0.8.0: its "
-            "line data was measurably wrong for a hot hydrogen atmosphere.")
-    # Asked once here rather than by string comparison at each use: a missed
-    # comparison would silently take the line-by-line branch with a band
-    # grid, which is not a mode this engine supports.
-    is_ckd = mode == "exomolop"
+    _refuse_removed_knobs(profile)
     mols = list(profile["molecules"])
-    ckd_pack = None
-    if is_ckd:
-        # Published ExoMol/HITEMP opacities with H2/He broadening already
-        # applied. See vulcan_forward.exomolop for the three measured defects
-        # this closes over building tables from HITRAN; the band grid and the
-        # split quadrature come from the files.
-        from vulcan_forward import exomolop as _exo
-        ckd_pack = _exo.load_tables(
-            mols, float(profile["nu_min"]), float(profile["nu_max"]),
-            molecule_table=profile.get("molecule_table"))
-        nu_grid = jnp.asarray(ckd_pack.nu_bands)
-        ckd_pack.nu_bands_j = nu_grid
-        # The band R actually in force, DERIVED from the file's edges rather
-        # than hard-coded: a future non-R1000 table variant must not mis-echo.
-        resolution = float(
-            1.0 / np.median(np.diff(np.log(ckd_pack.band_edges))))
-    else:
-        nu_grid, wav, resolution = wavenumber_grid(
-            profile["nu_min"], profile["nu_max"], profile["nu_pts"],
-            unit="cm-1", xsmode="premodit")
-        if resolution < 7.0e5:
-            # exojax's own critical resolution (utils.grids.warn_resolution).
-            # It emits a UserWarning that is easily lost in the build log; say
-            # it loudly, because below it the sampled spectrum is biased
-            # (measurements: README, "Opacity: correlated-k").
-            print(f"[rt] WARNING: line-by-line grid R~{resolution:.0f} is below "
-                  "exojax's critical resolution 700000. The sampled cross "
-                  "section is biased (too opaque, and more so in strong-line "
-                  "regions, which inflates spectral contrast). Use "
-                  "opacity_mode='exomolop'.", flush=True)
-        print(f"[rt] nu_grid {nu_grid.shape[0]} pts, R~{resolution:.0f}, "
-              f"lambda[{1e4/profile['nu_max']:.2f},{1e4/profile['nu_min']:.2f}] um",
-              flush=True)
-    broadening = str(profile.get("broadening", constants.BROADENING))
-    if mode == "exomolop":
-        # The knob does not apply: ExoMolOP's tables were integrated with H2/He
-        # broadening already baked in. Printing "air" here would be a false
-        # statement about the model that just got built.
-        broadening = "h2he (from the ExoMolOP tables)"
-        print("[rt] pressure broadening: H2/He, as published in the ExoMolOP "
-              "tables; the 'broadening' profile key does not apply in this "
-              "mode", flush=True)
-    else:
-        print(f"[rt] pressure broadening: {broadening}"
-              + (" (terrestrial-air widths -- documented approximation, and "
-                 "WRONG for a hydrogen atmosphere; measurements in the README, "
-                 "'Opacity data: ExoMolOP'. Use opacity_mode='exomolop'.)"
-                 if broadening == "air" else ""), flush=True)
+    # Published ExoMol/HITEMP opacities with H2/He broadening already applied.
+    # See vulcan_forward.exomolop for the three measured defects this closes
+    # over building tables from HITRAN; the band grid and the split quadrature
+    # come from the files.
+    from vulcan_forward import exomolop as _exo
+    ckd_pack = _exo.load_tables(
+        mols, float(profile["nu_min"]), float(profile["nu_max"]),
+        molecule_table=profile.get("molecule_table"))
+    nu_grid = jnp.asarray(ckd_pack.nu_bands)
+    ckd_pack.nu_bands_j = nu_grid
+    # The band R actually in force, DERIVED from the file's edges rather
+    # than hard-coded: a future non-R1000 table variant must not mis-echo.
+    resolution = float(
+        1.0 / np.median(np.diff(np.log(ckd_pack.band_edges))))
+    print("[rt] pressure broadening: H2/He, as published in the ExoMolOP "
+          "tables", flush=True)
     # Profile-overridable RT knobs, validated loudly here: an out-of-range
     # value must never build a wrong model.
-    dit_res = float(profile.get("dit_grid_resolution", 1.0))
-    if not 0.05 <= dit_res <= 2.0:
-        raise ValueError(
-            f"dit_grid_resolution={dit_res:g} outside [0.05, 2.0] (PreMODIT "
-            "broadening-grid spacing; 1.0 = this pipeline's default, 0.2 = "
-            "exojax's own default)")
     ptop = float(profile.get("art_ptop_bar", constants.ART_PTOP_BAR))
     pbtm = float(profile.get("art_pbtm_bar", constants.ART_PBTM_BAR))
     if not (0.0 < ptop < pbtm):
@@ -618,35 +400,22 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
         raise ValueError(
             f"rt_integration={integration!r}: exojax ArtTransPure supports "
             "'simpson' (default) or 'trapezoid'")
-    # The opacity table is INJECTABLE: a consumer adding a molecule passes its
+    # The molecule table is INJECTABLE: a consumer adding a molecule passes its
     # own table rather than editing a constant inside this package.
     mol_table = profile.get("molecule_table") or constants.MOLECULES
     _unknown = [k for k in mols if k not in mol_table]
     if _unknown:
         raise KeyError(
-            f"no opacity spec for {_unknown} in the molecule table "
+            f"no molecule spec for {_unknown} in the molecule table "
             f"(have: {sorted(mol_table)}). Pass profile['molecule_table'] "
-            "with one entry per molecule: vulcan, molmass, source, db.")
-    opas, molmass = {}, {}
-    for key in mols:
-        spec = mol_table[key]
-        molmass[key] = float(spec["molmass"])
-        if is_ckd:
-            # the line opacity already lives in the k-table; building a
-            # premodit object here would cost minutes and be unused
-            continue
-        tb = time.time()
-        opa, n_lines = _build_opa(key, spec, nu_grid, broadening=broadening,
-                                  dit_grid_resolution=dit_res)
-        opas[key] = opa
-        print(f"[rt]   {key}: {n_lines} lines, opa built in {time.time()-tb:.1f}s", flush=True)
+            "with one entry per molecule: vulcan, molmass.")
+    molmass = {key: float(mol_table[key]["molmass"]) for key in mols}
 
     art = ArtTransPure(
         pressure_top=ptop,
         pressure_btm=pbtm,
         nlayer=int(profile["art_nlayer"]),
         integration=integration)
-    art.change_temperature_range(constants.T_OPA_MIN_K, constants.T_OPA_MAX_K)
     p_art_bar = np.asarray(art.pressure)
     # ascending (exojax orders top-to-bottom); _anchor_to_grid_bottom relies on it
     if not np.all(np.diff(p_art_bar) > 0):
@@ -656,7 +425,7 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
     lnp_art = jnp.asarray(np.log(p_art_bar))
     print(f"[rt] ArtTransPure {profile['art_nlayer']} layers, "
           f"P=[{p_art_bar.min():.1e},{p_art_bar.max():.1e}] bar, "
-          f"chord integration {integration}, dit_grid_resolution {dit_res:g}",
+          f"chord integration {integration}",
           flush=True)
 
     cia_h2h2 = paths.cia_h2h2_file()
@@ -686,8 +455,7 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
     print("[rt] H2-He CIA loaded", flush=True)
     print(f"[rt] CIA + RT built; total {time.time()-t0:.1f}s", flush=True)
 
-    # H2/He Rayleigh cross sections (nu-only, precomputed once; opt-in via profile
-    # so the parent demo's published outputs are untouched)
+    # H2/He Rayleigh cross sections (nu-only, precomputed once; opt-in via profile)
     if profile.get("use_rayleigh", False):
         rayleigh_xs = (
             xsvector_rayleigh_gas(nu_grid, _POLARIZABILITY["H2"]),
@@ -696,42 +464,6 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
         print("[rt] H2/He Rayleigh scattering enabled", flush=True)
     else:
         rayleigh_xs = None
-
-    # Mie cloud deck: opt-in via profile["mie_condensate"] + a pinned ABSOLUTE
-    # mie_data_dir (exojax's own default is CWD-relative, banned here). The
-    # forward model only LOADS a pre-generated miegrid; a missing grid raises
-    # with the generation command. The virga archive auto-downloads on first
-    # use -- announced up front so an offline failure is attributable.
-    mie_pack = None
-    mie_cond = profile.get("mie_condensate") or None
-    if mie_cond:
-        from pathlib import Path as _Path
-        from exojax.database.pardb import PdbCloud
-        from exojax.opacity import OpaMie
-        mie_dir = profile.get("mie_data_dir")
-        if not mie_dir:
-            raise ValueError(
-                "mie_condensate set but mie_data_dir missing: pass the "
-                "absolute Mie cache directory (a CWD-relative default would "
-                "scatter caches per launch dir).")
-        if not (_Path(mie_dir) / "virga.zip").exists():
-            print(f"[rt] virga refractive-index archive absent under "
-                  f"{mie_dir}; exojax will download ~4 MB from Zenodo now "
-                  "(network required)", flush=True)
-        pdb = PdbCloud(str(mie_cond), nurange=nu_grid, path=str(mie_dir))
-        if not pdb.miegrid_path.exists():
-            raise FileNotFoundError(
-                f"Mie grid for {mie_cond} not found at {pdb.miegrid_path}. "
-                "Generate it once (vulcan-jwst-tool: python "
-                f"tools/generate_miegrid.py {mie_cond}, ~1 h/condensate); "
-                "the forward model only loads grids, never a silent "
-                "fallback.")
-        pdb.load_miegrid()
-        opa_mie = OpaMie(pdb, nu_grid)
-        mie_pack = (opa_mie, float(pdb.condensate_substance_density))
-        print(f"[rt] Mie cloud deck: {mie_cond} (rho = "
-              f"{pdb.condensate_substance_density:g} g/cm3, miegrid loaded)",
-              flush=True)
 
     _require_geometry(profile, "rp_cm", "gs_cgs", "rstar_cm")
     Rp_ref = float(profile["rp_cm"])
@@ -756,15 +488,13 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
                 "vmr_he is required: pass the He VMR profile (chem.sidx['He']) so the "
                 "H2-He CIA term is included. There is no supported He-less mode.")
 
-    def transmission_depth(vmr, vmr_h2, T_art, mmw_art, vmr_he=None, cloud=None,
-                           mie=None):
+    def transmission_depth(vmr, vmr_h2, T_art, mmw_art, vmr_he=None, cloud=None):
         """Transit depth (R_p(lambda)/R_star)^2 from ART-grid profiles.
 
         vmr : dict molecule -> (nlayer,) VMR; vmr_h2 : (nlayer,) H2 VMR (for CIA);
         vmr_he : (nlayer,) He VMR (H2-He CIA partner; REQUIRED -- the None default
         exists only so an omission raises the explanatory ValueError, not TypeError).
-        Optional: cloud=[log10 kappac0, alphac] (ExoJax powerlaw_clouds);
-        mie=[log10 rg (cm), sigmag, log10 MMR] (needs mie_condensate at build).
+        Optional: cloud=[log10 kappac0, alphac] (ExoJax powerlaw_clouds).
         """
         _require_he(vmr_he)
         # rp_cm/gs_cgs are quoted at p_ref_bar (the transit radius, ~mbar), not at
@@ -777,31 +507,16 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
         # is 1/r-linear and is NOT this profile (see _gravity_profile_invsq).
         # Emission is plane-parallel and correctly keeps constant g_btm.
         g_prof = _gravity_profile_invsq(art, T_art, mmw_art, Rp_btm, g_btm)  # (nlayer,1)
-        if is_ckd:
-            if mie is not None:
-                raise ValueError(
-                    "Mie cloud is not supported on the correlated-k path: its "
-                    "extinction has structure across a band, so folding it "
-                    "into a k-distribution built from line opacity would be "
-                    "wrong. Use opacity_mode='lbl' for a Mie deck, or the "
-                    "power-law cloud, which is smooth across a band.")
-            dtau_g = _accumulate_dtau_ckd(
-                art, ckd_pack, mols, molmass, opacia, opacia_he,
-                vmr, vmr_h2, vmr_he, T_art, mmw_art, g_prof,
-                cloud=cloud, rayleigh_xs=rayleigh_xs)
-            Rp2 = art.run_ckd(dtau_g, T_art, mmw_art, Rp_btm, g_btm,
-                              ckd_pack.gw)
-            return Rp2 * (Rp_btm / rstar_cm) ** 2
-        dtau = _accumulate_dtau(art, nu_grid, mols, opas, molmass, opacia, g_prof,
-                                vmr, vmr_h2, T_art, mmw_art,
-                                opacia_he=opacia_he, vmr_he=vmr_he, cloud=cloud,
-                                rayleigh_xs=rayleigh_xs,
-                                mie_pack=mie_pack, mie=mie)
-        Rp2 = art.run(dtau, T_art, mmw_art, Rp_btm, g_btm)          # (radius/Rp_btm)^2
-        return Rp2 * (Rp_btm / rstar_cm) ** 2                       # (radius/R_star)^2
+        dtau_g = _accumulate_dtau_ckd(
+            art, ckd_pack, mols, molmass, opacia, opacia_he,
+            vmr, vmr_h2, vmr_he, T_art, mmw_art, g_prof,
+            cloud=cloud, rayleigh_xs=rayleigh_xs)
+        Rp2 = art.run_ckd(dtau_g, T_art, mmw_art, Rp_btm, g_btm,
+                          ckd_pack.gw)
+        return Rp2 * (Rp_btm / rstar_cm) ** 2
 
     def transmission_depth_r(vmr, vmr_h2, T_art, mmw_art, lnR0, vmr_he=None,
-                             cloud=None, mie=None, wo_mols=None):
+                             cloud=None, wo_mols=None):
         """transmission_depth with a reference-radius scaling: the radius at the bottom
         pressure P_btm is Rp_btm * e^lnR0 (gravity held fixed -- the standard xR_p
         normalization nuisance, cf. Batalha & Line 2017). lnR0 = 0 reproduces
@@ -831,48 +546,20 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
             return (Rp2 * (Rp_btm / rstar_cm) ** 2                  # (radius/R_star)^2
                     * jnp.exp(2.0 * lnR0))
 
-        if is_ckd:
-            if mie is not None:
-                raise ValueError(
-                    "Mie cloud is not supported on the correlated-k path: its "
-                    "extinction has structure across a band, so folding it "
-                    "into a k-distribution built from line opacity would be "
-                    "wrong. Use opacity_mode='lbl' for a Mie deck.")
+        def _finish(dtau_g):
+            return _depth_of(art.run_ckd(dtau_g, T_art, mmw_art, Rp_r,
+                                         g_btm, ckd_pack.gw))
 
-            def _finish(dtau_g):
-                return _depth_of(art.run_ckd(dtau_g, T_art, mmw_art, Rp_r,
-                                             g_btm, ckd_pack.gw))
-
-            if wo_mols is None:
-                dtau_g = _accumulate_dtau_ckd(
-                    art, ckd_pack, mols, molmass, opacia, opacia_he,
-                    vmr, vmr_h2, vmr_he, T_art, mmw_art, g_prof,
-                    cloud=cloud, rayleigh_xs=rayleigh_xs)
-                return _finish(dtau_g)
-            depth, rows = _ckd_dtau_batch(
+        if wo_mols is None:
+            dtau_g = _accumulate_dtau_ckd(
                 art, ckd_pack, mols, molmass, opacia, opacia_he,
                 vmr, vmr_h2, vmr_he, T_art, mmw_art, g_prof,
-                list(wo_mols), _finish, cloud=cloud, rayleigh_xs=rayleigh_xs)
-            return depth, (jnp.stack(rows) if rows
-                           else jnp.zeros((0,) + depth.shape))
-
-        def _one(vmr_):
-            dtau = _accumulate_dtau(art, nu_grid, mols, opas, molmass, opacia,
-                                    g_prof, vmr_, vmr_h2, T_art, mmw_art,
-                                    opacia_he=opacia_he, vmr_he=vmr_he,
-                                    cloud=cloud, rayleigh_xs=rayleigh_xs,
-                                    mie_pack=mie_pack, mie=mie)
-            return _depth_of(art.run(dtau, T_art, mmw_art, Rp_r, g_btm))
-
-        depth = _one(vmr)
-        if wo_mols is None:
-            return depth
-        bad = [m for m in wo_mols if m not in mols]
-        if bad or len(set(wo_mols)) != len(wo_mols):
-            raise ValueError(
-                f"wo_mols {list(wo_mols)!r} must be unique members of the RT "
-                f"molecule set {list(mols)!r}")
-        rows = [_one({**vmr, m: jnp.zeros_like(vmr[m])}) for m in wo_mols]
+                cloud=cloud, rayleigh_xs=rayleigh_xs)
+            return _finish(dtau_g)
+        depth, rows = _ckd_dtau_batch(
+            art, ckd_pack, mols, molmass, opacia, opacia_he,
+            vmr, vmr_h2, vmr_he, T_art, mmw_art, g_prof,
+            list(wo_mols), _finish, cloud=cloud, rayleigh_xs=rayleigh_xs)
         return depth, (jnp.stack(rows) if rows
                        else jnp.zeros((0,) + depth.shape))
 
@@ -883,7 +570,6 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
         wl_um=1e4 / np.asarray(nu_grid),
         p_art_bar=p_art_bar,
         molecules=mols,
-        broadening=broadening,
         # echo of the profile-overridable RT knobs, so downstream consumers
         # (vulcan-jwst-tool) can VERIFY the engine honored them -- an older
         # engine that ignores an unknown profile key must fail loudly there,
@@ -895,23 +581,17 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
         # would inflate every transit depth (see _anchor_to_grid_bottom)
         p_ref_bar=p_ref_bar,
         rt_integration=integration,
-        dit_grid_resolution=dit_res,
-        # which opacity path actually ran. A consumer that asked for 'ckd' and
-        # silently got sampled line-by-line would be modelling a spectrum with
-        # ~1500 ppm of grid bias, so the echo is checked, not assumed.
-        opacity_mode=mode,
-        ckd_ng=(int(ckd_pack.ng) if ckd_pack is not None else 0),
+        # which opacity path ran; there is only one, and consumers still
+        # verify the echo so an engine/tool version mismatch is loud
+        opacity_mode="exomolop",
+        ckd_ng=int(ckd_pack.ng),
         # ExoMolOP's band grid is fixed by the published tables (R = 1000), so
-        # echo the resolution actually in force rather than a profile key the
-        # engine would have ignored in that mode.
-        ckd_r_band=(float(resolution) if ckd_pack is not None else 0.0),
+        # echo the resolution actually in force rather than a profile key.
+        ckd_r_band=float(resolution),
         has_cia_h2he=opacia_he is not None,
-        # Mie deck echo: "" when no Mie cloud was built -- consumers verify it
-        # against what they requested (the echo makes a silent ignore loud)
-        mie_condensate=str(mie_cond or ""),
         # internals reused by build_emis_model (so opacities aren't rebuilt)
-        _nu_grid=nu_grid, _opas=opas, _molmass=molmass, _opacia=opacia,
-        _opacia_he=opacia_he, _mie_pack=mie_pack, _ckd_pack=ckd_pack,
+        _nu_grid=nu_grid, _molmass=molmass, _opacia=opacia,
+        _opacia_he=opacia_he, _ckd_pack=ckd_pack,
     )
 
 
@@ -925,23 +605,20 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
     secondary-eclipse spectrum without dividing by the stellar flux and applying
     (Rp/Rstar)^2. Opacity terms match transmission (lines + H2-H2 + H2-He CIA,
     optional cloud); Rayleigh scattering is deliberately excluded here (see
-    _accumulate_dtau -- a pure-absorption solver must not count scattering as
-    thermal absorption, and it is negligible in the thermal bands).
+    _accumulate_dtau_ckd -- a pure-absorption solver must not count scattering
+    as thermal absorption, and it is negligible in the thermal bands).
     """
     # CKD emission runs through _run_emis_ckd_linsap, NOT ArtEmisPure.run_ckd:
     # upstream's version hard-codes the "ibased" solver, which has no interior
     # source term.
-    ckd_mode = getattr(trt, "opacity_mode", "lbl") == "exomolop"
     ckd_pack = getattr(trt, "_ckd_pack", None)
-    if ckd_mode and ckd_pack is None:
+    if ckd_pack is None:
         raise ValueError(
-            "transmission model reports a correlated-k opacity_mode but "
-            "carries no k-table pack; it was not built by this engine's "
-            "build_rt_model.")
+            "transmission model carries no k-table pack; it was not built by "
+            "this engine's build_rt_model.")
     nu_grid = trt._nu_grid
-    opas, molmass, opacia, mols = trt._opas, trt._molmass, trt._opacia, trt.molecules
+    molmass, opacia, mols = trt._molmass, trt._opacia, trt.molecules
     opacia_he = trt._opacia_he
-    mie_pack = getattr(trt, "_mie_pack", None)   # shared Mie deck
     _require_geometry(profile, "gs_cgs")
     # Emission is plane-parallel, so ArtEmisPure needs ONE gravity for the whole
     # column: it converts pressure to column mass as dP/g. That gravity must be
@@ -1003,50 +680,35 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
     art = ArtEmisPure(nu_grid=nu_grid, pressure_top=trt.art_ptop_bar,
                       pressure_btm=trt.art_pbtm_bar, nlayer=int(profile["art_nlayer"]),
                       rtsolver="ibased_linsap", nstream=8)
-    art.change_temperature_range(constants.T_OPA_MIN_K, constants.T_OPA_MAX_K)
     lnp_em = jnp.asarray(np.log(np.asarray(art.pressure)))
     print(f"[rt] ArtEmisPure {profile['art_nlayer']} layers (shares opacities)", flush=True)
 
-    def emission_flux(vmr, vmr_h2, T_art, mmw_art, vmr_he=None, cloud=None,
-                      mie=None):
-        """Emergent thermal flux (n_nu,) from ART-grid VMR/T/mmw profiles.
-
-        vmr_he is REQUIRED (H2-He CIA -- same continuum physics as transmission;
-        the None default only upgrades the omission error message)."""
+    def _require_he(vmr_he):
         if vmr_he is None:
             raise ValueError(
                 "vmr_he is required: pass the He VMR profile so the H2-He CIA term "
                 "is included in the emission opacity (parity with transmission).")
-        if mie is not None:
-            # ArtEmisPure is pure-absorption: Mie sigma_extinction would count
-            # scattering as thermal absorption (a conservative cloud would
-            # radiate like a blackbody instead of zero). Refuse; the absorbing
-            # power-law cloud stays allowed.
-            raise ValueError(
-                "Mie cloud is not supported in EMISSION: ArtEmisPure is a "
-                "pure-absorption solver, so Mie scattering would be counted as "
-                "thermal absorption and violate the conservative-scattering "
-                "zero-emission limit. Use transmission, or the (absorbing) "
-                "power-law cloud, until a scattering-aware emission solver "
-                "lands.")
+
+    def _dtau(vmr, vmr_h2, vmr_he, T_art, mmw_art, g_em, cloud):
+        return _accumulate_dtau_ckd(
+            art, ckd_pack, mols, molmass, opacia, opacia_he,
+            vmr, vmr_h2, vmr_he, T_art, mmw_art, g_em, cloud=cloud,
+            rayleigh_xs=None)
+
+    def emission_flux(vmr, vmr_h2, T_art, mmw_art, vmr_he=None, cloud=None):
+        """Emergent thermal flux (n_nu,) from ART-grid VMR/T/mmw profiles.
+
+        vmr_he is REQUIRED (H2-He CIA -- same continuum physics as transmission;
+        the None default only upgrades the omission error message)."""
+        _require_he(vmr_he)
         _, g_em = _emission_anchor(T_art, mmw_art)
         # linsap wants the source at the layer BOUNDARIES (nlayer + 1), not at
         # the representative centres. Passing the centres raises a broadcasting
         # error rather than modelling the wrong column, so a half-done switch
         # cannot ship quietly.
-        if ckd_mode:
-            dtau_g = _accumulate_dtau_ckd(
-                art, ckd_pack, mols, molmass, opacia, opacia_he,
-                vmr, vmr_h2, vmr_he, T_art, mmw_art, g_em, cloud=cloud,
-                rayleigh_xs=None)
-            return _run_emis_ckd_linsap(art, dtau_g,
-                                        _boundary_temperature(T_art),
-                                        nu_grid, ckd_pack.gw)
-        dtau = _accumulate_dtau(art, nu_grid, mols, opas, molmass, opacia, g_em,
-                                vmr, vmr_h2, T_art, mmw_art,
-                                opacia_he=opacia_he, vmr_he=vmr_he, cloud=cloud,
-                                mie_pack=mie_pack, mie=None)
-        return art.run(dtau, _boundary_temperature(T_art))
+        dtau_g = _dtau(vmr, vmr_h2, vmr_he, T_art, mmw_art, g_em, cloud)
+        return _run_emis_ckd_linsap(art, dtau_g, _boundary_temperature(T_art),
+                                    nu_grid, ckd_pack.gw)
 
     def _emission_anchor(T_art, mmw_art):
         """(radius, gravity) at p_ref_emission_bar -- ONE consistent pair."""
@@ -1065,9 +727,9 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
         """
         return _emission_anchor(T_art, mmw_art)[0]
 
-    def tau_bottom(vmr, vmr_h2, T_art, mmw_art, vmr_he, cloud=None, mie=None):
-        """Total vertical optical depth at the BOTTOM of the RT column,
-        per wavenumber (n_nu,).
+    def tau_bottom(vmr, vmr_h2, T_art, mmw_art, vmr_he, cloud=None):
+        """Total vertical optical depth at the BOTTOM of the RT column, per band
+        (n_nu,), reduced over the g-ordinates by the MINIMUM.
 
         The linsap solver DOES carry an interior source term, so a transparent
         column returns the deep boundary blackbody rather than nothing. That
@@ -1077,26 +739,16 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
         grid, so a caller should check min(tau_bottom) and flag windows that
         see through it. Not on the hot AD path (diagnostic).
 
-        In CKD mode the return is per BAND, reduced over the g-ordinates by the
-        MINIMUM. That is the analogue of the line-by-line form: a caller takes
-        min over wavenumber, and within a band the smallest g is the least
-        opaque wavenumber, so the gate stays conservative in the same sense.
+        The minimum over g is the conservative reduction: a caller takes min
+        over wavenumber, and within a band the smallest g is the least opaque
+        wavenumber, so the gate stays conservative in the same sense.
         """
         _, g_em = _emission_anchor(T_art, mmw_art)
-        if ckd_mode:
-            dtau_g = _accumulate_dtau_ckd(
-                art, ckd_pack, mols, molmass, opacia, opacia_he,
-                vmr, vmr_h2, vmr_he, T_art, mmw_art, g_em, cloud=cloud,
-                rayleigh_xs=None)
-            return jnp.min(jnp.sum(dtau_g, axis=0), axis=0)
-        dtau = _accumulate_dtau(art, nu_grid, mols, opas, molmass, opacia, g_em,
-                                vmr, vmr_h2, T_art, mmw_art,
-                                opacia_he=opacia_he, vmr_he=vmr_he, cloud=cloud,
-                                mie_pack=mie_pack, mie=mie)
-        return jnp.sum(dtau, axis=0)
+        dtau_g = _dtau(vmr, vmr_h2, vmr_he, T_art, mmw_art, g_em, cloud)
+        return jnp.min(jnp.sum(dtau_g, axis=0), axis=0)
 
     def emission_flux_tau(vmr, vmr_h2, T_art, mmw_art, vmr_he=None, cloud=None,
-                          mie=None, wo_mols=None):
+                          wo_mols=None):
         """Emergent flux AND bottom optical depth from ONE optical-depth build.
 
         Returns ``(flux, tau_bottom)`` -- bitwise what the separate
@@ -1107,55 +759,21 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
         bit-identical to a from-scratch call on the zeroed profile but reusing
         the shared correlated-k fold prefix (see ckd._fold_wo).
         """
-        if vmr_he is None:
-            raise ValueError(
-                "vmr_he is required: pass the He VMR profile so the H2-He CIA term "
-                "is included in the emission opacity (parity with transmission).")
-        if mie is not None:
-            raise ValueError(
-                "Mie cloud is not supported in EMISSION: ArtEmisPure is a "
-                "pure-absorption solver, so Mie scattering would be counted as "
-                "thermal absorption and violate the conservative-scattering "
-                "zero-emission limit. Use transmission, or the (absorbing) "
-                "power-law cloud, until a scattering-aware emission solver "
-                "lands.")
+        _require_he(vmr_he)
         _, g_em = _emission_anchor(T_art, mmw_art)
-        if ckd_mode:
-            def _finish(dtau_g):
-                return (_run_emis_ckd_linsap(art, dtau_g,
-                                             _boundary_temperature(T_art),
-                                             nu_grid, ckd_pack.gw),
-                        jnp.min(jnp.sum(dtau_g, axis=0), axis=0))
 
-            if wo_mols is None:
-                dtau_g = _accumulate_dtau_ckd(
-                    art, ckd_pack, mols, molmass, opacia, opacia_he,
-                    vmr, vmr_h2, vmr_he, T_art, mmw_art, g_em, cloud=cloud,
-                    rayleigh_xs=None)
-                return _finish(dtau_g)
-            (flux, tau), rows = _ckd_dtau_batch(
-                art, ckd_pack, mols, molmass, opacia, opacia_he,
-                vmr, vmr_h2, vmr_he, T_art, mmw_art, g_em,
-                list(wo_mols), _finish, cloud=cloud, rayleigh_xs=None)
-        else:
-            def _one(vmr_):
-                dtau = _accumulate_dtau(art, nu_grid, mols, opas, molmass,
-                                        opacia, g_em, vmr_, vmr_h2, T_art,
-                                        mmw_art, opacia_he=opacia_he,
-                                        vmr_he=vmr_he, cloud=cloud,
-                                        mie_pack=mie_pack, mie=None)
-                return (art.run(dtau, _boundary_temperature(T_art)),
-                        jnp.sum(dtau, axis=0))
+        def _finish(dtau_g):
+            return (_run_emis_ckd_linsap(art, dtau_g,
+                                         _boundary_temperature(T_art),
+                                         nu_grid, ckd_pack.gw),
+                    jnp.min(jnp.sum(dtau_g, axis=0), axis=0))
 
-            flux, tau = _one(vmr)
-            if wo_mols is None:
-                return flux, tau
-            bad = [m for m in wo_mols if m not in mols]
-            if bad or len(set(wo_mols)) != len(wo_mols):
-                raise ValueError(
-                    f"wo_mols {list(wo_mols)!r} must be unique members of the "
-                    f"RT molecule set {list(mols)!r}")
-            rows = [_one({**vmr, m: jnp.zeros_like(vmr[m])}) for m in wo_mols]
+        if wo_mols is None:
+            return _finish(_dtau(vmr, vmr_h2, vmr_he, T_art, mmw_art, g_em, cloud))
+        (flux, tau), rows = _ckd_dtau_batch(
+            art, ckd_pack, mols, molmass, opacia, opacia_he,
+            vmr, vmr_h2, vmr_he, T_art, mmw_art, g_em,
+            list(wo_mols), _finish, cloud=cloud, rayleigh_xs=None)
         nb = tau.shape[0]
         flux_wo = (jnp.stack([f for f, _ in rows]) if rows
                    else jnp.zeros((0, nb)))
@@ -1174,9 +792,6 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
         art_pbtm_bar=float(trt.art_pbtm_bar),
         # echoed so a consumer can verify the engine honored the key
         p_ref_emission_bar=p_ref_em,
-        # which opacity path actually ran, same contract as transmission: a
-        # consumer that asked for 'ckd' and silently got sampled line-by-line
-        # would be modelling a spectrum with the full grid bias in it
-        opacity_mode=str(getattr(trt, "opacity_mode", "lbl")),
+        opacity_mode="exomolop",
         molecules=mols,
     )

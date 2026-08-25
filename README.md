@@ -18,7 +18,7 @@ vulcan-forward      chemistry driver and radiative transfer
     +-- vulcan-jwst-tool    JWST observation planning
 ```
 
-The model supports line-by-line opacity and ExoMolOP correlated-k tables. It
+The model uses correlated-k opacity from the published ExoMolOP tables. It
 includes molecular absorption, H2-H2 and H2-He collision-induced absorption,
 Rayleigh scattering, and optional cloud opacity. The main model parameters are
 metallicity, C/O, eddy diffusion, and temperature-profile parameters.
@@ -52,8 +52,8 @@ python -m vulcan_forward.fetch_exomolop \
   --molecules H2O,CO2,CO,CH4,SO2
 ```
 
-The directory can contain `exomolop/`, `exojax_linelists/`, and
-`opacity_cache/`. Missing data cause a clear error; the model does not silently
+The directory contains `exomolop/` (the k-tables) and `opacity_cache/` (the
+CIA tables). Missing data cause a clear error; the model does not silently
 omit an absorber.
 
 The model also needs planet geometry. Supply the planet radius and reference

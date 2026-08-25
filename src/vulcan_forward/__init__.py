@@ -5,8 +5,10 @@ emission spectrum, differentiably. This package is the single implementation
 shared by the retrieval framework (vulcan-retrieval) and the JWST observation
 planner (vulcan-jwst-tool); neither depends on the other.
 
-    constants    shared physics constants + the default molecule/opacity table
-    paths        the external data-root contract (line lists, opacity cache, CIA)
+    constants    shared physics constants + the default molecule table
+    paths        the external data-root contract (k-tables, CIA cache)
+    exomolop     ExoMolOP k-table ingestion, header checks, provenance
+    ckd          correlated-k core: (T, P) interpolation + random overlap
     vulcan_chem  chemistry driver: theta -> converged VMR (jvp-differentiable)
     interp_map   chemistry grid -> RT grid log-pressure interpolation
     exojax_rt    opacities + CIA + ArtTransPure/ArtEmisPure -> depth or flux
@@ -19,8 +21,8 @@ model, so the canonical order is:
 
     from vulcan_forward import constants, vulcan_chem, interp_map, exojax_rt
 
-Data is never bundled: line lists, the offline opacity cache, and the two CIA
-tables are tens of gigabytes. Point the engine at them with
+Data is never bundled: the ExoMolOP k-tables (~389 MB per species) and the
+two CIA tables are ~10 GB. Point the engine at them with
 $VULCAN_FORWARD_DATA or ``paths.set_data_root(...)``; nothing touches the
 filesystem until a path is actually needed, and then it fails loudly with the
 offending value and the remedy.

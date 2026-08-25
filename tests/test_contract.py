@@ -21,12 +21,13 @@ def test_constants_import_without_data_or_heavy_deps():
     """constants must be importable with no data root set and no jax present."""
     from vulcan_forward import constants
 
-    assert constants.MOLECULES["CO"]["source"] == "exomol_cached"
+    assert constants.MOLECULES["CO"]["molmass"] == pytest.approx(28.010)
     assert constants.ART_PTOP_BAR < constants.ART_PBTM_BAR
     assert set(constants.ATOM_COLS) >= {"H", "O", "C", "He", "N", "S"}
-    # the table must stay location-independent: no absolute paths in it
+    # exactly the two fields the correlated-k path reads; no paths, no
+    # line-list names (those live in the k-table tree's provenance.json)
     for name, spec in constants.MOLECULES.items():
-        assert not os.path.isabs(spec["db"]), (name, spec["db"])
+        assert set(spec) == {"vulcan", "molmass"}, name
 
 
 def test_paths_module_imports_clean_and_fails_loudly(monkeypatch):
@@ -34,7 +35,6 @@ def test_paths_module_imports_clean_and_fails_loudly(monkeypatch):
     from vulcan_forward import paths
 
     monkeypatch.delenv(paths.ENV_ROOT, raising=False)
-    monkeypatch.delenv(paths.ENV_LINELISTS, raising=False)
     monkeypatch.delenv(paths.ENV_OPACITY_CACHE, raising=False)
     monkeypatch.setattr(paths, "_root_override", None, raising=False)
 
@@ -49,29 +49,24 @@ def test_paths_module_imports_clean_and_fails_loudly(monkeypatch):
 def test_data_root_and_per_tree_overrides(tmp_path, monkeypatch):
     from vulcan_forward import paths
 
-    monkeypatch.delenv(paths.ENV_LINELISTS, raising=False)
     monkeypatch.delenv(paths.ENV_OPACITY_CACHE, raising=False)
     root = tmp_path / "data"
-    (root / "exojax_linelists").mkdir(parents=True)
     (root / "opacity_cache").mkdir(parents=True)
     monkeypatch.setenv(paths.ENV_ROOT, str(root))
     monkeypatch.setattr(paths, "_root_override", None, raising=False)
 
-    assert paths.linelist_dir() == root / "exojax_linelists"
     assert paths.opacity_cache_dir() == root / "opacity_cache"
     assert paths.cia_h2he_file().name == "H2-He_2011.cia"
-    # db suffixes resolve against the right tree, so the table needs no paths
-    assert paths.resolve_db("CO/12C-16O/Li2015", "exomol_cached").startswith(
-        str(root / "opacity_cache"))
-    assert paths.resolve_db("H2O", "hitran").startswith(
-        str(root / "exojax_linelists"))
+    # no existence check on the k-table tree: datacheck wants the path even
+    # when nothing is installed, to report per-molecule MISSING items
+    assert paths.exomolop_dir() == root / "exomolop"
 
-    # a per-tree override relocates one tree without moving the rest
+    # the per-tree override relocates the cache without moving the rest
     other = tmp_path / "elsewhere"
     other.mkdir()
-    monkeypatch.setenv(paths.ENV_LINELISTS, str(other))
-    assert paths.linelist_dir() == other
-    assert paths.opacity_cache_dir() == root / "opacity_cache"
+    monkeypatch.setenv(paths.ENV_OPACITY_CACHE, str(other))
+    assert paths.opacity_cache_dir() == other
+    assert paths.exomolop_dir() == root / "exomolop"
 
 
 def test_set_data_root_is_honored(tmp_path, monkeypatch):
@@ -175,7 +170,6 @@ def test_ensure_layout_creates_the_trees(tmp_path, monkeypatch):
     """
     from vulcan_forward import paths
 
-    monkeypatch.delenv(paths.ENV_LINELISTS, raising=False)
     monkeypatch.delenv(paths.ENV_OPACITY_CACHE, raising=False)
     monkeypatch.setattr(paths, "_root_override", None, raising=False)
     root = tmp_path / "made-by-setup"
@@ -183,11 +177,11 @@ def test_ensure_layout_creates_the_trees(tmp_path, monkeypatch):
 
     assert not root.exists()
     assert paths.ensure_layout() == root
-    assert (root / "exojax_linelists").is_dir()
     assert (root / "opacity_cache").is_dir()
+    assert (root / "exomolop").is_dir()
     # and the strict reader is satisfied afterwards
     assert paths.data_root() == root
-    assert paths.linelist_dir() == root / "exojax_linelists"
+    assert paths.opacity_cache_dir() == root / "opacity_cache"
 
     # it still refuses to guess a location
     monkeypatch.delenv(paths.ENV_ROOT, raising=False)
@@ -207,7 +201,6 @@ def _import_in_clean_cwd(modules, tmp_path, extra_env=None):
     work.mkdir()
     env = dict(os.environ)
     env.pop("VULCAN_FORWARD_DATA", None)
-    env.pop("VULCAN_FORWARD_LINELISTS", None)
     env.pop("VULCAN_FORWARD_OPACITY_CACHE", None)
     env.update(extra_env or {})
     code = "import " + ", ".join(modules)
@@ -232,6 +225,30 @@ def test_importing_the_engine_writes_nothing_to_the_callers_cwd(tmp_path):
         f"importing vulcan_forward wrote {leftovers} into the caller's "
         f"working directory. The engine is a library: it must write only "
         f"where the caller points it.")
+
+
+def test_exomolop_helpers_and_provenance_import_without_jax_or_h5py(tmp_path):
+    """jwst_tool.datacheck reads the table paths and the provenance record
+    stdlib-side, so neither jax nor h5py may be needed to reach them. Run
+    out-of-process with both blocked: this session has already imported jax."""
+    import json
+    import subprocess
+    root = tmp_path / "data"
+    (root / "exomolop").mkdir(parents=True)
+    (root / "exomolop" / "provenance.json").write_text(json.dumps(
+        {"H2O": {"dataset": "POKAZATEL", "iso": "1H2-16O", "file": "f.h5",
+                 "natural_abundance": False, "url": "https://example"}}))
+    code = (
+        "import sys; sys.modules['jax'] = None; sys.modules['h5py'] = None\n"
+        "from vulcan_forward import exomolop\n"
+        "assert exomolop.table_path('H2O').name == 'H2O.ktable.h5'\n"
+        "assert exomolop.available() == []\n"
+        "assert exomolop.provenance()['H2O']['dataset'] == 'POKAZATEL'\n"
+        "print('ok')")
+    env = dict(os.environ, VULCAN_FORWARD_DATA=str(root))
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                       text=True, env=env, timeout=600)
+    assert r.returncode == 0 and r.stdout.strip() == "ok", r.stderr
 
 
 def test_the_engine_never_resolves_its_data_root_from___file__():

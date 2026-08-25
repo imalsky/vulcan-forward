@@ -8,7 +8,7 @@ all pushing the same way (too little opacity in the WINDOWS, which inflates
 spectral contrast): a 296 K database applied at 1200 K, terrestrial-air
 pressure broadening in a hydrogen atmosphere (unfixable inside HITRAN -- H2O
 has no H2/He columns there at all), and thin species coverage. The measured
-numbers live in the README ("Opacity data: ExoMolOP, not HITRAN").
+numbers live in notes.md ("Opacity data: ExoMolOP, not HITRAN").
 
 ExoMolOP (Chubb et al. 2021, A&A 646, A21) closes all three at once: it
 publishes PRE-COMPUTED opacities for ~80 species, built from the ExoMol and
@@ -34,17 +34,20 @@ WHAT IS DIFFERENT ABOUT THEIR TABLES, and both matter
   ASSUMPTION applied to real layers, so ``load_tables`` prints it rather than
   letting it pass silently.
 
-UNITS: verified empirically, not assumed. Their ``kcoeff`` is in cm^2 per
-MOLECULE, the same convention ``opacity_profile_xs_ckd`` consumes -- order
-unity against our own HITRAN H2O table, not the 3.34e22 a per-gram convention
-would give (the cross-check numbers are in the README).
+UNITS: verified empirically AND checked on every load. Their ``kcoeff`` is in
+cm^2 per MOLECULE, the same convention ``opacity_profile_xs_ckd`` consumes --
+order unity against a HITRAN-built H2O table, not the 3.34e22 a per-gram
+convention would give (notes.md). ``_header`` refuses a file whose
+``kcoeff``/``p`` unit attributes, ``method`` or ``ngauss`` are not what this
+reader assumes; a mislabelled table must never load as if it were right.
 
 TABLES ARE NEVER DOWNLOADED AT RUN TIME (standing fail-loud rule): a missing
 table raises with the fetch command.
 
 This module is importable WITHOUT the RT stack: h5py and jax are imported
-inside ``load_tables`` only, so path helpers (``table_dir``, ``table_path``,
-``available``) serve stdlib-only consumers such as jwst_tool.datacheck.
+inside the functions that need them, so the path helpers (``table_dir``,
+``table_path``, ``available``) and ``provenance`` serve stdlib-only consumers
+such as jwst_tool.datacheck.
 """
 from __future__ import annotations
 
@@ -66,6 +69,12 @@ P_TABLE_MIN_BAR = 1.0e-5
 # optical depth that matters (1e-60 cm^2 over a full column is ~1e-40 in tau).
 K_FLOOR = 1.0e-60
 
+# The header values this reader is built for. Anything else is a different
+# product (or a mislabelled file) and is refused, never reinterpreted.
+KCOEFF_UNITS = "cm^2/molecule"
+P_UNITS = "bar"
+METHOD = "petit_samples"
+
 
 def table_dir() -> Path:
     return paths.exomolop_dir()
@@ -81,10 +90,7 @@ def _fetch_hint(missing) -> str:
             + ",".join(missing)
             + "\nIf that reports SKIP for a species, ExoMolOP does not publish "
               "one for it (CS2 and C2H6 are the two this engine's molecule "
-              "table names). Drop the species, or run the whole model on "
-              "opacity_mode='lbl' knowingly -- sampled line-by-line on this "
-              "engine's affordable grids is measurably biased (README, "
-              "'Opacity: correlated-k').")
+              "table names); drop the species.")
 
 
 def available() -> list:
@@ -95,6 +101,101 @@ def available() -> list:
     return sorted(p.name.split(".")[0] for p in d.glob("*.ktable.h5"))
 
 
+def provenance() -> dict:
+    """What each installed table is, as recorded by ``fetch_exomolop``.
+
+    ``{molecule: {dataset, iso, file, natural_abundance, url}}`` from the
+    tree's ``provenance.json``. stdlib only, so a data-status check can read it
+    without jax or h5py. Raises with the fetch command when the record is
+    absent (the fetcher writes it, and backfills tables already on disk
+    without downloading them again).
+    """
+    import json
+    path = table_dir() / "provenance.json"
+    if not path.exists():
+        raise FileNotFoundError(
+            f"no ExoMolOP provenance record at {path}. fetch_exomolop writes "
+            "it and backfills tables already on disk without re-downloading:\n"
+            "  python -m vulcan_forward.fetch_exomolop --molecules "
+            + ",".join(available() or ["H2O"]))
+    return json.loads(path.read_text())
+
+
+def _scalar_str(f, key):
+    """One-element string dataset -> str; None when the file has no such key
+    (the H2O table lacks mol_name and Date_ID)."""
+    if key not in f:
+        return None
+    v = np.asarray(f[key][()]).ravel()[0]
+    return v.decode() if isinstance(v, bytes) else str(v)
+
+
+def _header(f, path) -> dict:
+    """Verify the load-bearing header of an open k-table and return it.
+
+    Load-bearing (a wrong value silently changes every cross section, so it
+    RAISES with the file and the offending value): the ``kcoeff`` unit
+    attribute, the ``p`` unit attribute, ``method`` (the split quadrature) and
+    ``ngauss`` against the number of g-samples. Informational (DOI, mol_name,
+    Date_ID) is reported verbatim -- placeholder DOIs included -- or None when
+    absent; it is never substituted.
+    """
+    def _attr(ds, name):
+        v = f[ds].attrs.get(name)
+        return v.decode() if isinstance(v, bytes) else (None if v is None else str(v))
+
+    rec = dict(
+        kcoeff_units=_attr("kcoeff", "units"), p_units=_attr("p", "units"),
+        method=_scalar_str(f, "method"),
+        ngauss=(int(np.asarray(f["ngauss"][()]).ravel()[0]) if "ngauss" in f else None),
+        doi=_scalar_str(f, "DOI"), mol_name=_scalar_str(f, "mol_name"),
+        date_id=_scalar_str(f, "Date_ID"))
+    n_samples = int(f["samples"].shape[0])
+    bad = []
+    if rec["kcoeff_units"] != KCOEFF_UNITS:
+        bad.append(f"kcoeff units {rec['kcoeff_units']!r}, need {KCOEFF_UNITS!r} "
+                   "(a per-gram table would be ~3.3e22 too large)")
+    if rec["p_units"] != P_UNITS:
+        bad.append(f"p units {rec['p_units']!r}, need {P_UNITS!r}")
+    if rec["method"] != METHOD:
+        bad.append(f"method {rec['method']!r}, need {METHOD!r} (the split 8+8 "
+                   "quadrature)")
+    if rec["ngauss"] != n_samples:
+        bad.append(f"ngauss {rec['ngauss']!r} != len(samples) {n_samples}")
+    if bad:
+        raise ValueError(
+            f"{path}: " + "; ".join(bad) + ". Not a petitRADTRANS-format "
+            "ExoMolOP k-table this engine can read; re-fetch it with "
+            "python -m vulcan_forward.fetch_exomolop --force --molecules "
+            f"{Path(path).name.split('.')[0]}")
+    return rec
+
+
+def table_info(molecule: str) -> dict:
+    """Header of one installed k-table as plain JSON-serializable values.
+
+    Keys: molecule, file, doi, mol_name, date_id, method, ngauss,
+    kcoeff_units, p_units, n_bands, t_range_k, p_range_bar, wl_range_um.
+    Runs the same header check as ``load_tables``, so it raises on the same
+    files. Placeholder DOIs are reported verbatim; absent DOI / mol_name /
+    Date_ID are None.
+    """
+    import h5py                       # function-local, as in load_tables
+    path = table_path(molecule)
+    if not path.exists():
+        raise FileNotFoundError(
+            f"ExoMolOP k-table missing for {molecule}: looked for {path}\n"
+            + _fetch_hint([molecule]))
+    with h5py.File(path, "r") as f:
+        rec = _header(f, path)
+        t, p, e = (np.asarray(f[k], dtype=np.float64) for k in ("t", "p", "bin_edges"))
+    rec.update(molecule=molecule, file=path.name, n_bands=int(e.size - 1),
+               t_range_k=[float(t[0]), float(t[-1])],
+               p_range_bar=[float(p[0]), float(p[-1])],
+               wl_range_um=[float(1e4 / e[-1]), float(1e4 / e[0])])
+    return rec
+
+
 def load_tables(molecules, nu_min, nu_max, *, molecule_table=None,
                 verbose=True) -> SimpleNamespace:
     """Load one ExoMolOP k-table per molecule, restricted to [nu_min, nu_max].
@@ -102,10 +203,11 @@ def load_tables(molecules, nu_min, nu_max, *, molecule_table=None,
     Returns the namespace the correlated-k core consumes (``logk`` per
     molecule + band edges, (T, P) grids, and the quadrature).
 
-    Raises rather than downloading, and raises rather than mixing tables that
-    do not share a band grid or a quadrature -- ``ckd.overlap`` combines
-    species ordinate by ordinate, so two tables on different g-nodes would be
-    silently added as if they were the same distribution.
+    Raises rather than downloading, raises on a header this reader is not
+    built for (``_header``), and raises rather than mixing tables that do not
+    share a band grid or a quadrature -- ``ckd.overlap`` combines species
+    ordinate by ordinate, so two tables on different g-nodes would be silently
+    added as if they were the same distribution.
     """
     import h5py                       # only needed for ingestion
     import jax.numpy as jnp           # keeps the module importable bare
@@ -128,7 +230,7 @@ def load_tables(molecules, nu_min, nu_max, *, molecule_table=None,
     mols = list(molecules)
     unknown = [m for m in mols if m not in tbl]
     if unknown:
-        raise KeyError(f"no opacity spec for {unknown} in the molecule table")
+        raise KeyError(f"no molecule spec for {unknown} in the molecule table")
     missing = [m for m in mols if not table_path(m).exists()]
     if missing:
         raise FileNotFoundError(
@@ -138,6 +240,7 @@ def load_tables(molecules, nu_min, nu_max, *, molecule_table=None,
     out, ref = {}, None
     for m in mols:
         with h5py.File(table_path(m), "r") as f:
+            _header(f, table_path(m))
             edges = np.asarray(f["bin_edges"], dtype=np.float64)
             gg = np.asarray(f["samples"], dtype=np.float64)
             gw = np.asarray(f["weights"], dtype=np.float64)

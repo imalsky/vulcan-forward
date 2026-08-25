@@ -13,15 +13,14 @@ license-files = ["LICENSE"]
 dependencies = [
     "numpy>=1.26",
     "jax>=0.6.2",
-    # The RT layer is built on exojax and the PIN IS LOAD-BEARING in four
-    # independent places (see README (exojax pin note)): the local
-    # inverse-square gravity profile that works around exojax's own linear-1/r
-    # gravity_profile, the routing around the deprecated dit_grid_resolution
-    # kwarg, two imports through compatibility shims slated for removal in
-    # exojax 3.x, and the mdb.gamma_air monkey-patch for H2/He widths.
-    # Note exojax 2.2.3 itself caps numpy<2. Isolating that constraint here --
-    # rather than in the chemistry core, vulcan-jax -- is a main reason this
-    # package exists.
+    # The RT layer is built on exojax and the PIN IS LOAD-BEARING in two
+    # independent places: the local inverse-square gravity profile that works
+    # around exojax's own linear-1/r gravity_profile, and imports through
+    # compatibility shims slated for removal in exojax 3.x. Newer exojax adds
+    # nothing this engine needs (no ExoMolOP reader, no species overlap
+    # through 2.5.0). Note exojax 2.2.3 itself caps numpy<2. Isolating that
+    # constraint here -- rather than in the chemistry core, vulcan-jax -- is a
+    # main reason this package exists.
     "exojax==2.2.3",
     "vulcan-jax>=0.3.0",
     # Core, not an extra: the default opacity_mode of every consumer reads
