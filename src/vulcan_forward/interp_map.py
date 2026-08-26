@@ -49,9 +49,21 @@ def make_to_art(p_bar_vulcan: np.ndarray, p_bar_art: np.ndarray):
         If the ART grid extends BELOW the VULCAN bottom (deep clamping would
         silently fabricate deep-atmosphere chemistry; fix the grids instead).
     """
+    p_bar_vulcan = np.asarray(p_bar_vulcan, dtype=np.float64)
+    p_bar_art = np.asarray(p_bar_art, dtype=np.float64)
+    if p_bar_vulcan.ndim != 1 or p_bar_vulcan.size < 2:
+        raise ValueError("VULCAN chemistry pressure grid must be 1-D with at least "
+                         f"two layers; got shape {p_bar_vulcan.shape}")
+    if not np.all(np.isfinite(p_bar_vulcan)) or np.any(p_bar_vulcan <= 0.0):
+        raise ValueError("VULCAN chemistry pressure grid must be finite and positive; "
+                         f"got {p_bar_vulcan}")
+    if np.unique(p_bar_vulcan).size != p_bar_vulcan.size:
+        raise ValueError("VULCAN chemistry pressure grid has duplicate pressures: "
+                         f"{p_bar_vulcan}")
+
     order = np.argsort(p_bar_vulcan)                       # static
     logP_v_sorted = jnp.asarray(np.log10(p_bar_vulcan[order]))
-    logP_art = jnp.asarray(np.log10(np.asarray(p_bar_art)))
+    logP_art = jnp.asarray(np.log10(p_bar_art))
     order_j = jnp.asarray(order)
 
     # Loud, host-side accounting of the clamped span (runs once at build).
@@ -71,6 +83,10 @@ def make_to_art(p_bar_vulcan: np.ndarray, p_bar_art: np.ndarray):
               "config.ART_PTOP_BAR).", flush=True)
 
     def to_art(profile_nz):
+        if getattr(profile_nz, "ndim", None) != 1 or profile_nz.shape[0] != order.size:
+            raise ValueError(
+                f"profile must be 1-D with {order.size} values on the VULCAN "
+                f"chemistry grid; got shape {getattr(profile_nz, 'shape', None)}")
         fp = profile_nz[order_j]
         return jnp.interp(logP_art, logP_v_sorted, fp)
 

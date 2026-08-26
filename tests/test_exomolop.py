@@ -212,6 +212,25 @@ def test_table_info_and_provenance_report_what_is_on_disk(data_root):
     assert exomolop.provenance() == rec
 
 
+@pytest.mark.parametrize("dataset,index,value", [
+    ("p", ..., [1e-5, 1e-5, 1e2]),                                  # duplicate node
+    ("t", ..., [300.0, np.nan, 3000.0, 3400.0]),                    # non-finite
+    ("samples", ..., [0.02, 0.2, 0.4, 0.6, 0.8, 0.9, 0.95, 1.0]),  # g = 1
+    ("weights", ..., [0.2] * NG),                                   # sum != 1
+    ("kcoeff", (0, 0, 0, 0), -1.0),                                 # negative
+    ("kcoeff", (0, 0, 0, 0), np.nan),                               # non-finite
+    ("kcoeff", (0, 0, 0, 0), 1.0),    # above every later g-node (~1e-22): unsorted
+])
+def test_malformed_tables_are_refused(data_root, dataset, index, value):
+    import h5py
+    path = exomolop.table_path("H2O")
+    _, edges, *_ = _write(path)
+    with h5py.File(path, "r+") as f:
+        f[dataset][index] = value
+    with pytest.raises(ValueError):
+        exomolop.load_tables(["H2O"], edges[0], edges[-1], verbose=False)
+
+
 # --------------------------------------------------------------------------
 # Against a REAL table, when one is installed.
 # --------------------------------------------------------------------------
@@ -230,6 +249,15 @@ def _need_real(*mols):
     if missing:
         pytest.skip(f"no ExoMolOP table at {missing} "
                     "(python -m vulcan_forward.fetch_exomolop)")
+
+
+def test_real_tables_share_one_grid_signature():
+    """Every installed table must carry the same band grid and quadrature
+    (load_tables refuses to mix them); the signature is what a consumer
+    keys its caches on, so it must agree across the whole set."""
+    _need_real()
+    signatures = {m: exomolop.table_info(m)["grid_sha256"] for m in exomolop.available()}
+    assert len(set(signatures.values())) == 1, signatures
 
 
 def test_real_table_uses_the_petitradtrans_split_quadrature():

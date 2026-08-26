@@ -85,3 +85,13 @@ def test_to_art_allows_a_shallower_art_top_with_a_notice(capsys):
     assert "above the" in capsys.readouterr().out
     out = np.asarray(fn(jnp.asarray(np.linspace(-3, -9, 20))))
     assert np.all(np.isfinite(out))
+
+
+@pytest.mark.parametrize("grid", [
+    [1e-5, 1e-4, 1e-4, 1e-2],        # duplicate pressure
+    [1e-5, np.nan, 1e-3, 1e-2],      # non-finite
+    [1e-5, 0.0, 1e-3, 1e-2],         # non-positive
+])
+def test_to_art_refuses_invalid_pressure_coordinates(grid):
+    with pytest.raises(ValueError):
+        _to_art(grid, np.logspace(-5, -2, 4))

@@ -51,6 +51,7 @@ such as jwst_tool.datacheck.
 """
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -130,6 +131,43 @@ def _scalar_str(f, key):
     return v.decode() if isinstance(v, bytes) else str(v)
 
 
+def _validated_layout(f, path) -> dict:
+    """Data-integrity checks on the table layout: ordered t/p/bin_edges, finite
+    positive coordinates, quadrature weights summing to 1, kcoeff dims. The
+    kcoeff values themselves (finite, non-negative) are checked by ``load_tables``.
+    """
+    required = ("kcoeff", "bin_edges", "t", "p", "samples", "weights")
+    missing = [name for name in required if name not in f]
+    if missing:
+        raise ValueError(f"{path}: missing required datasets {missing}")
+
+    arrays = {name: np.asarray(f[name], dtype=np.float64)
+              for name in ("bin_edges", "t", "p", "samples", "weights")}
+    for name, values in arrays.items():
+        if values.ndim != 1 or values.size < 2:
+            raise ValueError(f"{path}: {name} must be a 1-D array with at least two values")
+        if not np.all(np.isfinite(values)):
+            raise ValueError(f"{path}: {name} contains non-finite values")
+
+    for name in ("bin_edges", "t", "p", "samples"):
+        values = arrays[name]
+        if np.any(values <= 0.0) or not np.all(np.diff(values) > 0.0):
+            raise ValueError(f"{path}: {name} must be finite, positive, and strictly increasing")
+    if np.any(arrays["samples"] >= 1.0):
+        raise ValueError(f"{path}: samples must lie strictly inside (0, 1)")
+    weights = arrays["weights"]
+    if np.any(weights <= 0.0) or weights.shape != arrays["samples"].shape:
+        raise ValueError(f"{path}: weights must be positive and match samples")
+    if not np.isclose(np.sum(weights), 1.0, rtol=1e-10, atol=1e-12):
+        raise ValueError(f"{path}: quadrature weights sum to {np.sum(weights):.17g}, not 1")
+
+    expected = (arrays["p"].size, arrays["t"].size,
+                arrays["bin_edges"].size - 1, arrays["samples"].size)
+    if f["kcoeff"].shape != expected:
+        raise ValueError(f"{path}: kcoeff shape {f['kcoeff'].shape} != expected {expected}")
+    return arrays
+
+
 def _header(f, path) -> dict:
     """Verify the load-bearing header of an open k-table and return it.
 
@@ -187,12 +225,28 @@ def table_info(molecule: str) -> dict:
             f"ExoMolOP k-table missing for {molecule}: looked for {path}\n"
             + _fetch_hint([molecule]))
     with h5py.File(path, "r") as f:
+        arrays = _validated_layout(f, path)
         rec = _header(f, path)
-        t, p, e = (np.asarray(f[k], dtype=np.float64) for k in ("t", "p", "bin_edges"))
+        t, p, e = (arrays[k] for k in ("t", "p", "bin_edges"))
+        # Signature of the grid as the loader's 1e-12 agreement rule sees it:
+        # round before hashing so tables that load_tables accepts together
+        # share one key; each array is prefixed by its shape.
+        digest = hashlib.sha256()
+        for key in ("t", "p", "bin_edges", "samples", "weights"):
+            values = arrays[key]
+            rounded = (np.round(np.log10(values), 10) if key in ("t", "p", "bin_edges")
+                       else np.round(values, 12))
+            rounded = np.ascontiguousarray(rounded, dtype="<f8")
+            digest.update(np.asarray(rounded.shape, dtype="<i8").tobytes())
+            digest.update(rounded.tobytes())
+        centers = np.sqrt(e[:-1] * e[1:])
+        resolving_power = centers / np.diff(e)
     rec.update(molecule=molecule, file=path.name, n_bands=int(e.size - 1),
                t_range_k=[float(t[0]), float(t[-1])],
                p_range_bar=[float(p[0]), float(p[-1])],
-               wl_range_um=[float(1e4 / e[-1]), float(1e4 / e[0])])
+               wl_range_um=[float(1e4 / e[-1]), float(1e4 / e[0])],
+               grid_sha256=digest.hexdigest(),
+               band_resolution=float(np.median(resolving_power)))
     return rec
 
 
@@ -240,12 +294,10 @@ def load_tables(molecules, nu_min, nu_max, *, molecule_table=None,
     out, ref = {}, None
     for m in mols:
         with h5py.File(table_path(m), "r") as f:
+            arrays = _validated_layout(f, table_path(m))
             _header(f, table_path(m))
-            edges = np.asarray(f["bin_edges"], dtype=np.float64)
-            gg = np.asarray(f["samples"], dtype=np.float64)
-            gw = np.asarray(f["weights"], dtype=np.float64)
-            t_grid = np.asarray(f["t"], dtype=np.float64)
-            p_grid = np.asarray(f["p"], dtype=np.float64)
+            edges, gg, gw = (arrays[k] for k in ("bin_edges", "samples", "weights"))
+            t_grid, p_grid = (arrays[k] for k in ("t", "p"))
             # bands fully inside the requested span; edges has n_band+1 entries
             keep = np.where((edges[:-1] >= nu_min) & (edges[1:] <= nu_max))[0]
             if keep.size == 0:
@@ -257,6 +309,12 @@ def load_tables(molecules, nu_min, nu_max, *, molecule_table=None,
             # hyperslab read: (n_P, n_T, n_band, n_g) -> only the bands wanted
             k = np.asarray(f["kcoeff"][:, :, b0:b1, :], dtype=np.float64)
             sub_edges = edges[b0:b1 + 1]
+
+        if not np.all(np.isfinite(k)) or np.any(k < 0.0):
+            raise ValueError(f"{table_path(m)}: kcoeff must be finite and non-negative")
+        if np.any(np.diff(k, axis=-1) < 0.0):
+            raise ValueError(
+                f"{table_path(m)}: kcoeff must be non-decreasing along the g ordinate")
 
         if ref is None:
             ref = (sub_edges, t_grid, p_grid, gg, gw, m)
