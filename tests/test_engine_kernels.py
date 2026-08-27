@@ -77,14 +77,14 @@ def test_to_art_refuses_an_art_grid_deeper_than_the_chemistry():
         _to_art(p_v, p_art)
 
 
-def test_to_art_allows_a_shallower_art_top_with_a_notice(capsys):
-    """The TOP clamp is deliberate and only logged, unlike the bottom one."""
+def test_to_art_refuses_an_art_top_above_the_chemistry():
+    """A clamped top fabricates upper-atmosphere chemistry (73 ppm/decade on
+    W39b): refuse it like the bottom. A coincident top is allowed."""
     p_v = np.logspace(-4, 0, 20)
     p_art = np.logspace(-6, -0.5, 15)        # extends ABOVE the chemistry top
-    fn = _to_art(p_v, p_art)
-    assert "above the" in capsys.readouterr().out
-    out = np.asarray(fn(jnp.asarray(np.linspace(-3, -9, 20))))
-    assert np.all(np.isfinite(out))
+    with pytest.raises(ValueError, match="above the VULCAN"):
+        _to_art(p_v, p_art)
+    _to_art(p_v, np.logspace(-4, -0.5, 15))  # same top: no clamp, no error
 
 
 @pytest.mark.parametrize("grid", [

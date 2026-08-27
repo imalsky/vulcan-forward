@@ -53,18 +53,14 @@ ATOMIC_MASSES = [
 # sedimentation, or patchiness.
 CLOUD_NUC0 = 2857.0
 
-# ART pressure bounds (bar). The bottom stays inside VULCAN's envelope; the TOP
-# is set ABOVE VULCAN's 1e-7 bar chemistry top on purpose -- the log-P
-# interpolation CLAMPS the topmost VULCAN value of whatever is mapped through it
-# over the extra decade, i.e. a constant-abundance upper-atmosphere extension (T is
-# evaluated analytically on the ART grid by both production forwards, so it is not
-# clamped there; a common
-# transmission-modeling convention, NOT chemistry: photochemical species can
-# genuinely vary at sub-microbar pressures). Without it, strong bands (CO2 4.3,
-# CO 4.7 um) go optically thick to the model top and the transit radius
-# saturates into a flat "wall" at 4.2-5.2 um (saturated fraction 4.8% at 1e-6
-# bar); extending to 1e-8 bar removes it (0.1%), letting the bands rise to real
-# peaks. This is an EXPLICIT modeling choice, measured on WASP-39 b.
+# ART pressure bounds (bar). Chemistry and RT share the model top: vulcan_chem
+# sets the chemistry P_t from the profile's art_ptop_bar (default ART_PTOP_BAR)
+# and interp_map refuses an ART grid the chemistry does not cover. 1e-8 bar is
+# where the strong CO2 4.3 / CO 4.7 um bands stop saturating into a flat
+# model-top "wall" (saturated fraction 4.8% at 1e-6 bar, 0.1% at 1e-8; measured
+# on WASP-39 b). The former one-decade constant-VMR clamp above a 1e-7 bar
+# chemistry top measured 73 ppm at R=100 against chemistry solved there
+# (vulcan-retrieval validation/top_pressure_ladder) and was removed.
 ART_PTOP_BAR = 1.0e-8
 ART_PBTM_BAR = 7.0
 

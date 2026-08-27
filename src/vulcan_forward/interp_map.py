@@ -6,20 +6,12 @@ between them with a log-pressure linear interpolation that is pure JAX (``jnp.in
 and therefore differentiable -- so forward-mode tangents pass cleanly across the bridge.
 
 ``jnp.interp`` requires ascending sample points, so we sort the VULCAN grid by log10(P)
-once (static index array) and CLAMP outside the range. Clamping is NOT a no-op in the
-shipped configuration: the ART top (config.ART_PTOP_BAR = 1e-8 bar) deliberately sits
-one decade ABOVE VULCAN's chemistry top (P_t = 1e-7 bar), so every ART layer above the
-chemistry top receives the topmost VULCAN value, i.e. a constant upper extension of
-whatever is mapped THROUGH this operator. Both production forwards map the VMRs and
-the mean molecular weight and evaluate T analytically on the ART grid instead
-(vulcan-retrieval retrieval_forward.py, vulcan-jwst-tool forward.py), so the
-temperature is NOT clamped there; retrieval's forward/sensitivity.py does map T and
-so does get an isothermal top (see the ART_PTOP_BAR comment in config.py for the
-rationale and
-validation/top_pressure_ladder.py for the convergence test). Any clamped span is
-reported loudly at build time so the choice is visible in every run log; a clamped
-BOTTOM (chemistry not covering the ART bottom) is refused -- that is a mis-set grid,
-not a modeling convention.
+once (static index array). ``jnp.interp`` CLAMPS outside the sample range, so the ART
+grid must lie INSIDE the chemistry grid: both edges are refused at build time. (The
+shipped configuration used to let the ART top sit one decade above the chemistry top
+on a constant-VMR clamp; measured against chemistry solved there it moved the R=100
+transit depth by 73 ppm, so vulcan_chem now sets the chemistry P_t from the profile's
+art_ptop_bar and a clamped top is an error, like a clamped bottom always was.)
 
 Interpolation caveats (documented, not silent): linear-in-log-P is not column- or
 mass-conservative and can smear photochemical transitions sharper than the ART layer
@@ -51,8 +43,8 @@ def make_to_art(p_bar_vulcan: np.ndarray, p_bar_art: np.ndarray):
     Raises
     ------
     ValueError
-        If the ART grid extends BELOW the VULCAN bottom (deep clamping would
-        silently fabricate deep-atmosphere chemistry; fix the grids instead).
+        If the ART grid extends outside the VULCAN grid at either end (clamping
+        would silently fabricate chemistry there; fix the grids instead).
     """
     p_bar_vulcan = np.asarray(p_bar_vulcan, dtype=np.float64)
     p_bar_art = np.asarray(p_bar_art, dtype=np.float64)
@@ -73,7 +65,7 @@ def make_to_art(p_bar_vulcan: np.ndarray, p_bar_art: np.ndarray):
 
     # Loud, host-side accounting of the clamped span (runs once at build).
     p_top_v, p_btm_v = float(np.min(p_bar_vulcan)), float(np.max(p_bar_vulcan))
-    n_top_clamp = int(np.sum(np.asarray(p_bar_art) < p_top_v))
+    n_top_clamp = int(np.sum(np.asarray(p_bar_art) < p_top_v * (1.0 - 1e-9)))
     n_btm_clamp = int(np.sum(np.asarray(p_bar_art) > p_btm_v))
     if n_btm_clamp:
         raise ValueError(
@@ -82,11 +74,12 @@ def make_to_art(p_bar_vulcan: np.ndarray, p_bar_art: np.ndarray):
             "to the deepest chemistry value. Shrink ART_PBTM_BAR or extend the "
             "chemistry grid.")
     if n_top_clamp:
-        print(f"[interp] NOTE: {n_top_clamp}/{len(p_bar_art)} ART layers sit above the "
-              f"VULCAN chemistry top ({p_top_v:.1e} bar) and use the constant clamp "
-              "extension for every profile mapped through this operator (deliberate; "
-              "see interp_map docstring + "
-              "config.ART_PTOP_BAR).", flush=True)
+        raise ValueError(
+            f"ART grid top ({np.min(p_bar_art):.3e} bar) lies above the VULCAN chemistry "
+            f"top ({p_top_v:.3e} bar): {n_top_clamp} layers would clamp to the topmost "
+            "chemistry value, which measured 73 ppm per decade on W39b "
+            "(vulcan-retrieval validation/top_pressure_ladder). Extend the chemistry "
+            "grid (cfg P_t) to the ART top.")
 
     def to_art(profile_nz):
         if getattr(profile_nz, "ndim", None) != 1 or profile_nz.shape[0] != order.size:

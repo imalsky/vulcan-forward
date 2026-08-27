@@ -326,6 +326,11 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     # like use_photo does. The fisher_zco tier configs are the only users.
     for _k, _v in (profile.get("cfg_overrides") or {}).items():
         setattr(cfg, _k, _v)
+    # The chemistry grid must reach the RT top (interp_map refuses a clamped
+    # top). An explicit cfg_overrides P_t wins: the model-top ladder and the
+    # condensation pin bring their own grids.
+    if "P_t" not in (profile.get("cfg_overrides") or {}):
+        cfg.P_t = float(profile.get("art_ptop_bar") or constants.ART_PTOP_BAR) * 1.0e6
 
     from vulcan_jax.state import RunState, legacy_view
     from vulcan_jax import network as net_mod, composition, rates_jax
