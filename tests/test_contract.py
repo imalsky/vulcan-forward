@@ -30,6 +30,27 @@ def test_constants_import_without_data_or_heavy_deps():
         assert set(spec) == {"vulcan", "molmass"}, name
 
 
+def test_every_molmass_matches_its_own_formula():
+    """molmass is the only mass the engine uses; it must equal the formula.
+
+    Seven entries once carried an isotopologue or a pre-2009 sulfur weight.
+    Harmless while the mass cancels out of the optical depth -- which is
+    exactly why nothing else would catch it.
+    """
+    import re
+
+    from vulcan_forward import constants
+
+    weights = {"H": 1.008, "C": 12.011, "N": 14.007, "O": 15.999, "S": 32.06}
+    for name, entry in constants.MOLECULES.items():
+        want = sum(
+            weights[el] * (int(n) if n else 1)
+            for el, n in re.findall(r"([A-Z][a-z]?)(\d*)", name)
+            if el
+        )
+        assert entry["molmass"] == pytest.approx(want, abs=5e-4), name
+
+
 def test_paths_module_imports_clean_and_fails_loudly(monkeypatch):
     """paths must import with nothing configured, then raise with a remedy."""
     from vulcan_forward import paths

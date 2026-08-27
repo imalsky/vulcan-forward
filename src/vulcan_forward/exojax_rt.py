@@ -358,6 +358,23 @@ def _require_geometry(profile: dict, *keys: str) -> None:
             "in cm/s^2), rstar_cm (stellar radius in cm).")
 
 
+def _check_cia_span(cdb, nu_grid, label):
+    """Refuse a CIA table that does not cover the requested wavenumber grid.
+
+    `CdbCIA` reads only the rows inside the requested range and never checks
+    coverage, so bands past the file's edge silently reuse the edge
+    coefficient -- the same clamp the k-table pressure ceiling is refused for.
+    """
+    lo, hi = float(np.min(cdb.nucia)), float(np.max(cdb.nucia))
+    g_lo, g_hi = float(np.min(nu_grid)), float(np.max(nu_grid))
+    if g_lo < lo or g_hi > hi:
+        raise ValueError(
+            f"{label} CIA table covers [{lo:g}, {hi:g}] cm^-1 but the requested "
+            f"grid spans [{g_lo:g}, {g_hi:g}] cm^-1. Bands outside the table "
+            "would silently reuse its edge coefficient. Narrow nu_min/nu_max "
+            "or install a table that covers the band.")
+
+
 def build_rt_model(profile: dict) -> SimpleNamespace:
     """Build the transmission-spectrum model for the molecules named in ``profile``.
 
@@ -395,6 +412,17 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
         raise ValueError(
             f"art_ptop_bar={ptop:g} / art_pbtm_bar={pbtm:g}: need "
             "0 < top < bottom (bar)")
+    # _interp_logk clamps log P at BOTH ends. The low-P clamp is defensible
+    # (k is Doppler-dominated and pressure-independent there); the deep one is
+    # not -- pressure broadening grows with P, so a layer below the table
+    # ceiling reuses an under-broadened, under-opaque entry. Refuse it.
+    p_ceiling = float(np.asarray(ckd_pack.p_grid)[-1])
+    if pbtm > p_ceiling:
+        raise ValueError(
+            f"art_pbtm_bar={pbtm:g} bar is below the k-table pressure ceiling "
+            f"({p_ceiling:g} bar). Layers deeper than the ceiling reuse its "
+            "entry, which is under-broadened and therefore under-opaque. Raise "
+            "the column bottom or install tables that reach deeper.")
     integration = str(profile.get("rt_integration", "simpson"))
     if integration not in ("simpson", "trapezoid"):
         raise ValueError(
@@ -437,6 +465,7 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
               "download ~24 MB from https://hitran.org/data/CIA/main/"
               "H2-H2_2011.cia now (network required)", flush=True)
     cdb = CdbCIA(str(cia_h2h2), nurange=nu_grid)
+    _check_cia_span(cdb, nu_grid, "H2-H2")
     opacia = OpaCIA(cdb, nu_grid=nu_grid)
     # H2-He CIA is required physics (He is ~14% by number). Missing it
     # would silently drop a real continuum term -> a wrong spectrum with no error.
@@ -451,7 +480,9 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
             "/main/ path -- the bare /data/CIA/ URL 404s) to that exact path. "
             "Refusing to build the RT without it (silently skipping the He "
             "continuum would bias the spectrum).")
-    opacia_he = OpaCIA(CdbCIA(str(cia_h2he), nurange=nu_grid), nu_grid=nu_grid)
+    cdb_he = CdbCIA(str(cia_h2he), nurange=nu_grid)
+    _check_cia_span(cdb_he, nu_grid, "H2-He")
+    opacia_he = OpaCIA(cdb_he, nu_grid=nu_grid)
     print("[rt] H2-He CIA loaded", flush=True)
     print(f"[rt] CIA + RT built; total {time.time()-t0:.1f}s", flush=True)
 
@@ -715,6 +746,14 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
         return _radius_at(lnp_em, T_art, mmw_art, r_ref_em, g_ref_em,
                           float(profile["p_ref_bar_used"]), p_ref_em)
 
+    # lnR0 CONVENTION for consumers. The eclipse prefactor multiplies this
+    # radius by exp(2*lnR0), matching transmission. That is an approximation
+    # here: this geometry shifts radii ADDITIVELY at fixed g_btm, which makes
+    # the consistent exponent 2*Rp_btm/r_em (1.888 on WASP-39 b; finite
+    # differences give 1.8814), and it also drops the g_em response to lnR0.
+    # Measured, both are below the eclipse-depth error budget, so the exponent
+    # is left at 2. If it is ever tightened, tighten the gravity response with
+    # it -- correcting one alone moves the answer the wrong way.
     def emission_radius(T_art, mmw_art):
         """Planet radius (cm) at p_ref_emission_bar, for the eclipse-depth
         (R_p/R_star)^2 prefactor.

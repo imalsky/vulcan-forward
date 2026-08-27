@@ -90,6 +90,32 @@ def _assert_stats(r, meta, label):
     assert mx <= tol["max_dev_pct"], msg
 
 
+def test_art_bounds_come_from_the_profile_not_a_module_constant():
+    """`art_ptop_bar` must reach the grid through the PROFILE.
+
+    A consumer re-exported the module constant as a value copy and rebound that
+    instead; every rung of its convergence ladder then built the same grid and
+    the ladder reported a structural zero.
+    """
+    base = dict(molecules=["H2O"], nu_min=2000.0, nu_max=10000.0,
+                opacity_mode="exomolop", art_nlayer=20, art_pbtm_bar=1.0e2,
+                p_ref_bar=10.0, rp_cm=7.1492e9, gs_cgs=1.0e3, rstar_cm=RSTAR_W39)
+    a = exojax_rt.build_rt_model({**base, "art_ptop_bar": 1.0e-6})
+    b = exojax_rt.build_rt_model({**base, "art_ptop_bar": 1.0e-8})
+    assert float(a.art_ptop_bar) == 1.0e-6 and float(b.art_ptop_bar) == 1.0e-8
+    assert float(np.min(a.p_art_bar)) > float(np.min(b.p_art_bar))
+
+
+def test_a_column_deeper_than_the_ktable_ceiling_is_refused():
+    """The deep clamp is under-broadened, so it must refuse rather than clamp."""
+    with pytest.raises(ValueError, match="k-table pressure ceiling"):
+        exojax_rt.build_rt_model(dict(
+            molecules=["H2O"], nu_min=2000.0, nu_max=10000.0,
+            opacity_mode="exomolop", art_nlayer=20,
+            art_ptop_bar=1.0e-6, art_pbtm_bar=3.0e2, p_ref_bar=10.0,
+            rp_cm=7.1492e9, gs_cgs=1.0e3, rstar_cm=RSTAR_W39))
+
+
 def test_transmission_isothermal_h2o_matches_prt():
     z, meta = _load("prt_ref_isothermal_h2o_trans.npz")
     nlay = 100

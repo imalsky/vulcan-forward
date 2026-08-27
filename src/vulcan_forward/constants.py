@@ -116,7 +116,9 @@ WIDE_BAND_NU_MAX = 10000.0   # 1 um
 # provenance.json, exposed by ``exomolop.provenance()``). molmass is explicit
 # and is the ONLY mass the engine uses: the k-tables are cm^2 per MOLECULE and
 # their own mol_mass header is not read (ExoMolOP's NO file carries 46, an
-# upstream metadata error; NO is 30). Do not "fix" molmass to match a file.
+# upstream metadata error; NO is 30). Do not "fix" molmass to match a file --
+# every entry is recomputed from its own formula with the IUPAC natural-
+# abundance atomic weights, and tests/test_contract.py enforces that.
 #
 # Every table is the principal isotopologue except CO and CO2 (natural
 # abundance), paired with the TOTAL molecular VMR -- a <= ~2% opacity deficit
@@ -127,26 +129,26 @@ WIDE_BAND_NU_MAX = 10000.0   # 1 um
 MOLECULES = {
     "CO":  {"vulcan": "CO",  "molmass": 28.010},
     "H2O": {"vulcan": "H2O", "molmass": 18.015},
-    "CO2": {"vulcan": "CO2", "molmass": 43.990},
+    "CO2": {"vulcan": "CO2", "molmass": 44.009},
     "CH4": {"vulcan": "CH4", "molmass": 16.043},
-    "SO2": {"vulcan": "SO2", "molmass": 64.066},
+    "SO2": {"vulcan": "SO2", "molmass": 64.058},
     # High-C/O + sulfur discriminators: C2H2/HCN carry the signal near C/O ~ 1,
     # H2S is the reduced-S reservoir.
-    "HCN":  {"vulcan": "HCN",  "molmass": 27.025},
-    "C2H2": {"vulcan": "C2H2", "molmass": 26.037},
-    "H2S":  {"vulcan": "H2S",  "molmass": 34.081},
+    "HCN":  {"vulcan": "HCN",  "molmass": 27.026},
+    "C2H2": {"vulcan": "C2H2", "molmass": 26.038},
+    "H2S":  {"vulcan": "H2S",  "molmass": 34.076},
     # Cool-planet nitrogen carrier (e.g. WASP-107b-class).
     "NH3":  {"vulcan": "NH3",  "molmass": 17.031},
     # Second equilibrium sulfur carrier (nu3 band ~4.85 um, inside G395H and
     # PRISM). The SNCHO network names the species COS (consumers alias the
     # token).
-    "OCS":  {"vulcan": "COS",  "molmass": 60.075},
+    "OCS":  {"vulcan": "COS",  "molmass": 60.070},
     # Photochemical sulfur carrier and a CH4-destruction product. ExoMolOP
     # publishes NO k-table for either (CS2: no ExoMol line list; C2H6: page but
     # no petitRADTRANS file), so they are listed for completeness and refused
     # at load with the fetch hint.
     "CS2":  {"vulcan": "CS2",  "molmass": 76.131},
-    "C2H6": {"vulcan": "C2H6", "molmass": 30.069},
+    "C2H6": {"vulcan": "C2H6", "molmass": 30.070},
     # Simple hydrocarbon: photochemical CH4-destruction product.
     "C2H4": {"vulcan": "C2H4", "molmass": 28.054},
     # RADICALS. All four are species in VULCAN's SNCHO network, and the
@@ -155,8 +157,8 @@ MOLECULES = {
     # was one of the three measured reasons this engine's spectra had too much
     # contrast.
     "OH": {"vulcan": "OH", "molmass": 17.007},
-    "SH": {"vulcan": "SH", "molmass": 33.073},
-    "SO": {"vulcan": "SO", "molmass": 48.064},
+    "SH": {"vulcan": "SH", "molmass": 33.068},
+    "SO": {"vulcan": "SO", "molmass": 48.059},
     # ExoMolOP's recommended NO opacity is built from HITEMP
     # (14N-16O__HITEMP.R1000_0.3-50mu). Identity confirmed from the data: peak
     # at 1924 cm^-1 (5.20 um) with an overtone at 2.66 um is the NO
@@ -173,16 +175,16 @@ MOLECULES = {
     # entirely. The painful two are HSO (1.2e-4) and S2 (9.7e-5), both MORE
     # abundant than SO2 on W39b: S2 is homonuclear so it has no IR dipole, HSO
     # has no published list. Full record: notes.md.
-    "NS":   {"vulcan": "NS",   "molmass": 46.072},
+    "NS":   {"vulcan": "NS",   "molmass": 46.067},
     "CH3":  {"vulcan": "CH3",  "molmass": 15.035},
     "NH":   {"vulcan": "NH",   "molmass": 15.015},
     "CN":   {"vulcan": "CN",   "molmass": 26.018},
     "H2CO": {"vulcan": "H2CO", "molmass": 30.026},
-    "CS":   {"vulcan": "CS",   "molmass": 44.076},
+    "CS":   {"vulcan": "CS",   "molmass": 44.071},
     "N2O":  {"vulcan": "N2O",  "molmass": 44.013},
     "CH":   {"vulcan": "CH",   "molmass": 13.019},
     "C2":   {"vulcan": "C2",   "molmass": 24.022},
-    "H2O2": {"vulcan": "H2O2", "molmass": 34.015},
+    "H2O2": {"vulcan": "H2O2", "molmass": 34.014},
 }
 
 # Bulk gas used for CIA + the dominant background (H2).

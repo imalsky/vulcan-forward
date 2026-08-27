@@ -71,6 +71,16 @@ _WANT_ENV = {"VULCAN_JAX_NETWORK": constants.DEFAULT_NETWORK,
 if "vulcan_jax" in sys.modules:
     _conflict = {k: (os.environ.get(k), v) for k, v in _WANT_ENV.items()
                  if os.environ.get(k) not in (None, v)}
+    # With the env vars UNSET -- the default -- comparing them proves nothing:
+    # vulcan_jax has already frozen whatever ITS config named. Read the frozen
+    # state itself, which is what the env vars were only ever describing.
+    if not _conflict:
+        _frozen = getattr(sys.modules["vulcan_jax"], "chem_funs", None)
+        _frozen = getattr(getattr(_frozen, "_NETWORK", None), "network_path", None)
+        if _frozen and os.path.basename(_frozen) != os.path.basename(
+                constants.DEFAULT_NETWORK):
+            _conflict = {"VULCAN_JAX_NETWORK": (_frozen,
+                                                constants.DEFAULT_NETWORK)}
     if _conflict:
         raise RuntimeError(
             "vulcan_jax was imported before vulcan_forward.vulcan_chem, so its "
