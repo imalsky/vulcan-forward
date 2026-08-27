@@ -55,13 +55,15 @@ CLOUD_NUC0 = 2857.0
 
 # ART pressure bounds (bar). Chemistry and RT share the model top: vulcan_chem
 # sets the chemistry P_t from the profile's art_ptop_bar (default ART_PTOP_BAR)
-# and interp_map refuses an ART grid the chemistry does not cover. 1e-8 bar is
-# where the strong CO2 4.3 / CO 4.7 um bands stop saturating into a flat
+# and interp_map refuses an ART grid the chemistry does not cover. Above 1e-8
+# bar the strong CO2 4.3 / CO 4.7 um bands stop saturating into a flat
 # model-top "wall" (saturated fraction 4.8% at 1e-6 bar, 0.1% at 1e-8; measured
-# on WASP-39 b). The former one-decade constant-VMR clamp above a 1e-7 bar
-# chemistry top measured 73 ppm at R=100 against chemistry solved there
-# (vulcan-retrieval validation/top_pressure_ladder) and was removed.
-ART_PTOP_BAR = 1.0e-8
+# on WASP-39 b); 1e-9 bar is where the column is CONVERGED in its top -- one
+# decade higher moves the R=100 depth by 1.14 ppm, against 14.65 ppm for a 1e-8
+# bar top (vulcan-retrieval validation/top_pressure_ladder). The former
+# one-decade constant-VMR clamp above a 1e-7 bar chemistry top measured 73 ppm
+# there and was removed.
+ART_PTOP_BAR = 1.0e-9
 ART_PBTM_BAR = 7.0
 
 # Pressure at which a consumer's rp_cm / gs_cgs are taken to be defined. A
