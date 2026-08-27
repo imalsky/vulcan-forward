@@ -9,8 +9,13 @@ and therefore differentiable -- so forward-mode tangents pass cleanly across the
 once (static index array) and CLAMP outside the range. Clamping is NOT a no-op in the
 shipped configuration: the ART top (config.ART_PTOP_BAR = 1e-8 bar) deliberately sits
 one decade ABOVE VULCAN's chemistry top (P_t = 1e-7 bar), so every ART layer above the
-chemistry top receives the topmost VULCAN value -- a constant-VMR / isothermal upper
-extension (see the ART_PTOP_BAR comment in config.py for the rationale and
+chemistry top receives the topmost VULCAN value, i.e. a constant upper extension of
+whatever is mapped THROUGH this operator. Both production forwards map the VMRs and
+the mean molecular weight and evaluate T analytically on the ART grid instead
+(vulcan-retrieval retrieval_forward.py, vulcan-jwst-tool forward.py), so the
+temperature is NOT clamped there; retrieval's forward/sensitivity.py does map T and
+so does get an isothermal top (see the ART_PTOP_BAR comment in config.py for the
+rationale and
 validation/top_pressure_ladder.py for the convergence test). Any clamped span is
 reported loudly at build time so the choice is visible in every run log; a clamped
 BOTTOM (chemistry not covering the ART bottom) is refused -- that is a mis-set grid,
@@ -78,8 +83,9 @@ def make_to_art(p_bar_vulcan: np.ndarray, p_bar_art: np.ndarray):
             "chemistry grid.")
     if n_top_clamp:
         print(f"[interp] NOTE: {n_top_clamp}/{len(p_bar_art)} ART layers sit above the "
-              f"VULCAN chemistry top ({p_top_v:.1e} bar) and use the constant-VMR/"
-              "isothermal clamp extension (deliberate; see interp_map docstring + "
+              f"VULCAN chemistry top ({p_top_v:.1e} bar) and use the constant clamp "
+              "extension for every profile mapped through this operator (deliberate; "
+              "see interp_map docstring + "
               "config.ART_PTOP_BAR).", flush=True)
 
     def to_art(profile_nz):

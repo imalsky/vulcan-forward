@@ -55,8 +55,10 @@ CLOUD_NUC0 = 2857.0
 
 # ART pressure bounds (bar). The bottom stays inside VULCAN's envelope; the TOP
 # is set ABOVE VULCAN's 1e-7 bar chemistry top on purpose -- the log-P
-# interpolation CLAMPS the topmost VULCAN VMR/T over the extra decade, i.e. a
-# constant-abundance + isothermal upper-atmosphere extension (a common
+# interpolation CLAMPS the topmost VULCAN value of whatever is mapped through it
+# over the extra decade, i.e. a constant-abundance upper-atmosphere extension (T is
+# evaluated analytically on the ART grid by both production forwards, so it is not
+# clamped there; a common
 # transmission-modeling convention, NOT chemistry: photochemical species can
 # genuinely vary at sub-microbar pressures). Without it, strong bands (CO2 4.3,
 # CO 4.7 um) go optically thick to the model top and the transit radius
