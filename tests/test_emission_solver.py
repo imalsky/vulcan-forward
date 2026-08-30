@@ -125,7 +125,6 @@ def test_is_differentiable_through_the_boundary_source():
     assert np.isfinite(d) and d > 0.0
 
 
-# --------------------------------------------------------------------------
 # Correlated-k emission
 #
 # exojax's own ArtEmisPure.run_ckd hard-codes the "ibased" solver, which would
@@ -135,7 +134,6 @@ def test_is_differentiable_through_the_boundary_source():
 # the flatten/tile index convention (a transpose here mixes bands into
 # g-ordinates and still returns plausible numbers), and the presence of the
 # interior term.
-# --------------------------------------------------------------------------
 
 from vulcan_forward.exojax_rt import _run_emis_ckd_linsap    # noqa: E402
 from vulcan_forward import ckd                               # noqa: E402

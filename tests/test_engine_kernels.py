@@ -11,9 +11,7 @@ import numpy as np
 import pytest
 
 
-# ---------------------------------------------------------------------------
 # interp_map.make_to_art
-# ---------------------------------------------------------------------------
 jnp = pytest.importorskip("jax.numpy", reason="make_to_art returns a jnp interpolator")
 
 # x64 must be on before the first jnp array is built, exactly as

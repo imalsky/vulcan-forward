@@ -31,17 +31,6 @@ from vulcan_forward import ckd  # noqa: E402
 
 
 
-def test_band_edges_are_log_uniform_at_the_requested_resolution():
-    e = ckd.band_edges(667.0, 10000.0, 500.0)
-    r = np.diff(np.log(e))
-    assert np.allclose(r, 1.0 / 500.0, rtol=1e-9)
-    assert e[0] == pytest.approx(667.0)
-    assert e[-1] <= 10000.0 * (1.0 + 1e-12)
-    # a band grid that silently dropped most of the range would be a very
-    # quiet way to model the wrong spectrum
-    assert e[-1] > 10000.0 * np.exp(-1.0 / 500.0)
-
-
 
 
 

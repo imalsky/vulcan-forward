@@ -36,18 +36,6 @@ def gauss_legendre(ng: int):
     return 0.5 * (g + 1.0), 0.5 * w
 
 
-def band_edges(nu_min: float, nu_max: float, r_band: float) -> np.ndarray:
-    """Log-uniform band edges at resolution ``r_band``, inclusive of nu_max."""
-    e = np.exp(np.arange(np.log(nu_min), np.log(nu_max) + 0.5 / r_band,
-                         1.0 / r_band))
-    e = e[e <= nu_max * (1.0 + 1e-12)]
-    if e.size < 2:
-        raise ValueError(
-            f"band_edges({nu_min}, {nu_max}, {r_band}) produced {e.size} "
-            "edges: the band is narrower than one resolution element")
-    return e
-
-
 def _interp_logk(logk, t_grid, p_grid, T, P):
     """Bilinear interpolation of log k in (T, log P).
 

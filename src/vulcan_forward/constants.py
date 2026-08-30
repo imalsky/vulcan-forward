@@ -9,9 +9,7 @@ consumer, not here.
 """
 from __future__ import annotations
 
-# ---------------------------------------------------------------------------
 # VULCAN-JAX network selection
-# ---------------------------------------------------------------------------
 # These must be in the environment BEFORE the first ``import vulcan_jax``
 # (VULCAN-JAX freezes network/atom_list at first import). ``vulcan_chem``
 # applies them; see its module docstring for the import-order contract.
@@ -21,9 +19,7 @@ DEFAULT_ATOM_LIST = "H,O,C,N,S"
 # ``profile["vulcan_cfg_name"]`` instead; this is only the fallback.
 DEFAULT_CFG_NAME = "W39b"
 
-# ---------------------------------------------------------------------------
 # Composition tables (hardcoded mirrors of vulcan_jax.composition)
-# ---------------------------------------------------------------------------
 # This module stays import-light (no vulcan_jax), so both positional tables are
 # mirrors of the package's composition metadata. ``vulcan_chem`` verifies them
 # against ``vulcan_jax.composition`` at build time and raises on any drift --
@@ -42,9 +38,7 @@ ATOMIC_MASSES = [
     39.098, 28.085, 55.845, 39.948, 47.867, 50.942, 24.305, 40.078, 5.4858e-4,
 ]
 
-# ---------------------------------------------------------------------------
 # Opacity / radiative-transfer defaults
-# ---------------------------------------------------------------------------
 # Reference wavenumber (cm^-1) for the ExoJAX powerlaw_clouds retrieval cloud:
 # kappa(nu) = kappac0 * (nu/CLOUD_NUC0)^alphac, kappac0 in cm^2 per gram of
 # atmosphere (pRT convention; alphac = 0 is a gray cloud). 2857 cm^-1 = 3.5 um.
@@ -104,9 +98,7 @@ T_OPA_MAX_K = 3000.0
 WIDE_BAND_NU_MIN = 667.0     # 15 um
 WIDE_BAND_NU_MAX = 10000.0   # 1 um
 
-# ---------------------------------------------------------------------------
 # Molecule table
-# ---------------------------------------------------------------------------
 # Each molecule: VULCAN species name and molar mass (g/mol). The opacity itself
 # is the published ExoMolOP k-table <MOL>.ktable.h5 (fetch_exomolop selects the
 # principal isotopologue and prefers the natural-abundance file; the dataset,

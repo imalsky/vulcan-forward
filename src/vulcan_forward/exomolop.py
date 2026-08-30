@@ -59,11 +59,6 @@ import numpy as np
 
 from vulcan_forward import constants, paths
 
-# Their pressure grid floor. Layers above this share its k; see the module
-# docstring. Kept as a named constant so the disclosure and the check cannot
-# drift apart.
-P_TABLE_MIN_BAR = 1.0e-5
-
 # log k floor. Their tables contain exact zeros where a species has no lines
 # in a band; log(0) would poison the interpolation with -inf, and a zero cross
 # section is physically "no absorption", so it floors to a value far below any

@@ -231,9 +231,7 @@ def test_malformed_tables_are_refused(data_root, dataset, index, value):
         exomolop.load_tables(["H2O"], edges[0], edges[-1], verbose=False)
 
 
-# --------------------------------------------------------------------------
 # Against a REAL table, when one is installed.
-# --------------------------------------------------------------------------
 
 def _need_real(*mols):
     """Resolve at CALL time, not import time: test_contract.py deliberately

@@ -489,7 +489,6 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     yconv_min_v = float(cfg.yconv_min)
     slope_cri_v = float(cfg.slope_cri)
     flux_cri_v = float(cfg.flux_cri)
-    conv_stall_window_v = int(cfg.conv_stall_window)
     _warm_note = ("; warm continuation pinned to central difference (the "
                   "converged phase-1 operator)" if hybrid_v else "")
     print(f"[chem] diffusion scheme: use_vm_mol={use_vm_mol_v} "
@@ -886,8 +885,6 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         return out
 
     return SimpleNamespace(
-        ChemParams=ChemParams,          # the named primitive
-        params_from_vector=lambda th: _as_params(th),   # model-aware adapter
         converged_ymix=converged_ymix,
         run_diag=run_diag,
         converged_y=converged_y,
@@ -915,9 +912,4 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         count_max=int(cfg.count_max),   # the resolved (profile-overridden or module-default) cap
         warm_count_max=warm_count_max,  # mutation-path cap (== count_max when no twin runner)
         yconv_min=float(cfg.yconv_min), # loose convergence gate: a converged solve has longdy<this
-        yconv_cri=yconv_cri_v,          # tight convergence branch threshold
-        slope_cri=slope_cri_v,          # tight-branch longdydt threshold
-        conv_stall_window=conv_stall_window_v,  # stall-fallback lookback (accepted steps)
-        use_vm_mol=use_vm_mol_v,        # resolved COLD diffusion scheme (upwind on/off)
-        use_hybrid_vm_mol=hybrid_v,     # resolved hybrid phase-flip (warm continuation runs central)
     )

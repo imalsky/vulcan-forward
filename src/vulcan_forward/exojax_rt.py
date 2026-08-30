@@ -398,10 +398,6 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
         molecule_table=profile.get("molecule_table"))
     nu_grid = jnp.asarray(ckd_pack.nu_bands)
     ckd_pack.nu_bands_j = nu_grid
-    # The band R actually in force, DERIVED from the file's edges rather
-    # than hard-coded: a future non-R1000 table variant must not mis-echo.
-    resolution = float(
-        1.0 / np.median(np.diff(np.log(ckd_pack.band_edges))))
     print("[rt] pressure broadening: H2/He, as published in the ExoMolOP "
           "tables", flush=True)
     # Profile-overridable RT knobs, validated loudly here: an out-of-range
@@ -615,11 +611,6 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
         # which opacity path ran; there is only one, and consumers still
         # verify the echo so an engine/tool version mismatch is loud
         opacity_mode="exomolop",
-        ckd_ng=int(ckd_pack.ng),
-        # ExoMolOP's band grid is fixed by the published tables (R = 1000), so
-        # echo the resolution actually in force rather than a profile key.
-        ckd_r_band=float(resolution),
-        has_cia_h2he=opacia_he is not None,
         # internals reused by build_emis_model (so opacities aren't rebuilt)
         _nu_grid=nu_grid, _molmass=molmass, _opacia=opacia,
         _opacia_he=opacia_he, _ckd_pack=ckd_pack,
