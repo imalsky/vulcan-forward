@@ -57,6 +57,15 @@ def make_to_art(p_bar_vulcan: np.ndarray, p_bar_art: np.ndarray):
     if np.unique(p_bar_vulcan).size != p_bar_vulcan.size:
         raise ValueError("VULCAN chemistry pressure grid has duplicate pressures: "
                          f"{p_bar_vulcan}")
+    # Same bar for the ART grid: an unvalidated NaN/non-positive value slips
+    # through np.log10 and the clamp counts below (NaN compares False both
+    # ways) and yields a silently-NaN interpolated profile.
+    if p_bar_art.ndim != 1 or p_bar_art.size < 1:
+        raise ValueError("ART pressure grid must be 1-D and non-empty; "
+                         f"got shape {p_bar_art.shape}")
+    if not np.all(np.isfinite(p_bar_art)) or np.any(p_bar_art <= 0.0):
+        raise ValueError("ART pressure grid must be finite and positive; "
+                         f"got {p_bar_art}")
 
     order = np.argsort(p_bar_vulcan)                       # static
     logP_v_sorted = jnp.asarray(np.log10(p_bar_vulcan[order]))

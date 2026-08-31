@@ -259,7 +259,8 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     profile : dict
         A caller-owned settings dict -- supplies ``use_photo`` and
         ``yconv_cri``. ``profile["abundance_mode"]`` selects "masks" (legacy) or
-        "elemental" (exact conserved-inventory construction; see module docstring).
+        "elemental" (the default: exact conserved-inventory construction; see
+        module docstring).
         ``profile["skip_warmup"]`` (default False) skips the build-time
         warm-up SOLVE and keeps only its runner-closure half: bit-identical
         for consumers that never read ``baseline_conv_normal`` (which is then
@@ -296,30 +297,34 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     cfg.use_live_plot = cfg.use_live_flux = cfg.use_print_prog = False
     cfg.use_photo = bool(profile["use_photo"])
     cfg.yconv_cri = float(profile["yconv_cri"])
-    if profile.get("nz"):
+    # `is not None`, never truthiness: 0 is a legitimate value for several of
+    # these (count_min=0 no floor, yconv_min=0 closes the OR-branch, slope_cri=0
+    # disables the slope criterion) and must not silently fall back to cfg.
+    if profile.get("nz") is not None:
         cfg.nz = int(profile["nz"])
-    if profile.get("count_min"):
+    if profile.get("count_min") is not None:
         cfg.count_min = int(profile["count_min"])
-    if profile.get("count_max"):
+    if profile.get("count_max") is not None:
         cfg.count_max = int(profile["count_max"])
     # Warm-continuation step cap for the MUTATION path only: a proposal still
     # unconverged at warm_count_max is headed for rejection, so cut the loop
     # there instead of dragging the lockstep batch to the cold cap. Realized as
     # a SECOND runner (the cap is baked into the jitted while_loop at trace
     # time); == count_max (or absent) means one shared runner.
-    warm_count_max = int(profile.get("warm_count_max") or cfg.count_max)
+    _wcm = profile.get("warm_count_max")
+    warm_count_max = int(_wcm) if _wcm is not None else int(cfg.count_max)
     if warm_count_max > int(cfg.count_max):
         raise ValueError(
             f"warm_count_max={warm_count_max} exceeds count_max={int(cfg.count_max)}: "
             "the warm mutation cap must be at most the cold cap (it exists to REJECT "
             "doomed proposals earlier, not to extend them)")
-    if profile.get("dt_max"):               # physical step-size cap (prevents the dt-balloon
+    if profile.get("dt_max") is not None:   # physical step-size cap (prevents the dt-balloon
         cfg.dt_max = float(profile["dt_max"])  # non-convergence at high Kzz; see config_schema)
-    if profile.get("yconv_min"):           # close the loose convergence OR-branch (default 0.1)
+    if profile.get("yconv_min") is not None:  # close the loose convergence OR-branch (default 0.1)
         cfg.yconv_min = float(profile["yconv_min"])
-    if profile.get("slope_cri"):
+    if profile.get("slope_cri") is not None:
         cfg.slope_cri = float(profile["slope_cri"])
-    if profile.get("fastchem_met_scale"):  # BASELINE metallicity (x solar); W39b default 10.0.
+    if profile.get("fastchem_met_scale") is not None:  # BASELINE metallicity (x solar); W39b default 10.0.
         cfg.fastchem_met_scale = float(profile["fastchem_met_scale"])  # build at the bottom -> march up
     # Generic cfg overrides (e.g. use_moldiff=False for the no-transport equilibrium tier).
     # Applied BEFORE the pre-loop build, so they reach make_atm_static / OuterLoop exactly
@@ -330,7 +335,8 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     # top). An explicit cfg_overrides P_t wins: the model-top ladder and the
     # condensation pin bring their own grids.
     if "P_t" not in (profile.get("cfg_overrides") or {}):
-        cfg.P_t = float(profile.get("art_ptop_bar") or constants.ART_PTOP_BAR) * 1.0e6
+        _ptop = profile.get("art_ptop_bar")
+        cfg.P_t = float(_ptop if _ptop is not None else constants.ART_PTOP_BAR) * 1.0e6
 
     from vulcan_jax.state import RunState, legacy_view
     from vulcan_jax import network as net_mod, composition, rates_jax
@@ -569,7 +575,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     # Opt-in: zero the eddy-diffusion profile entirely (the no-transport equilibrium tier;
     # combine with cfg_overrides={"use_moldiff": False} so Dzz is off too). lnKzz is then inert.
     zero_kzz = bool(profile.get("zero_Kzz", False))
-    abundance_mode = str(profile.get("abundance_mode", "masks"))
+    abundance_mode = str(profile.get("abundance_mode", "elemental"))
     if abundance_mode not in ("masks", "elemental"):
         raise ValueError(f"abundance_mode={abundance_mode!r}: expected 'masks' or 'elemental'")
 

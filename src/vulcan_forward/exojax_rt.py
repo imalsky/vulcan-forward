@@ -682,8 +682,17 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
             "level the emission column's radius and gravity are anchored at, "
             "so the grid must actually cover it.")
     profile = dict(profile)
-    profile["p_ref_bar_used"] = float(
-        profile.get("p_ref_bar", constants.P_REF_BAR))
+    # The transit anchor comes from trt, where it was validated against the
+    # grid -- both observables must share it. A conflicting per-profile value
+    # would silently anchor emission on a different planet, so it raises.
+    p_ref_used = float(trt.p_ref_bar)
+    if "p_ref_bar" in profile and float(profile["p_ref_bar"]) != p_ref_used:
+        raise ValueError(
+            f"p_ref_bar={float(profile['p_ref_bar']):g} disagrees with the "
+            f"transmission model's validated {p_ref_used:g}; the two "
+            "observables share one column anchor (build both from one "
+            "profile).")
+    profile["p_ref_bar_used"] = p_ref_used
 
     # pressure bounds follow the transmission model's (possibly profile-
     # overridden) grid -- the two share opacities and must share the column
@@ -699,11 +708,19 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
     # (Olson & Kunasz) scheme rather than isothermal-layer; at nlayer = 60 and
     # tau_bottom = 10 it sits within 0.13-0.40% of its own converged answer
     # where "ibased" sits 2.9-5.3% away. It costs one extra source row.
+    # nlayer follows trt's grid too: a differing value would put the emission
+    # column on different layer centres than trt.p_art_bar with no error.
+    art_nlayer = int(np.asarray(trt.p_art_bar).size)
+    if "art_nlayer" in profile and int(profile["art_nlayer"]) != art_nlayer:
+        raise ValueError(
+            f"art_nlayer={int(profile['art_nlayer'])} disagrees with the "
+            f"transmission grid's {art_nlayer} layers; the two observables "
+            "share opacities and must share the column.")
     art = ArtEmisPure(nu_grid=nu_grid, pressure_top=trt.art_ptop_bar,
-                      pressure_btm=trt.art_pbtm_bar, nlayer=int(profile["art_nlayer"]),
+                      pressure_btm=trt.art_pbtm_bar, nlayer=art_nlayer,
                       rtsolver="ibased_linsap", nstream=8)
     lnp_em = jnp.asarray(np.log(np.asarray(art.pressure)))
-    print(f"[rt] ArtEmisPure {profile['art_nlayer']} layers (shares opacities)", flush=True)
+    print(f"[rt] ArtEmisPure {art_nlayer} layers (shares opacities)", flush=True)
 
     def _require_he(vmr_he):
         if vmr_he is None:
@@ -773,6 +790,7 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
         over wavenumber, and within a band the smallest g is the least opaque
         wavenumber, so the gate stays conservative in the same sense.
         """
+        _require_he(vmr_he)
         _, g_em = _emission_anchor(T_art, mmw_art)
         dtau_g = _dtau(vmr, vmr_h2, vmr_he, T_art, mmw_art, g_em, cloud)
         return jnp.min(jnp.sum(dtau_g, axis=0), axis=0)
@@ -820,8 +838,11 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
         wl_um=trt.wl_um,
         p_art_bar=np.asarray(art.pressure),
         art_pbtm_bar=float(trt.art_pbtm_bar),
+        art_ptop_bar=float(trt.art_ptop_bar),
+        art_nlayer=art_nlayer,
         # echoed so a consumer can verify the engine honored the key
         p_ref_emission_bar=p_ref_em,
+        p_ref_bar=p_ref_used,
         opacity_mode="exomolop",
         molecules=mols,
     )
