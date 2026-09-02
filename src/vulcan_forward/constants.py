@@ -157,7 +157,7 @@ MOLECULES = {
     # SECOND-TIER SPECIES, from sweeping every IR-active SNCHO species against
     # ExoMolOP. Present so the menu is COMPLETE, not because each is expected
     # to matter; which ones default ON is decided by measured ppm, in
-    # vulcan-jwst-tool forward.EXTRA_MOLECULES_DEFAULT.
+    # jwst-transit-authority forward.EXTRA_MOLECULES_DEFAULT.
     #
     # CANNOT be added, do not re-sweep: O2 (published only at R15000_0.2-30mu
     # -- different band grid), CH3OH / CH3CN / HC3N / NO2 / C6H6 / CH3CHO / HO2

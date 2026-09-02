@@ -598,7 +598,7 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
         p_art_bar=p_art_bar,
         molecules=mols,
         # echo of the profile-overridable RT knobs, so downstream consumers
-        # (vulcan-jwst-tool) can VERIFY the engine honored them -- an older
+        # (jwst-transit-authority) can VERIFY the engine honored them -- an older
         # engine that ignores an unknown profile key must fail loudly there,
         # never silently compute a different model than the cache key claims
         art_ptop_bar=ptop,

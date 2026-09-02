@@ -3,7 +3,7 @@
 Chains live VULCAN-JAX photochemical kinetics into an ExoJAX transmission or
 emission spectrum, differentiably. This package is the single implementation
 shared by the retrieval framework (vulcan-retrieval) and the JWST observation
-planner (vulcan-jwst-tool); neither depends on the other.
+planner (jwst-transit-authority); neither depends on the other.
 
     constants    shared physics constants + the default molecule table
     paths        the external data-root contract (k-tables, CIA cache)

@@ -15,7 +15,7 @@ vulcan-jax          chemical kinetics
 vulcan-forward      chemistry driver and radiative transfer
     |
     +-- vulcan-retrieval    atmospheric retrieval
-    +-- vulcan-jwst-tool    JWST observation planning
+    +-- jwst-transit-authority    JWST observation planning
 ```
 
 The model uses correlated-k opacity from the published ExoMolOP tables. It
@@ -68,7 +68,7 @@ chemistry with VULCAN. The correlated-k reader and (T, P) interpolation are
 cross-checked against ExoJAX and exo_k on the same k-table files, at the
 native R = 1000 grid and binned to R = 100. The committed figures and the
 code that makes them live in
-[vulcan-jwst-tool/validation](https://github.com/imalsky/vulcan-jwst-tool/tree/main/validation).
+[jwst-transit-authority/validation](https://github.com/imalsky/jwst-transit-authority/tree/main/validation).
 
 ```bash
 python -m pip install -e ".[dev]"
