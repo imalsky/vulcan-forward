@@ -66,8 +66,9 @@ The tests compare transmission and emission calculations with
 [petitRADTRANS](https://doi.org/10.1051/0004-6361/201935470), and compare the
 chemistry with VULCAN. The correlated-k reader and (T, P) interpolation are
 cross-checked against ExoJAX and exo_k on the same k-table files, at the
-native R = 1000 grid and binned to R = 100. The committed figures are in
-[`validation/figures/`](validation/figures/).
+native R = 1000 grid and binned to R = 100. The committed figures and the
+code that makes them live in
+[vulcan-jwst-tool/validation](https://github.com/imalsky/vulcan-jwst-tool/tree/main/validation).
 
 ```bash
 python -m pip install -e ".[dev]"
