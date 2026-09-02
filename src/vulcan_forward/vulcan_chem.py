@@ -202,6 +202,25 @@ def params_from_vector(theta, n_tp_params: int, *, has_tp_eval: bool):
     return ChemParams(lnZ=v[0], c_o=v[1], lnKzz=v[2], tp=tp)
 
 
+def bz_margin(y, n_o, carbon_mask, o_only_mask) -> float:
+    """Positivity margin of the fixed-O C/O seed map on a column ``y`` (nz, ni).
+
+    The map scales every C-bearing species by e^c and compensates the oxygen
+    they drag along by scaling the O-only carriers by
+    b_z = 1 + (1 - e^c) OC_z / OO_z, so b_z > 0 iff c < ln(1 + OO_z/OC_z).
+    Returns the worst layer's bound, ln(1 + min_z OO_z/OC_z): 0 where a layer
+    has no O-only carriers left, NaN where a layer has no oxygen in either
+    group -- gate with ``not margin > x`` so NaN refuses. ``n_o`` is the O
+    atoms per species, the masks the C-bearing / O-only species (ni,).
+    """
+    y = np.asarray(y, dtype=np.float64)
+    n_o = np.asarray(n_o, dtype=np.float64)
+    oc_z = (y * (n_o * np.asarray(carbon_mask, dtype=np.float64))[None, :]).sum(axis=1)
+    oo_z = (y * (n_o * np.asarray(o_only_mask, dtype=np.float64))[None, :]).sum(axis=1)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return float(np.log(1.0 + np.min(oo_z / oc_z)))
+
+
 class ConvDiag(NamedTuple):
     """Per-solve convergence diagnostics read off the runner's final carry.
 
@@ -224,6 +243,15 @@ class ConvDiag(NamedTuple):
     longdydt: jnp.ndarray             # () float64 longdy per lookback time
     count_since_new_min: jnp.ndarray  # () int32   steps since longdy improved >= 5%
     conv_normal: jnp.ndarray          # () bool    canonical certification at exit
+    aflux_change: jnp.ndarray         # () float64 max relative actinic-flux change at exit
+    conv_branch: jnp.ndarray          # () int32   certified branch: 1 tight (yconv_cri,
+    #                                               slope_cri), 2 loose (yconv_min,
+    #                                               slope_min), 0 not certified
+    cell_species: jnp.ndarray         # () int32   species index of the cell that sets longdy
+    cell_layer: jnp.ndarray           # () int32   layer index of that cell (0 = bottom)
+    cell_vmr: jnp.ndarray             # () float64 mixing ratio of that cell at exit
+    t: jnp.ndarray                    # () float64 integration time at exit (s)
+    dt: jnp.ndarray                   # () float64 step size at exit (s)
 
 
 _SCRATCH_ROOT: str | None = None
@@ -513,18 +541,41 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
             runtime_dyn=jnp.float64(runtime_v),
         )
 
-    def _conv_normal_at_exit(final):
-        """The runner's canonical two-branch certification, recomputed at the exit
-        state. Mirrors vulcan_jax.outer_loop._convergence_ok's ``conv_normal``
-        (keep in sync with that predicate). True only for a tight- or
-        loose-branch certified exit; False when the exit certified via the stall
-        fallback or exhausted a count/runtime budget."""
+    def _conv_diag(final):
+        """ConvDiag read off the runner's exit carry. ``conv_normal`` mirrors
+        vulcan_jax.outer_loop._convergence_ok (keep in sync with that
+        predicate): tight OR loose branch, AND the photo-flux gate. True only
+        for a certified exit; False when the exit came from the stall fallback
+        or exhausted a count/runtime budget. The controlling cell is the argmax
+        of the masked per-cell ratio the runner maximised for longdy
+        (``where_varies_most`` rides the carry)."""
         slope_min = jnp.minimum(
             jnp.min(final.pv.Kzz / (0.1 * final.Hp[:-1]) ** 2), jnp.float64(1e-8))
         slope_min = jnp.maximum(slope_min, jnp.float64(1e-10))
-        conv = (((final.longdy < yconv_cri_v) & (final.longdydt < slope_cri_v))
-                | ((final.longdy < yconv_min_v) & (final.longdydt < slope_min)))
-        return conv & (final.aflux_change < flux_cri_v)
+        tight = (final.longdy < yconv_cri_v) & (final.longdydt < slope_cri_v)
+        loose = (final.longdy < yconv_min_v) & (final.longdydt < slope_min)
+        flux_ok = final.aflux_change < flux_cri_v
+        branch = jnp.where(tight, jnp.int32(1),
+                           jnp.where(loose, jnp.int32(2), jnp.int32(0)))
+        flat = jnp.argmax(final.where_varies_most)
+        return ConvDiag(
+            accept_count=final.accept_count,
+            longdy=final.longdy,
+            longdydt=final.longdydt,
+            count_since_new_min=final.count_since_new_min,
+            conv_normal=(tight | loose) & flux_ok,
+            aflux_change=final.aflux_change,
+            conv_branch=jnp.where(flux_ok, branch, jnp.int32(0)),
+            cell_species=(flat % ni).astype(jnp.int32),
+            cell_layer=(flat // ni).astype(jnp.int32),
+            cell_vmr=final.ymix.reshape(-1)[flat],
+            t=final.t,
+            dt=final.dt,
+        )
+
+    def _conv_normal_at_exit(final):
+        """The canonical certification alone (see ``_conv_diag``)."""
+        return _conv_diag(final).conv_normal
 
     atm_static = make_atm_static(atm, ni, nz, cfg=integ._cfg)
     state0 = integ._pack_state_from_runstate(rs)
@@ -610,22 +661,30 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
               f"{A0[1 + [e for e, _ in elem_pairs].index('C')] / A0[1 + [e for e, _ in elem_pairs].index('O')]:.4f}",
               flush=True)
 
-    co_bz_bound = float("inf")   # proxy mode has no b_z compensation -> no bound
+    _nC = np.asarray(compo[:, constants.ATOM_COLS["C"]], dtype=np.float64)
+    _nO = np.asarray(compo[:, constants.ATOM_COLS["O"]], dtype=np.float64)
+    _mC = np.asarray(carbon_mask)
+    _mOo = np.asarray(o_only_mask)
+
+    def co_bz_margin(y):
+        """Positivity margin of the fixed-O C/O knob on the column ``y`` (nz, ni):
+        see :func:`bz_margin`. Evaluate it on the column the tangent actually
+        starts from (a warm converged column, not only the build's initial
+        one). inf in proxy mode (no b_z compensation)."""
+        if not co_fixed_o:
+            return float("inf")
+        return bz_margin(y, _nO, _mC, _mOo)
+
+    co_bz_bound = co_bz_margin(_y0_np)   # the build's initial column
     if co_fixed_o:
         # Build-time diagnostics for the fixed-O C/O knob: baseline C/O, how much of the
         # column's O sits in C-carriers (sets the b_z compensation), and the worst-layer
         # O-only share (b_z blows up where O-only carriers vanish).
         _y0n = _y0_np
-        _nC = np.asarray(compo[:, constants.ATOM_COLS["C"]], dtype=np.float64)
-        _nO = np.asarray(compo[:, constants.ATOM_COLS["O"]], dtype=np.float64)
-        _mC = np.asarray(carbon_mask)
-        _mOo = np.asarray(o_only_mask)
         _C_tot = float((_y0n * _nC[None, :]).sum())
         _O_tot = float((_y0n * _nO[None, :]).sum())
         _OC_z = (_y0n * (_nO * _mC)[None, :]).sum(axis=1)
         _OO_z = (_y0n * (_nO * _mOo)[None, :]).sum(axis=1)
-        with np.errstate(divide="ignore"):
-            co_bz_bound = float(np.log(1.0 + np.min(_OO_z / _OC_z)))
         print(f"[chem] fixed-O C/O knob: baseline C/O = {_C_tot/_O_tot:.4f} "
               f"(ln = {np.log(_C_tot/_O_tot):+.4f}); O-in-C-carriers share "
               f"median {np.median(_OC_z/(_OC_z+_OO_z)):.3f}, max {np.max(_OC_z/(_OC_z+_OO_z)):.3f} "
@@ -839,13 +898,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
                                   warm_cap=warm_cap)
         final = (integ_warm if warm_cap else integ)._runner(init, atm_T)
         if return_conv_diag:
-            return final.y, ConvDiag(
-                accept_count=final.accept_count,
-                longdy=final.longdy,
-                longdydt=final.longdydt,
-                count_since_new_min=final.count_since_new_min,
-                conv_normal=_conv_normal_at_exit(final),
-            )
+            return final.y, _conv_diag(final)
         return final.y
 
     def audit_init(theta, warm_y=None, lnZ_ref=0.0, c_o_ref=0.0):
@@ -906,7 +959,8 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         prep_pv=prep_pv,           # theta -> initial ProfileVars (no solve; tests)
         _integ=integ,              # the OuterLoop (baked statics access; tests only)
         abundance_mode=abundance_mode,
-        co_bz_bound=co_bz_bound,   # fixed-O knob validity: b_z > 0 iff c_o < this (baseline column)
+        co_bz_bound=co_bz_bound,   # fixed-O knob validity: b_z > 0 iff c_o < this (build column)
+        co_bz_margin=co_bz_margin, # the same margin on any column, e.g. the warm converged one
         y0=np.asarray(y0, dtype=np.float64),   # baked baseline column (warm-start fallback)
         compo_array=compo,
         T_base=np.asarray(T_base),
