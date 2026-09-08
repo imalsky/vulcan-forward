@@ -58,9 +58,10 @@ if not exomolop.table_path("H2O").exists():
                 "python -m vulcan_forward.fetch_exomolop --molecules H2O",
                 allow_module_level=True)
 
+import jax  # noqa: E402
 import jax.numpy as jnp  # noqa: E402
 
-from vulcan_forward import exojax_rt  # noqa: E402
+from vulcan_forward import constants, exojax_rt  # noqa: E402
 
 DATA = Path(__file__).parent / "data"
 RSTAR_W39 = 0.932 * 6.957e10
@@ -292,3 +293,78 @@ def test_emission_h2o_matches_prt():
     # convention (the conversion and the unit trap are documented in meta)
     r = flux[m] / np.interp(wl[m], z["wl_um"], z["prt_flux_per_cm1"])
     _assert_stats(r, meta, "H2O emission flux vs pRT")
+
+
+def test_eclipse_flux_carries_the_tau_two_thirds_photospheric_radius():
+    """Gray isothermal column (the alpha = 0 cloud deck is the only opacity):
+    tau(P) = kappa P / g, so the photosphere sits at P = (2/3) g / kappa
+    exactly, and the eclipse flux must be pi*B(T) times (R(P_phot)/R_em)^2
+    with R from the same hydrostatic integral the anchor uses. The plain
+    emission flux stays pi*B(T): the radius enters the eclipse quantity only."""
+    nlay = 80
+    prof = dict(molecules=["H2O"], nu_min=1.0e4 / 5.0, nu_max=1.0e4 / 3.0,
+                opacity_mode="exomolop", art_nlayer=nlay,
+                art_ptop_bar=1.0e-6, art_pbtm_bar=1.0e2,
+                rp_cm=1.2 * 7.1492e9, gs_cgs=500.0, rstar_cm=RSTAR_W39)
+    trt = exojax_rt.build_rt_model(prof)
+    emod = exojax_rt.build_emis_model(trt, prof)
+    from exojax.rt.planck import piBarr
+    T, mmw = 1500.0, 2.33
+    zeros, Tcol, mcol = jnp.zeros(nlay), jnp.full(nlay, T), jnp.full(nlay, mmw)
+    lnp = jnp.log(jnp.asarray(emod.p_art_bar))
+    r_em, g_em = exojax_rt._radius_at(lnp, Tcol, mcol, prof["rp_cm"], prof["gs_cgs"],
+                                      emod.p_ref_bar, emod.p_ref_emission_bar)
+    # independent reference: the isothermal closed form of the same integral
+    C = constants.K_B_CGS * T / (mmw * constants.M_U_CGS * prof["gs_cgs"] * prof["rp_cm"] ** 2)
+    r_iso = lambda p: 1.0 / (1.0 / prof["rp_cm"] + C * np.log(p / emod.p_ref_bar))
+    assert float(r_em) == pytest.approx(r_iso(emod.p_ref_emission_bar), rel=1e-12)
+    # tau is zero at the grid's TOP BOUNDARY (half a layer above the first
+    # centre; exojax's dParr[0] spans p0 k^0.5 .. p0 k^-0.5), so the gray
+    # photosphere sits at P_top + (2/3) g / kappa. Third point: inside the top
+    # half layer, where a clamped integrator returned the top-centre radius.
+    p0 = float(emod.p_art_bar[0])
+    dl = float(np.log(emod.p_art_bar[1] / emod.p_art_bar[0]))
+    p_top = p0 * np.exp(-0.5 * dl)
+    lk_top = float(np.log10(exojax_rt.TAU_PHOTOSPHERE * float(g_em)
+                            / ((p0 * np.exp(-0.4 * dl) - p_top) * 1.0e6)))
+    for log_kappa in (-1.5, -3.0, lk_top):  # ~0.01 bar, ~0.3 bar, top half layer
+        cloud = jnp.asarray([log_kappa, 0.0])
+        p_phot = p_top + exojax_rt.TAU_PHOTOSPHERE * float(g_em) / 10.0 ** log_kappa / 1.0e6
+        r_phot = r_iso(p_phot)
+        want = (np.asarray(piBarr(jnp.asarray([T]), jnp.asarray(emod.nu_grid)))[0]
+                * (float(r_phot) / float(r_em)) ** 2)
+        flux, _ = emod.eclipse_flux_tau({"H2O": zeros}, zeros, Tcol, mcol,
+                                        vmr_he=zeros, cloud=cloud)
+        assert np.max(np.abs(np.asarray(flux) / want - 1.0)) < 2e-4, log_kappa
+        plain, _ = emod.emission_flux_tau({"H2O": zeros}, zeros, Tcol, mcol,
+                                          vmr_he=zeros, cloud=cloud)
+        assert np.max(np.abs(np.asarray(plain) / want * (float(r_phot) / float(r_em)) ** 2
+                             - 1.0)) < 1e-12
+    assert (float(r_iso(0.3)) / float(r_em)) ** 2 < 0.99   # a deeper photosphere is smaller
+    # and the radius keeps its derivative there: the eclipse flux responds to kappa
+    f = lambda lk: emod.eclipse_flux_tau({"H2O": zeros}, zeros, Tcol, mcol,
+                                         vmr_he=zeros, cloud=jnp.asarray([lk, 0.0]))[0]
+    dflux = np.asarray(jax.jvp(f, (lk_top,), (1.0,))[1])
+    assert np.all(np.isfinite(dflux)) and float(np.abs(dflux).max()) > 0.0
+
+
+def test_radius_at_matches_the_isothermal_closed_form_across_both_half_layers():
+    """Isothermal column: 1/r(p) = 1/r_ref + C ln(p/p_ref) exactly, with
+    C = k T / (mu m_u g_ref r_ref^2). The nodes must reach half a layer ABOVE
+    the top centre as well as below the bottom one: jnp.interp clamps outside
+    its nodes, which returned the top-centre radius (and no radius derivative)
+    for any level in the top half layer, the level _photosphere_lnp returns
+    when tau = 2/3 is reached in the first half layer."""
+    T, mmw, r_ref, g_ref, p_ref = 1500.0, 2.33, 8.6e9, 500.0, 1.0e-3
+    lnp = jnp.linspace(np.log(1.0e-6), np.log(1.0e2), 80)      # centres
+    d = float(lnp[1] - lnp[0])
+    C = constants.K_B_CGS * T / (mmw * constants.M_U_CGS * g_ref * r_ref ** 2)
+    Tc, mc = jnp.full(80, T), jnp.full(80, mmw)
+    for lnp_t in (float(lnp[0]) - 0.5 * d,      # top boundary
+                  float(lnp[0]) - 0.25 * d,     # inside the top half layer
+                  float(lnp[3]) + 0.3 * d,      # an interior level
+                  float(lnp[-1]) + 0.5 * d):    # bottom boundary
+        r, g = exojax_rt._radius_at(lnp, Tc, mc, r_ref, g_ref, p_ref, np.exp(lnp_t))
+        want = 1.0 / (1.0 / r_ref + C * (lnp_t - np.log(p_ref)))
+        assert float(r) == pytest.approx(want, rel=1e-12), lnp_t
+        assert float(g) == pytest.approx(g_ref * (r_ref / want) ** 2, rel=1e-12)

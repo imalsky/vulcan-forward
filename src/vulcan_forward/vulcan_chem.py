@@ -963,6 +963,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         co_bz_margin=co_bz_margin, # the same margin on any column, e.g. the warm converged one
         y0=np.asarray(y0, dtype=np.float64),   # baked baseline column (warm-start fallback)
         compo_array=compo,
+        atom_list=tuple(composition.atom_list),   # compo_array column order
         T_base=np.asarray(T_base),
         p_bar=p_bar,
         dz=np.asarray(atm.dz, dtype=np.float64),   # layer thickness (cm); for n0*dz column weighting

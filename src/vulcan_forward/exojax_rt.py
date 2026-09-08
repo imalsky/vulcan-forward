@@ -168,21 +168,25 @@ def _radius_at(lnp_art, T_art, mmw_art, r_ref, g_ref, p_ref_bar, p_target_bar):
     transmission: the two observables probe different depths, so a single anchor
     cannot serve both (Fortney et al. 2019, ApJL 880, L16).
 
-    The integration nodes extend HALF A LAYER below the deepest grid centre,
-    holding the bottom layer's T and mmw over that half layer (which is what a
-    representative layer value means). Without the extra node ``jnp.interp``
-    clamps at ``lnp_art[-1]`` and silently drops the half layer between the
-    deepest centre and the grid's lower boundary -- the level exojax actually
-    defines ``radius_btm`` at.
+    The integration nodes extend HALF A LAYER above the top grid centre and
+    below the deepest one, holding the end layer's T and mmw over each half
+    layer (which is what a representative layer value means). Without the
+    extra nodes ``jnp.interp`` clamps at the end centres: below, that silently
+    dropped the half layer down to the grid's lower boundary -- the level
+    exojax actually defines ``radius_btm`` at; above, it pinned any level in
+    the top half layer (where ``_photosphere_lnp`` can put the tau = 2/3
+    photosphere) to the top-centre radius with a zero derivative.
     """
     C = constants.K_B_CGS * T_art / (
         mmw_art * constants.M_U_CGS * g_ref * r_ref ** 2)
-    lnp = jnp.concatenate(
-        [lnp_art, _lnp_grid_bottom_boundary(lnp_art)[None]])
-    C = jnp.concatenate([C, C[-1:]])
-    cum = jnp.concatenate([
-        jnp.zeros(1),
-        jnp.cumsum(0.5 * (C[1:] + C[:-1]) * jnp.diff(lnp))])
+    d = lnp_art[1] - lnp_art[0]
+    lnp = jnp.concatenate([lnp_art[:1] - 0.5 * d, lnp_art,
+                           _lnp_grid_bottom_boundary(lnp_art)[None]])
+    C = jnp.concatenate([C[:1], C, C[-1:]])
+    seg = 0.5 * (C[1:] + C[:-1]) * jnp.diff(lnp)
+    # The integral is zero at the top CENTRE, exactly as before the top node
+    # existed, so every level at or below it evaluates bitwise as it did.
+    cum = jnp.concatenate([-seg[:1], jnp.zeros(1), jnp.cumsum(seg[1:])])
     i_ref = jnp.interp(jnp.log(p_ref_bar), lnp, cum)
     i_tgt = jnp.interp(jnp.log(p_target_bar), lnp, cum)
     r = 1.0 / (1.0 / r_ref + (i_tgt - i_ref))
@@ -313,9 +317,33 @@ def _ckd_dtau_batch(art, pack, mols, molmass, opacia, opacia_he,
     return finish(full_tot + cont3), [by_idx[i] for i in wo_idx]
 
 
-def _run_emis_ckd_linsap(art, dtau_g, T_boundary, nu_bands, gw):
+# Vertical optical depth of the emitting photosphere (Fortney, Lupu, Morley,
+# Freedman & Hood 2019, ApJL 880, L16): the eclipse-depth prefactor is the
+# radius where tau = 2/3 at EACH wavelength, not one radius for the band.
+TAU_PHOTOSPHERE = 2.0 / 3.0
+
+
+def _photosphere_lnp(dtau_g, lnp_art):
+    """ln(pressure) where the vertical optical depth from the top reaches
+    TAU_PHOTOSPHERE, per (g, band) of a ``(nlayer, ng, nband)`` optical depth;
+    the grid's bottom boundary where it never does (a see-through column is the
+    thin-bottom gate's business, not this function's). Piecewise-linear in tau
+    between layer boundaries, so it differentiates through dtau."""
+    d = lnp_art[1] - lnp_art[0]
+    lnp_b = jnp.concatenate([lnp_art[:1] - 0.5 * d, lnp_art + 0.5 * d])
+    tau_b = jnp.concatenate([jnp.zeros((1,) + dtau_g.shape[1:]),
+                             jnp.cumsum(dtau_g, axis=0)])
+    cols = tau_b.reshape(tau_b.shape[0], -1).T              # (ng*nband, nlayer+1)
+    lnp = jax.vmap(lambda t: jnp.interp(TAU_PHOTOSPHERE, t, lnp_b))(cols)
+    return lnp.reshape(dtau_g.shape[1:])
+
+
+def _run_emis_ckd_linsap(art, dtau_g, T_boundary, nu_bands, gw, weight_g=None):
     """Emergent flux (nband,) from a ``(nlayer, ng, nband)`` CKD optical depth,
-    solved with the LINEAR-SOURCE scheme.
+    solved with the LINEAR-SOURCE scheme. ``weight_g`` (ng, nband) multiplies
+    each g-ordinate's flux before the g-average: the photospheric-radius
+    factor of ``eclipse_flux_tau``, which differs between the k-ordinates of
+    one band exactly as the flux does.
 
     exojax's ``ArtEmisPure.run_ckd`` hard-codes ``rtrun_emis_pureabs_ibased``,
     which has no bottom-boundary term, so every photon entering the grid from
@@ -340,7 +368,10 @@ def _run_emis_ckd_linsap(art, dtau_g, T_boundary, nu_bands, gw):
     src = jnp.tile(piBarr(T_boundary, nu_bands), ng)
     flux = rtrun_emis_pureabs_ibased_linsap(
         dtau_g.reshape((nlayer, ng * nband)), src, art.mus, art.weights)
-    return jnp.einsum("g,gb->b", gw, flux.reshape((ng, nband)))
+    flux = flux.reshape((ng, nband))
+    if weight_g is not None:
+        flux = flux * weight_g
+    return jnp.einsum("g,gb->b", gw, flux)
 
 
 def _require_geometry(profile: dict, *keys: str) -> None:
@@ -657,15 +688,17 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
     # 8.9% high). ``emission_radius`` below returns the consistent value; the
     # consumer must use it for the prefactor rather than the catalogue radius.
     #
-    # SCOPE, stated because it is a real and quantified limitation: this is
-    # still a SINGLE radius. Fortney, Lupu, Morley, Freedman & Hood 2019
-    # (ApJL 880, L16) show the correct prefactor is the wavelength-dependent
-    # photospheric radius at vertical tau = 2/3, which POSEIDON
-    # (use_photosphere_radius, default True) and PLATON II both compute. A
-    # single radius biases planet-to-star flux ratios by ~5% typically and
-    # 10-25% for low-gravity hot Jupiters, and it MUTES or ENHANCES features
-    # rather than offsetting them. Implementing that is the right next step; it
-    # is deliberately not done here.
+    # That single radius is the ANCHOR only. The prefactor a consumer must use
+    # is the wavelength-dependent photospheric radius at vertical tau = 2/3
+    # (Fortney, Lupu, Morley, Freedman & Hood 2019, ApJL 880, L16; what
+    # POSEIDON and PLATON II compute): ``eclipse_flux_tau`` folds
+    # (R_phot/R_em)^2 into the flux per k-ordinate, so depth = that flux / F_s
+    # x (R_em/R_star)^2 is exact. Measured on the planner's WASP-39 b dayside
+    # (g ~ 470 cm/s2) the single-radius depth was low by a median 7% and by 13%
+    # in the CO2 core against 4% in the neighbouring continuum -- a feature
+    # error, not an offset; on HD 189733 b (g ~ 2200) under 2.5% everywhere.
+    # ``emission_flux`` stays the plain emergent flux (the pRT comparison and
+    # the pi*B(T) check are flux tests).
     _require_geometry(profile, "rp_cm")
     g_ref_em = float(profile["gs_cgs"])
     r_ref_em = float(profile["rp_cm"])
@@ -795,25 +828,21 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
         dtau_g = _dtau(vmr, vmr_h2, vmr_he, T_art, mmw_art, g_em, cloud)
         return jnp.min(jnp.sum(dtau_g, axis=0), axis=0)
 
-    def emission_flux_tau(vmr, vmr_h2, T_art, mmw_art, vmr_he=None, cloud=None,
-                          wo_mols=None):
-        """Emergent flux AND bottom optical depth from ONE optical-depth build.
-
-        Returns ``(flux, tau_bottom)`` -- bitwise what the separate
-        ``emission_flux`` / ``tau_bottom`` calls return, without building the
-        same optical depth twice. With ``wo_mols`` (a list of molecule names)
-        returns ``(flux, tau_bottom, flux_wo, tau_wo)``, the wo rows aligned to
-        ``wo_mols``: each is the observable with that molecule's VMR zeroed,
-        bit-identical to a from-scratch call on the zeroed profile but reusing
-        the shared correlated-k fold prefix (see ckd._fold_wo).
-        """
+    def _flux_tau(vmr, vmr_h2, T_art, mmw_art, vmr_he, cloud, wo_mols,
+                  photosphere):
         _require_he(vmr_he)
-        _, g_em = _emission_anchor(T_art, mmw_art)
+        r_em, g_em = _emission_anchor(T_art, mmw_art)
 
         def _finish(dtau_g):
+            w = None
+            if photosphere:
+                r_phot, _ = _radius_at(lnp_em, T_art, mmw_art, r_ref_em, g_ref_em,
+                                       float(profile["p_ref_bar_used"]),
+                                       jnp.exp(_photosphere_lnp(dtau_g, lnp_em)))
+                w = (r_phot / r_em) ** 2
             return (_run_emis_ckd_linsap(art, dtau_g,
                                          _boundary_temperature(T_art),
-                                         nu_grid, ckd_pack.gw),
+                                         nu_grid, ckd_pack.gw, weight_g=w),
                     jnp.min(jnp.sum(dtau_g, axis=0), axis=0))
 
         if wo_mols is None:
@@ -829,9 +858,35 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
                   else jnp.zeros((0, nb)))
         return flux, tau, flux_wo, tau_wo
 
+    def emission_flux_tau(vmr, vmr_h2, T_art, mmw_art, vmr_he=None, cloud=None,
+                          wo_mols=None):
+        """Emergent flux AND bottom optical depth from ONE optical-depth build.
+
+        Returns ``(flux, tau_bottom)`` -- bitwise what the separate
+        ``emission_flux`` / ``tau_bottom`` calls return, without building the
+        same optical depth twice. With ``wo_mols`` (a list of molecule names)
+        returns ``(flux, tau_bottom, flux_wo, tau_wo)``, the wo rows aligned to
+        ``wo_mols``: each is the observable with that molecule's VMR zeroed,
+        bit-identical to a from-scratch call on the zeroed profile but reusing
+        the shared correlated-k fold prefix (see ckd._fold_wo).
+        """
+        return _flux_tau(vmr, vmr_h2, T_art, mmw_art, vmr_he, cloud, wo_mols,
+                         photosphere=False)
+
+    def eclipse_flux_tau(vmr, vmr_h2, T_art, mmw_art, vmr_he=None, cloud=None,
+                         wo_mols=None):
+        """``emission_flux_tau`` with the tau = 2/3 photospheric radius folded
+        in: the flux is ``sum_g w_g F_g (R_phot,g / R_em)^2`` per band, so
+        eclipse depth = flux / F_star x (R_em / R_star)^2 with ``R_em`` from
+        ``emission_radius``. This is the quantity an eclipse depth is built
+        from; ``emission_flux_tau`` is the plain emergent flux."""
+        return _flux_tau(vmr, vmr_h2, T_art, mmw_art, vmr_he, cloud, wo_mols,
+                         photosphere=True)
+
     return SimpleNamespace(
         emission_flux=emission_flux,
         emission_flux_tau=emission_flux_tau,
+        eclipse_flux_tau=eclipse_flux_tau,
         emission_radius=emission_radius,
         tau_bottom=tau_bottom,
         nu_grid=np.asarray(nu_grid),
