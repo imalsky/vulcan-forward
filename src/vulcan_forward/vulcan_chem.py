@@ -252,6 +252,8 @@ class ConvDiag(NamedTuple):
     cell_vmr: jnp.ndarray             # () float64 mixing ratio of that cell at exit
     t: jnp.ndarray                    # () float64 integration time at exit (s)
     dt: jnp.ndarray                   # () float64 step size at exit (s)
+    tangent_longdy: jnp.ndarray       # () float64 converged_y_jvp only: the tangent's
+    #                                               longdy at exit (NaN on the primal path)
 
 
 _SCRATCH_ROOT: str | None = None
@@ -541,14 +543,19 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
             runtime_dyn=jnp.float64(runtime_v),
         )
 
-    def _conv_diag(final):
+    def _conv_diag(final, tangent_ok=True, tangent_longdy=jnp.nan):
         """ConvDiag read off the runner's exit carry. ``conv_normal`` mirrors
         vulcan_jax.outer_loop._convergence_ok (keep in sync with that
         predicate): tight OR loose branch, AND the photo-flux gate. True only
         for a certified exit; False when the exit came from the stall fallback
         or exhausted a count/runtime budget. The controlling cell is the argmax
         of the masked per-cell ratio the runner maximised for longdy
-        (``where_varies_most`` rides the carry)."""
+        (``where_varies_most`` rides the carry). ``tangent_ok`` is the
+        solver's sensitivity certificate on the ``converged_y_jvp`` path
+        (``OuterLoop.run_jvp``); the primal path passes the default. It
+        enters ``conv_normal`` only: ``conv_branch`` stays the COLUMN's own
+        branch, so a consumer can tell an unsettled sensitivity (branch
+        set, ``tangent_longdy`` above the gate) from an uncertified column."""
         slope_min = jnp.minimum(
             jnp.min(final.pv.Kzz / (0.1 * final.Hp[:-1]) ** 2), jnp.float64(1e-8))
         slope_min = jnp.maximum(slope_min, jnp.float64(1e-10))
@@ -566,7 +573,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
             longdy=final.longdy,
             longdydt=final.longdydt,
             count_since_new_min=final.count_since_new_min,
-            conv_normal=(tight | loose) & flux_ok,
+            conv_normal=(tight | loose) & flux_ok & tangent_ok,
             aflux_change=final.aflux_change,
             conv_branch=jnp.where(flux_ok, branch, jnp.int32(0)),
             cell_species=(flat % ni).astype(jnp.int32),
@@ -574,6 +581,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
             cell_vmr=final.ymix.reshape(-1)[flat],
             t=final.t,
             dt=final.dt,
+            tangent_longdy=jnp.float64(tangent_longdy),
         )
 
     def _conv_normal_at_exit(final):
@@ -904,6 +912,28 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
             return final.y, _conv_diag(final)
         return final.y
 
+    def converged_y_jvp(theta, tangent, warm_y=None, lnZ_ref=0.0, c_o_ref=0.0):
+        """Forward-mode sensitivity certified by the solver: ``(y, dy, ConvDiag)``.
+
+        ``dy`` is the tangent of ``converged_y`` along ``tangent`` (same shape
+        as ``theta``), read when BOTH the column and the tangent pass the
+        runner's certificate (vulcan-jax ``OuterLoop.run_jvp``): the tangent
+        is held, per cell, to the same change-over-lookback tolerance as
+        ``y``, so pass ``tangent`` in the units of a finite-difference step
+        (``e_i * h_i``) and divide ``dy`` by ``h_i`` afterwards. A plain
+        ``jax.jvp(converged_y)`` stops when the column certifies, which from a
+        converged warm start is at ``count_min`` with the tangent unrelaxed.
+        ``ConvDiag.conv_normal`` includes the tangent term; ``tangent_longdy``
+        is the tangent's longdy at exit."""
+        def _seeded(th):
+            init, atm_T = _prep(th, warm_y=warm_y, lnZ_ref=lnZ_ref, c_o_ref=c_o_ref)
+            return _runner_carry_seed(init, warm_continuation=warm_y is not None,
+                                      warm_cap=False), atm_T
+        (init, atm_T), (dinit, datm) = jax.jvp(
+            _seeded, (jnp.asarray(theta),), (jnp.asarray(tangent),))
+        final, dfinal, tl, ok = integ.run_jvp(init, atm_T, dinit, datm)
+        return final.y, dfinal.y, _conv_diag(final, tangent_ok=ok, tangent_longdy=tl)
+
     def audit_init(theta, warm_y=None, lnZ_ref=0.0, c_o_ref=0.0):
         """Host-side audit of the initial column built for ``theta`` (not on any AD path).
 
@@ -950,6 +980,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         converged_ymix=converged_ymix,
         run_diag=run_diag,
         converged_y=converged_y,
+        converged_y_jvp=converged_y_jvp,
         conv_normal_at_exit=_conv_normal_at_exit,  # certify a raw run_diag final
         #                                            carry (gate on conv_normal,
         #                                            never longdy alone)
