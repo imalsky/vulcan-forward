@@ -233,9 +233,9 @@ class ConvDiag(NamedTuple):
     hybrid vm_mol phase flip) can terminate the runner with accept_count well under
     the cap on a state whose tangent has not settled. ``conv_normal`` is the
     runner's canonical two-branch certification (tight yconv_cri/slope_cri OR
-    loose yconv_min/slope_min, AND the photo-flux gate) recomputed at the exit
-    state: False on an exit that only certified via the stall fallback or that
-    exhausted a budget.
+    loose yconv_min/slope_min, AND the photo-flux gate, the geometry term and
+    the column element budget) recomputed at the exit state: False on an exit
+    that only certified via the stall fallback or that exhausted a budget.
     """
 
     accept_count: jnp.ndarray         # () int32   accepted steps taken
@@ -563,8 +563,12 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         loose = (final.longdy < yconv_min_v) & (final.longdydt < slope_min)
         # The photo-flux gate AND the solver's geometry term (vulcan-jax >=
         # 0.7.0: the carried geometry agreed with the composition at the
-        # certificate step), mirroring outer_loop._real_terminate.
-        flux_ok = (final.aflux_change < flux_cri_v) & final.geom_ok
+        # certificate step) AND its cumulative column element budget (>= 0.9.0,
+        # C23: the column still holds the elements this theta started with),
+        # mirroring outer_loop._real_terminate.
+        flux_ok = (
+            (final.aflux_change < flux_cri_v) & final.geom_ok & final.budget_ok
+        )
         branch = jnp.where(tight, jnp.int32(1),
                            jnp.where(loose, jnp.int32(2), jnp.int32(0)))
         flat = jnp.argmax(final.where_varies_most)
@@ -827,7 +831,11 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
             vs_new = settling_velocity_jax(_na, _a, _b, T, g_i, spec_atm.settle_coeff)
         else:
             vs_new = jnp.zeros((nz - 1, ni), dtype=jnp.float64)
-        pv_T = pv_T._replace(r_Dzz_top=Dzz_new[-1])
+        # y_ini anchors the element-budget certificate (C23) on THIS theta's
+        # starting column, as atom_ini is re-anchored above; the baseline
+        # column would charge the proposal's own composition change to the
+        # solver's conservation.
+        pv_T = pv_T._replace(r_Dzz_top=Dzz_new[-1], y_ini=y0p)
 
         # --- condensation at the proposed T ---------------------------------
         # Rebuild every T/structure-dependent condensation array from the SAME
