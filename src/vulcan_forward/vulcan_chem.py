@@ -554,7 +554,10 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         slope_min = jnp.maximum(slope_min, jnp.float64(1e-10))
         tight = (final.longdy < yconv_cri_v) & (final.longdydt < slope_cri_v)
         loose = (final.longdy < yconv_min_v) & (final.longdydt < slope_min)
-        flux_ok = final.aflux_change < flux_cri_v
+        # The photo-flux gate AND the solver's geometry term (vulcan-jax >=
+        # 0.7.0: the carried geometry agreed with the composition at the
+        # certificate step), mirroring outer_loop._real_terminate.
+        flux_ok = (final.aflux_change < flux_cri_v) & final.geom_ok
         branch = jnp.where(tight, jnp.int32(1),
                            jnp.where(loose, jnp.int32(2), jnp.int32(0)))
         flat = jnp.argmax(final.where_varies_most)
