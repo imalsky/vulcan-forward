@@ -929,8 +929,13 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
             init, atm_T = _prep(th, warm_y=warm_y, lnZ_ref=lnZ_ref, c_o_ref=c_o_ref)
             return _runner_carry_seed(init, warm_continuation=warm_y is not None,
                                       warm_cap=False), atm_T
+        def _leaves(p):   # named or positional, like converged_y
+            if isinstance(p, ChemParams):
+                return jax.tree_util.tree_map(
+                    lambda x: jnp.asarray(x, dtype=jnp.float64), p)
+            return jnp.asarray(p, dtype=jnp.float64)
         (init, atm_T), (dinit, datm) = jax.jvp(
-            _seeded, (jnp.asarray(theta),), (jnp.asarray(tangent),))
+            _seeded, (_leaves(theta),), (_leaves(tangent),))
         final, dfinal, tl, ok = integ.run_jvp(init, atm_T, dinit, datm)
         return final.y, dfinal.y, _conv_diag(final, tangent_ok=ok, tangent_longdy=tl)
 
