@@ -254,6 +254,10 @@ class ConvDiag(NamedTuple):
     dt: jnp.ndarray                   # () float64 step size at exit (s)
     tangent_longdy: jnp.ndarray       # () float64 converged_y_jvp only: the tangent's
     #                                               longdy at exit (NaN on the primal path)
+    budget_drift_max: jnp.ndarray     # () float64 max |X/H drift| of the column budget at
+    #                                               exit (C23)
+    budget_drift_atom: jnp.ndarray    # () int32   index into the runner's atom order
+    #                                               (``atom_order``) of that maximum
 
 
 _SCRATCH_ROOT: str | None = None
@@ -375,6 +379,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     from vulcan_jax.atm_setup import _VISCOSITY_TABLE, settling_velocity_jax
     from vulcan_jax.jax_step import make_atm_static
     from vulcan_jax.gibbs import load_nasa9
+    from vulcan_jax.ini_abun import column_atoms
     from vulcan_jax._paths import resolve_data_path
     from vulcan_jax.phy_const import kb
     import vulcan_jax.legacy_io as op
@@ -586,6 +591,8 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
             t=final.t,
             dt=final.dt,
             tangent_longdy=jnp.float64(tangent_longdy),
+            budget_drift_max=jnp.max(jnp.abs(final.budget_drift)),
+            budget_drift_atom=jnp.argmax(jnp.abs(final.budget_drift)).astype(jnp.int32),
         )
 
     def _conv_normal_at_exit(final):
@@ -831,10 +838,12 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
             vs_new = settling_velocity_jax(_na, _a, _b, T, g_i, spec_atm.settle_coeff)
         else:
             vs_new = jnp.zeros((nz - 1, ni), dtype=jnp.float64)
-        # y_ini anchors the element-budget certificate (C23) on THIS theta's
-        # starting column, as atom_ini is re-anchored above; the baseline
-        # column would charge the proposal's own composition change to the
-        # solver's conservation.
+        # y_ini is kept for the end-of-run print; the element-budget
+        # certificate's reference is `budget_ref` (vulcan-jax >= 0.11.0) --
+        # seeded on the init below from THIS theta's starting column on ITS
+        # own grid, with the per-step accumulator zeroed -- as atom_ini is
+        # re-anchored above. The baseline column would charge the proposal's
+        # own composition change to the solver's conservation.
         pv_T = pv_T._replace(r_Dzz_top=Dzz_new[-1], y_ini=y0p)
 
         # --- condensation at the proposed T ---------------------------------
@@ -861,7 +870,10 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
 
         init = state0._replace(y=y0p, ymix=ymix0, k_arr=k_arr, pv=pv_T,
                                mu=mu_i, g=g_i, Hp=Hp_i, dz=dz_i, zco=zco_i,
-                               dzi=dzi_i, Hpi=Hpi_i, vs=vs_new)
+                               dzi=dzi_i, Hpi=Hpi_i, vs=vs_new,
+                               budget_ref=column_atoms(y0p, dz_i, compo_run),
+                               budget_err=jnp.zeros_like(state0.budget_err),
+                               budget_drift=jnp.zeros_like(state0.budget_drift))
         return init, atm_T
 
     def converged_ymix(theta):
@@ -1011,6 +1023,8 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         y0=np.asarray(y0, dtype=np.float64),   # baked baseline column (warm-start fallback)
         compo_array=compo,
         atom_list=tuple(composition.atom_list),   # compo_array column order
+        atom_order=tuple(integ._atom_order),      # runner's atom basis; ConvDiag's
+        #                                           budget_drift_atom indexes this
         T_base=np.asarray(T_base),
         p_bar=p_bar,
         dz=np.asarray(atm.dz, dtype=np.float64),   # layer thickness (cm); for n0*dz column weighting
