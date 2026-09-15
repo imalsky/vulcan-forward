@@ -868,7 +868,10 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         atm_T = atm_static._replace(Tco=T, Ti=Ti, M=M, Kzz=Kzz_eff, Dzz=Dzz_new,
                                     vm=vm_new, vs=vs_new, g=g_i, dzi=dzi_i, Hpi=Hpi_i)
 
-        init = state0._replace(y=y0p, ymix=ymix0, k_arr=k_arr, pv=pv_T,
+        # y_prev is the runner's revert target on a rejected step AND the state
+        # the C23 per-step accumulation differences against; state0 carries the
+        # BASELINE column there, so it must be re-seeded with this theta's own.
+        init = state0._replace(y=y0p, y_prev=y0p, ymix=ymix0, k_arr=k_arr, pv=pv_T,
                                mu=mu_i, g=g_i, Hp=Hp_i, dz=dz_i, zco=zco_i,
                                dzi=dzi_i, Hpi=Hpi_i, vs=vs_new,
                                budget_ref=column_atoms(y0p, dz_i, compo_run),
