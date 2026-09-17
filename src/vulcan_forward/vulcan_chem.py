@@ -379,7 +379,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     from vulcan_jax.atm_setup import _VISCOSITY_TABLE, settling_velocity_jax
     from vulcan_jax.jax_step import make_atm_static
     from vulcan_jax.gibbs import load_nasa9
-    from vulcan_jax.ini_abun import column_atoms
+    from vulcan_jax.ini_abun import column_atoms, eq_column
     from vulcan_jax._paths import resolve_data_path
     from vulcan_jax.phy_const import kb
     import vulcan_jax.legacy_io as op
@@ -688,6 +688,39 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     _mC = np.asarray(carbon_mask)
     _mOo = np.asarray(o_only_mask)
 
+    # --- cold-start seed: FastChem equilibrium at the proposal's own T-P and
+    # column elemental ratios (the upstream VULCAN start), instead of the
+    # baseline column scaled by the theta masks. A host callback: one FastChem
+    # subprocess per lane, serialized on its flock; under vmap the lanes run in
+    # sequence. Zero tangent by construction, like the baked baseline seed the
+    # masks scale (its T-dependence never carried one); lnZ / c_o tangents
+    # still enter through the exact elemental projection below, so the
+    # gradient structure is unchanged. Only cold solves (warm_y=None) use it.
+    cold_seed = str(profile.get("cold_seed", "baseline"))
+    if cold_seed not in ("baseline", "eq"):
+        raise ValueError(f"cold_seed={cold_seed!r}: expected 'baseline' or 'eq'")
+    if cold_seed == "eq" and abundance_mode != "elemental":
+        raise ValueError("cold_seed='eq' needs abundance_mode='elemental' (the "
+                         "seed's elemental ratios are the theta targets)")
+    _elem_names = [e for e, _ in elem_pairs]
+    _pco_np = np.asarray(pco, dtype=np.float64)
+
+    def _eq_seed_host(T, ratios):
+        T = np.asarray(T, dtype=np.float64)
+        M = _pco_np / (kb * T)
+        return eq_column(_pco_np, T, M,
+                         dict(zip(_elem_names, np.asarray(ratios, dtype=np.float64).tolist())))
+
+    @jax.custom_jvp
+    def _eq_seed(T, ratios):
+        return jax.pure_callback(_eq_seed_host, jax.ShapeDtypeStruct((nz, ni), jnp.float64),
+                                 T, ratios, vmap_method="sequential")
+
+    @_eq_seed.defjvp
+    def _eq_seed_jvp(primals, tangents):
+        y = _eq_seed(*primals)
+        return y, jnp.zeros_like(y)
+
     def co_bz_margin(y):
         """Positivity margin of the fixed-O C/O knob on the column ``y`` (nz, ni):
         see :func:`bz_margin`. Evaluate it on the column the tangent actually
@@ -797,7 +830,11 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         Ti = 0.5 * (T[:-1] + T[1:])
         Kzz_eff = Kzz0 * 0.0 if zero_kzz else Kzz0 * jnp.exp(lnKzz)
 
-        y0p = _guess_y0(lnZ, c_o, warm_y=warm_y, lnZ_ref=lnZ_ref, c_o_ref=c_o_ref)
+        if warm_y is None and cold_seed == "eq":
+            ratios = R0_j * jnp.exp(lnZ * zscale_kind + c_o * cscale_kind)
+            y0p = _eq_seed(T, ratios)
+        else:
+            y0p = _guess_y0(lnZ, c_o, warm_y=warm_y, lnZ_ref=lnZ_ref, c_o_ref=c_o_ref)
 
         if abundance_mode == "elemental":
             # Exact construction: sum_i n_i = M per layer AND exact column elemental
@@ -995,8 +1032,11 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
             out["ratio_max_rel_err"] = float(np.max(np.abs(ratios / tg - 1.0)))
             # Re-run the projection from the raw GUESS to expose the actual repair
             # magnitude (projecting the already-repaired y would always report ~1).
-            y_guess = _guess_y0(th[0], th[1], warm_y=warm_y,
-                                lnZ_ref=lnZ_ref, c_o_ref=c_o_ref)
+            if warm_y is None and cold_seed == "eq":
+                y_guess = jnp.asarray(_eq_seed_host(init.pv.r_Tco, tg))
+            else:
+                y_guess = _guess_y0(th[0], th[1], warm_y=warm_y,
+                                    lnZ_ref=lnZ_ref, c_o_ref=c_o_ref)
             _yg, min_adj = _elemental_project(y_guess, jnp.asarray(Mn), th[0], th[1])
             out["min_repair_factor"] = float(min_adj)
         ai = np.asarray(init.pv.atom_ini, dtype=np.float64)
