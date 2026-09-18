@@ -195,7 +195,7 @@ def _radius_at(lnp_art, T_art, mmw_art, r_ref, g_ref, p_ref_bar, p_target_bar):
 
 def _accumulate_dtau_ckd(art, pack, mols, molmass, opacia, opacia_he,
                          vmr, vmr_h2, vmr_he, T_art, mmw_art, g_btm,
-                         cloud=None, rayleigh_xs=None):
+                         cloud=None, rayleigh_xs=None, band_tiles=1):
     """Per-layer, per-g-ordinate, per-band optical depth ``(nlayer, ng, nband)``.
 
     The line opacity of each molecule comes from its k-table, interpolated to
@@ -209,25 +209,71 @@ def _accumulate_dtau_ckd(art, pack, mols, molmass, opacia, opacia_he,
     transmission-only BY DESIGN: it is scattering, not absorption, and the
     pure-absorption emission solver must not count it as thermal extinction
     (it is also negligible at the >1 um thermal bands).
+
+    ``band_tiles`` > 1 folds contiguous band tiles one after another and
+    concatenates them. ``ckd.overlap`` resorts WITHIN a band, so the result is
+    BITWISE the untiled one at any tile count; what changes is that the fold's
+    (nlayer, ng*ng, nband) sort buffers -- and, under a vjp, their residuals --
+    are live for one tile rather than for the whole grid. A memory lever, not a
+    speed one. A REVERSE-mode gradient is not bitwise: a reduction over bands
+    then accumulates tile by tile (measured 3e-16 relative -- rounding).
     """
     from vulcan_forward import ckd as _ckd
 
     P = jnp.asarray(art.pressure)
-    tot = None
-    for key in mols:
-        dt = _ckd_dt_one(art, pack, key, molmass, vmr[key], T_art, mmw_art,
-                         g_btm, P)
-        tot = dt if tot is None else _ckd.overlap(tot, dt, pack.gg, pack.gw)
+    band_tiles = int(band_tiles)
+    nband = int(np.shape(pack.logk[mols[0]])[-1])
+    if not 1 <= band_tiles <= nband:
+        raise ValueError(
+            f"band_tiles={band_tiles}: it splits the correlated-k fold into "
+            f"contiguous band tiles, so it must lie between 1 and the band "
+            f"count ({nband})")
+    if band_tiles == 1:
+        tot = None
+        for key in mols:
+            dt = _ckd_dt_one(art, pack, key, molmass, vmr[key], T_art, mmw_art,
+                             g_btm, P)
+            tot = dt if tot is None else _ckd.overlap(tot, dt, pack.gg, pack.gw)
+        cont = _ckd_continuum(art, pack, opacia, opacia_he, vmr_h2, vmr_he,
+                              T_art, mmw_art, g_btm, cloud, rayleigh_xs)
+        return tot + cont[:, None, :]
+
+    # The continuum carries no g axis, so it is a fraction of one tile's fold:
+    # built whole and sliced.
     cont = _ckd_continuum(art, pack, opacia, opacia_he, vmr_h2, vmr_he,
                           T_art, mmw_art, g_btm, cloud, rayleigh_xs)
-    return tot + cont[:, None, :]
+    tiles = [(int(t[0]), int(t[-1]) + 1)
+             for t in np.array_split(np.arange(nband), band_tiles)]
+
+    def _tile(start, stop):
+        tot = None
+        for key in mols:
+            dt = _ckd_dt_one(art, pack, key, molmass, vmr[key], T_art, mmw_art,
+                             g_btm, P, band=(start, stop))
+            tot = dt if tot is None else _ckd.overlap(tot, dt, pack.gg, pack.gw)
+        return tot + cont[:, None, start:stop]
+
+    # A Python loop over STATIC slices, not lax.map over equal tiles: the scan
+    # body fuses differently and moved the depth by 1 ulp (3.5e-18 on a 1e-2
+    # depth, at every equal tile count), giving up bit-identity for nothing.
+    return jnp.concatenate([_tile(start, stop) for start, stop in tiles],
+                           axis=-1)
 
 
-def _ckd_dt_one(art, pack, key, molmass, vmr_key, T_art, mmw_art, g_btm, P):
-    """One molecule's (nlayer, ng, nband) optical-depth tensor."""
+def _ckd_dt_one(art, pack, key, molmass, vmr_key, T_art, mmw_art, g_btm, P,
+                band=None):
+    """One molecule's (nlayer, ng, nband) optical-depth tensor.
+
+    ``band`` = (start, stop) restricts it to a contiguous band tile. The
+    k-table is sliced BEFORE the (T, P) interpolation, so the full-grid tensor
+    is never built.
+    """
     from vulcan_forward import ckd as _ckd
 
-    lk = _ckd._interp_logk(pack.logk[key], pack.t_grid, pack.p_grid,
+    logk = pack.logk[key]
+    if band is not None:
+        logk = logk[..., band[0]:band[1]]
+    lk = _ckd._interp_logk(logk, pack.t_grid, pack.p_grid,
                            T_art, P)                        # (nlayer, ng, nb)
     mmr = vmr_to_mmr(vmr_key, molmass[key], mmw_art)
     # layer_optical_depth_ckd multiplies a (nlayer, ng, nband) tensor by
@@ -455,6 +501,10 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
         raise ValueError(
             f"rt_integration={integration!r}: exojax ArtTransPure supports "
             "'simpson' (default) or 'trapezoid'")
+    # Band tiles for the correlated-k fold (see _accumulate_dtau_ckd): the
+    # numbers are bitwise identical at any count, the peak fold memory is not.
+    # It is the DEFAULT of the observables below, which take it per call too.
+    band_tiles = int(profile.get("rt_band_tiles", 1))
     # The molecule table is INJECTABLE: a consumer adding a molecule passes its
     # own table rather than editing a constant inside this package.
     mol_table = profile.get("molecule_table") or constants.MOLECULES
@@ -546,7 +596,8 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
                 "vmr_he is required: pass the He VMR profile (chem.sidx['He']) so the "
                 "H2-He CIA term is included. There is no supported He-less mode.")
 
-    def transmission_depth(vmr, vmr_h2, T_art, mmw_art, vmr_he=None, cloud=None):
+    def transmission_depth(vmr, vmr_h2, T_art, mmw_art, vmr_he=None,
+                           cloud=None, band_tiles=band_tiles):
         """Transit depth (R_p(lambda)/R_star)^2 from ART-grid profiles.
 
         vmr : dict molecule -> (nlayer,) VMR; vmr_h2 : (nlayer,) H2 VMR (for CIA);
@@ -568,13 +619,13 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
         dtau_g = _accumulate_dtau_ckd(
             art, ckd_pack, mols, molmass, opacia, opacia_he,
             vmr, vmr_h2, vmr_he, T_art, mmw_art, g_prof,
-            cloud=cloud, rayleigh_xs=rayleigh_xs)
+            cloud=cloud, rayleigh_xs=rayleigh_xs, band_tiles=band_tiles)
         Rp2 = art.run_ckd(dtau_g, T_art, mmw_art, Rp_btm, g_btm,
                           ckd_pack.gw)
         return Rp2 * (Rp_btm / rstar_cm) ** 2
 
     def transmission_depth_r(vmr, vmr_h2, T_art, mmw_art, lnR0, vmr_he=None,
-                             cloud=None, wo_mols=None):
+                             cloud=None, wo_mols=None, band_tiles=band_tiles):
         """transmission_depth with a reference-radius scaling: the radius at the bottom
         pressure P_btm is Rp_btm * e^lnR0 (gravity held fixed -- the standard xR_p
         normalization nuisance, cf. Batalha & Line 2017). lnR0 = 0 reproduces
@@ -587,7 +638,10 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
         A list of molecule names returns ``(depth, depth_wo)`` with one row per
         entry, each the depth with that molecule's VMR zeroed -- bit-identical
         to a separate call on the zeroed profile, but reusing the shared
-        correlated-k fold prefix (~2x fewer overlap folds for a full set)."""
+        correlated-k fold prefix (~2x fewer overlap folds for a full set).
+
+        band_tiles: contiguous band tiles for the fold (bitwise identical,
+        lower peak memory); defaults to the profile's rt_band_tiles."""
         _require_he(vmr_he)
         Rp_btm, g_btm = _anchor_to_grid_bottom(
             lnp_art, T_art, mmw_art, Rp_ref, g_ref, p_ref_bar)
@@ -612,8 +666,14 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
             dtau_g = _accumulate_dtau_ckd(
                 art, ckd_pack, mols, molmass, opacia, opacia_he,
                 vmr, vmr_h2, vmr_he, T_art, mmw_art, g_prof,
-                cloud=cloud, rayleigh_xs=rayleigh_xs)
+                cloud=cloud, rayleigh_xs=rayleigh_xs, band_tiles=band_tiles)
             return _finish(dtau_g)
+        if int(band_tiles) != 1:
+            # The leave-one-out fold reuses a whole-grid prefix; tiling it
+            # would need a prefix per tile. Refuse rather than ignore the knob.
+            raise ValueError(
+                "wo_mols and band_tiles are mutually exclusive: the "
+                "leave-one-out fold is not band-tiled")
         depth, rows = _ckd_dtau_batch(
             art, ckd_pack, mols, molmass, opacia, opacia_he,
             vmr, vmr_h2, vmr_he, T_art, mmw_art, g_prof,
@@ -639,6 +699,7 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
         # would inflate every transit depth (see _anchor_to_grid_bottom)
         p_ref_bar=p_ref_bar,
         rt_integration=integration,
+        rt_band_tiles=band_tiles,
         # which opacity path ran; there is only one, and consumers still
         # verify the echo so an engine/tool version mismatch is loud
         opacity_mode="exomolop",
@@ -765,7 +826,7 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
         return _accumulate_dtau_ckd(
             art, ckd_pack, mols, molmass, opacia, opacia_he,
             vmr, vmr_h2, vmr_he, T_art, mmw_art, g_em, cloud=cloud,
-            rayleigh_xs=None)
+            rayleigh_xs=None, band_tiles=int(profile.get("rt_band_tiles", 1)))
 
     def emission_flux(vmr, vmr_h2, T_art, mmw_art, vmr_he=None, cloud=None):
         """Emergent thermal flux (n_nu,) from ART-grid VMR/T/mmw profiles.
