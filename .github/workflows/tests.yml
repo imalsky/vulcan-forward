@@ -9,7 +9,7 @@ name: tests
 # push. The physics itself is validated by the consumers' suites.
 on:
   push:
-    branches: [main]
+    branches: [main, speed]
   pull_request:
 
 jobs:
