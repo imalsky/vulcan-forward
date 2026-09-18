@@ -530,6 +530,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     yconv_min_v = float(cfg.yconv_min)
     slope_cri_v = float(cfg.slope_cri)
     flux_cri_v = float(cfg.flux_cri)
+    dt_max_v = float(cfg.dt_max)     # the resolved step-size cap a warm_dt seed obeys
     _warm_note = ("; warm continuation pinned to central difference (the "
                   "converged phase-1 operator)" if hybrid_v else "")
     print(f"[chem] diffusion scheme: use_vm_mol={use_vm_mol_v} "
@@ -803,14 +804,21 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
             return p
         return params_from_vector(p, n_tp_params, has_tp_eval=tp_eval is not None)
 
-    def _prep(theta, warm_y=None, lnZ_ref=0.0, c_o_ref=0.0):
+    def _prep(theta, warm_y=None, lnZ_ref=0.0, c_o_ref=0.0, warm_dt=None):
         """Build the perturbed initial runner state + atm from ChemParams (or
         the positional vector [lnZ, c_o, lnKzz, T...]).
 
         Continuation: pass warm_y = a previously-CONVERGED y (with its lnZ_ref /
         c_o_ref) to warm-start from there. In "elemental" mode the guess is
         projected onto the exact theta targets, so the conserved inventory is
-        path-independent; in "masks" mode the incremental scaling IS the map."""
+        path-independent; in "masks" mode the incremental scaling IS the map.
+
+        ``warm_dt`` is a scalar step size to start from -- the previous solve's
+        exit dt (``ConvDiag.dt``). Ros2 is a one-step method, so a legal dt is
+        legal at any t and the controller shrinks it on the first rejection;
+        without it every solve re-climbs from the baseline pack's dt. Clipped
+        to the config cap; NaN means "no seed" (traceable under jit/vmap) and
+        carries no tangent."""
         _p = _as_params(theta)
         lnZ, c_o, lnKzz = _p.lnZ, _p.c_o, _p.lnKzz
 
@@ -905,12 +913,19 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         atm_T = atm_static._replace(Tco=T, Ti=Ti, M=M, Kzz=Kzz_eff, Dzz=Dzz_new,
                                     vm=vm_new, vs=vs_new, g=g_i, dzi=dzi_i, Hpi=Hpi_i)
 
+        if warm_dt is None:
+            dt_seed = state0.dt
+        else:
+            wd = jnp.asarray(jax.lax.stop_gradient(warm_dt), dtype=jnp.float64)
+            dt_seed = jnp.where(jnp.isnan(wd), state0.dt,
+                                jnp.minimum(wd, jnp.float64(dt_max_v)))
+
         # y_prev is the runner's revert target on a rejected step AND the state
         # the C23 per-step accumulation differences against; state0 carries the
         # BASELINE column there, so it must be re-seeded with this theta's own.
         init = state0._replace(y=y0p, y_prev=y0p, ymix=ymix0, k_arr=k_arr, pv=pv_T,
                                mu=mu_i, g=g_i, Hp=Hp_i, dz=dz_i, zco=zco_i,
-                               dzi=dzi_i, Hpi=Hpi_i, vs=vs_new,
+                               dzi=dzi_i, Hpi=Hpi_i, vs=vs_new, dt=dt_seed,
                                budget_ref=column_atoms(y0p, dz_i, compo_run),
                                budget_err=jnp.zeros_like(state0.budget_err),
                                budget_drift=jnp.zeros_like(state0.budget_drift))
@@ -948,7 +963,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         return init.pv
 
     def converged_y(theta, warm_y=None, lnZ_ref=0.0, c_o_ref=0.0,
-                    warm_cap=False, return_conv_diag=False):
+                    warm_cap=False, return_conv_diag=False, warm_dt=None):
         """Converged ABSOLUTE number densities y (nz, ni), with optional
         continuation warm-start (warm_y at lnZ_ref / c_o_ref). Forward-mode
         differentiable w.r.t. theta.
@@ -962,9 +977,12 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         reads off the primal carry; ``conv_normal`` is the canonical
         certification recomputed at the exit, so a stall or budget exit reads
         False even when ``longdy < yconv_min``. ConvDiag's integer fields
-        carry no tangent -- AD callers stop_gradient them."""
+        carry no tangent -- AD callers stop_gradient them.
+
+        ``warm_dt`` seeds the step size from a previous solve's exit dt (see
+        ``_prep``): None or NaN starts from the baseline pack's dt."""
         init, atm_T = _prep(theta, warm_y=warm_y,
-                            lnZ_ref=lnZ_ref, c_o_ref=c_o_ref)
+                            lnZ_ref=lnZ_ref, c_o_ref=c_o_ref, warm_dt=warm_dt)
         init = _runner_carry_seed(init, warm_continuation=warm_y is not None,
                                   warm_cap=warm_cap)
         final = (integ_warm if warm_cap else integ)._runner(init, atm_T)
@@ -972,7 +990,8 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
             return final.y, _conv_diag(final)
         return final.y
 
-    def converged_y_jvp(theta, tangent, warm_y=None, lnZ_ref=0.0, c_o_ref=0.0):
+    def converged_y_jvp(theta, tangent, warm_y=None, lnZ_ref=0.0, c_o_ref=0.0,
+                        warm_dt=None):
         """Forward-mode sensitivity certified by the solver: ``(y, dy, ConvDiag)``.
 
         ``dy`` is the tangent of ``converged_y`` along ``tangent`` (same shape
@@ -984,9 +1003,11 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         ``jax.jvp(converged_y)`` stops when the column certifies, which from a
         converged warm start is at ``count_min`` with the tangent unrelaxed.
         ``ConvDiag.conv_normal`` includes the tangent term; ``tangent_longdy``
-        is the tangent's longdy at exit."""
+        is the tangent's longdy at exit. ``warm_dt`` seeds the step size (see
+        ``_prep``); it is stop_gradient'ed, so the seeded dt has no tangent."""
         def _seeded(th):
-            init, atm_T = _prep(th, warm_y=warm_y, lnZ_ref=lnZ_ref, c_o_ref=c_o_ref)
+            init, atm_T = _prep(th, warm_y=warm_y, lnZ_ref=lnZ_ref,
+                                c_o_ref=c_o_ref, warm_dt=warm_dt)
             return _runner_carry_seed(init, warm_continuation=warm_y is not None,
                                       warm_cap=False), atm_T
         def _leaves(p):   # named or positional, like converged_y
