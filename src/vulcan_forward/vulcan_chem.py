@@ -324,6 +324,13 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     t0 = time.time()
     import vulcan_jax
 
+    # Removed knob, refused rather than ignored (standing fail-loud rule): a
+    # profile still carrying it expects the seed to scale metallicity.
+    if "fastchem_met_scale" in profile:
+        raise ValueError(
+            "fastchem_met_scale was removed with the FastChem seed (vulcan-jax "
+            "0.15.0): metallicity enters only through lnZ / the elemental "
+            "projection. Drop the key.")
     # Baseline VULCAN config, loaded by name from vulcan_jax/configs/*.yaml
     # (overridable per profile; the case presets set this). Env VULCAN_JAX_* was
     # set above, so this first vulcan_jax import freezes the SNCHO network.
@@ -653,8 +660,8 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
 
     # --- exact-elemental targets + repair tables (abundance_mode="elemental") ----
     # Baseline column-integrated elemental totals from the pristine y0 (which sums to
-    # M_base per layer by construction: FastChem mixing ratios x n_0). Targets are
-    # RATIOS to elemental H; absolute densities follow from sum_i n_i = M.
+    # M_base per layer by construction: equilibrium mixing ratios x layer density).
+    # Targets are RATIOS to elemental H; absolute densities follow from sum_i n_i = M.
     elem_pairs = [(e, sp) for e, sp in _ELEMENTAL_REPAIR
                   if sp in sidx and compo[:, constants.ATOM_COLS[e]].sum() > 0]
     _y0_np = np.asarray(y0, dtype=np.float64)
@@ -702,12 +709,20 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     if cold_seed == "eq" and abundance_mode != "elemental":
         raise ValueError("cold_seed='eq' needs abundance_mode='elemental' (the "
                          "seed's elemental ratios are the theta targets)")
-    _ratio_idx = ratio_indices([e for e, _ in elem_pairs])
-    _p_bar_seed = jnp.asarray(np.asarray(pco, dtype=np.float64) / 1.0e6)
+    # Only the "eq" seed reads these, so a "baseline" build never pays for the
+    # equilibrium setup it would not use.
+    if cold_seed == "eq":
+        _ratio_idx = ratio_indices([e for e, _ in elem_pairs])
+        _p_bar_seed = jnp.asarray(np.asarray(pco, dtype=np.float64) / 1.0e6)
 
     def _eq_seed(T, ratios, M):
         """The equilibrium column as ABSOLUTE densities (nz, ni): eq_seed
         returns mixing ratios, and every caller here works in densities."""
+        if cold_seed != "eq":
+            raise RuntimeError(
+                f"_eq_seed called on a cold_seed={cold_seed!r} build: the "
+                "equilibrium setup is only built for cold_seed='eq'. Every "
+                "call site must be guarded by that test.")
         return eq_seed(T, _p_bar_seed,
                        element_vector(ratios, _ratio_idx)) * M[:, None]
 

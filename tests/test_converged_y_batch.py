@@ -82,3 +82,10 @@ def test_batched_lane_is_its_own_solve_and_agrees_with_the_vmap(runs, k):
     assert bool(np.asarray(cd_b.conv_normal)[k]) == bool(
         np.asarray(cd_v.conv_normal)[k])
     assert rel[obs].max() < REL_MAX
+
+
+def test_removed_fastchem_profile_key_is_refused():
+    """A profile still carrying `fastchem_met_scale` expects the seed to scale
+    metallicity; the FastChem seed is gone, so refuse instead of ignoring."""
+    with pytest.raises(ValueError, match="fastchem_met_scale"):
+        vulcan_chem.build_chem_model({**PROFILE, "fastchem_met_scale": 10.0})
