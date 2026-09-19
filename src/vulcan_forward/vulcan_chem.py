@@ -1008,7 +1008,15 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         ``jax.jvp(converged_y)`` stops when the column certifies, which from a
         converged warm start is at ``count_min`` with the tangent unrelaxed.
         ``ConvDiag.conv_normal`` includes the tangent term; ``tangent_longdy``
-        is the tangent's longdy at exit."""
+        is the tangent's longdy at exit.
+
+        SEVERAL DIRECTIONS AT ONCE: pass ``tangent`` as a stack ``(D, n_theta)``
+        against the single ``(n_theta,)``. The directions ride vulcan-jax's own
+        tangent axis, so the solver integrates the primal ONCE for all D
+        (``jax.vmap`` of this call would integrate it D times -- the tangent
+        certificate is in the loop predicate). ``dy`` comes back ``(D, nz, ni)``;
+        the run stops only when EVERY direction has settled, so ``tangent_ok``
+        is the AND over directions and ``tangent_longdy`` the worst of them."""
         def _seeded(th):
             init, atm_T = _prep(th, warm_y=warm_y, lnZ_ref=lnZ_ref, c_o_ref=c_o_ref)
             return _runner_carry_seed(init, warm_continuation=warm_y is not None,
@@ -1018,10 +1026,24 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
                 return jax.tree_util.tree_map(
                     lambda x: jnp.asarray(x, dtype=jnp.float64), p)
             return jnp.asarray(p, dtype=jnp.float64)
-        (init, atm_T), (dinit, datm) = jax.jvp(
-            _seeded, (_leaves(theta),), (_leaves(tangent),))
+        def _stack_dir(*ds):
+            # float0 placeholders (the carry's int/bool leaves) are
+            # direction-independent; nothing downstream reads them.
+            if getattr(ds[0], "dtype", None) == jax.dtypes.float0:
+                return ds[0]
+            return jnp.stack(ds)
+
+        th, tan = _leaves(theta), _leaves(tangent)
+        if not isinstance(tangent, ChemParams) and jnp.ndim(tan) == 2:
+            # linearize: the primal build runs once, each direction only pushes
+            # its tangent through it.
+            (init, atm_T), lin = jax.linearize(_seeded, th)
+            dinit, datm = jax.tree_util.tree_map(_stack_dir, *[lin(v) for v in tan])
+        else:
+            (init, atm_T), (dinit, datm) = jax.jvp(_seeded, (th,), (tan,))
         final, dfinal, tl, ok = integ.run_jvp(init, atm_T, dinit, datm)
-        return final.y, dfinal.y, _conv_diag(final, tangent_ok=ok, tangent_longdy=tl)
+        return final.y, dfinal.y, _conv_diag(final, tangent_ok=ok,
+                                             tangent_longdy=jnp.max(tl))
 
     def audit_init(theta, warm_y=None, lnZ_ref=0.0, c_o_ref=0.0):
         """Host-side audit of the initial column built for ``theta`` (not on any AD path).
