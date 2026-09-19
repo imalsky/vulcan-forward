@@ -972,6 +972,40 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
             return final.y, _conv_diag(final)
         return final.y
 
+    def converged_y_batch(thetas, warm_y=None, lnZ_ref=0.0, c_o_ref=0.0,
+                          return_conv_diag=False):
+        """Converged ABSOLUTE number densities for a STACK of thetas (N, n_theta)
+        -> y (N, nz, ni), with the optional per-lane continuation warm-start
+        ``warm_y`` (N, nz, ni) at lnZ_ref / c_o_ref and, with
+        ``return_conv_diag=True``, the per-lane ``(y, ConvDiag)`` of
+        ``converged_y``. The results are the BATCHED runner's
+        (``OuterLoop.run_batch``, one while loop ABOVE the lane vmap):
+        photolysis and the geometry refresh follow the loop's iteration tick,
+        not the lane's accept count, so a lane is NOT bit-identical to its solo
+        ``converged_y`` -- the two agree at the convergence scale (5.4e-5 over
+        ymix > 1e-10 on vulcan-jax's HD189 batch, its notes 2.9). A lane's
+        result does not depend on the other lanes -- each freezes at its own
+        exit -- and this is the PRIMAL path only: forward-mode callers stay on
+        ``converged_y_jvp``.
+        """
+        def prep_one(theta_i, warm_i):
+            init, atm_T = _prep(theta_i, warm_y=warm_i,
+                                lnZ_ref=lnZ_ref, c_o_ref=c_o_ref)
+            return _runner_carry_seed(init, warm_continuation=warm_y is not None,
+                                      warm_cap=False), atm_T
+
+        # The AtmStatic toggles are unbatched Python bools (the runner's own
+        # lane vmap broadcasts them), so they take out_axes None and every
+        # array leaf takes 0 -- exactly `_ATM_STATIC_BATCH_AXES`. warm_y=None
+        # is an empty pytree node, so the same vmap covers the cold seed.
+        init_b, atm_b = jax.vmap(
+            prep_one, out_axes=(0, outer_loop._ATM_STATIC_BATCH_AXES),
+        )(thetas, warm_y)
+        final_b = integ.run_batch(init_b, atm_b)
+        if return_conv_diag:
+            return final_b.y, jax.vmap(_conv_diag)(final_b)
+        return final_b.y
+
     def converged_y_jvp(theta, tangent, warm_y=None, lnZ_ref=0.0, c_o_ref=0.0):
         """Forward-mode sensitivity certified by the solver: ``(y, dy, ConvDiag)``.
 
@@ -1048,6 +1082,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         converged_ymix=converged_ymix,
         run_diag=run_diag,
         converged_y=converged_y,
+        converged_y_batch=converged_y_batch,   # PRIMAL batched twin (run_batch)
         converged_y_jvp=converged_y_jvp,
         conv_normal_at_exit=_conv_normal_at_exit,  # certify a raw run_diag final
         #                                            carry (gate on conv_normal,
