@@ -1011,6 +1011,56 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
             return final_b.y, jax.vmap(_conv_diag)(final_b)
         return final_b.y
 
+    # `run_queue` keys its compiled program on the init_fn / out_fn OBJECTS, so
+    # fresh closures per call would recompile and grow its cache once per call.
+    # The pair depends only on this key; `float()` refuses a traced reference
+    # composition, which could not ride a closure into that jit anyway.
+    _queue_fns = {}
+
+    def converged_y_queue(thetas, n_lanes, *, chunk=8, refill_every=100,
+                          warm_y=None, lnZ_ref=0.0, c_o_ref=0.0):
+        """``converged_y_batch`` on ``n_lanes`` lanes with refill from the job
+        queue (vulcan-jax ``OuterLoop.run_queue``): a lane that certifies is
+        written out and takes the next theta inside the same while loop, so
+        wall time follows total work / lanes instead of the slowest theta.
+
+        Same map and the same convergence-scale contract as the plain batch --
+        a refilled theta enters at the tick its lane was freed at, which moves
+        the photolysis / geometry cadence the way the batch already moves it
+        against the solo solve. With ``n_lanes >= N`` nothing is refilled and
+        every theta runs the plain batch's ticks (same accept_count, same
+        certificate), but the answer is still not BITWISE the batch's: the
+        seed is built inside ``run_queue``'s jitted loop and outside it in
+        ``converged_y_batch``, and those two compilations of ``_prep`` differ
+        by a ulp in y_ini (1.1e-15), which the trajectory amplifies to ~1e-3
+        in the worst cell. Returns ``(y (N, nz, ni), ConvDiag stacked over
+        N)``; the ConvDiag is not optional here (it rides the per-job
+        write-out)."""
+        key = (warm_y is not None, float(lnZ_ref), float(c_o_ref))
+        fns = _queue_fns.get(key)
+        if fns is None:
+            warm_cont, lnZ_r, c_o_r = key
+
+            def init_fn(job):
+                theta_i, warm_i = job
+                init, atm_T = _prep(theta_i, warm_y=warm_i,
+                                    lnZ_ref=lnZ_r, c_o_ref=c_o_r)
+                return _runner_carry_seed(init, warm_continuation=warm_cont,
+                                          warm_cap=False), atm_T
+
+            def out_fn(final):
+                return final.y, _conv_diag(final)
+
+            fns = _queue_fns[key] = (init_fn, out_fn)
+        init_fn, out_fn = fns
+
+        # warm_y=None is an empty pytree node, so the same jobs pytree covers
+        # the cold seed.
+        (y, cd), _n_iter = integ.run_queue(
+            init_fn, (thetas, warm_y), int(n_lanes), out_fn,
+            chunk=int(chunk), refill_every=int(refill_every))
+        return y, cd
+
     def converged_y_jvp(theta, tangent, warm_y=None, lnZ_ref=0.0, c_o_ref=0.0):
         """Forward-mode sensitivity certified by the solver: ``(y, dy, ConvDiag)``.
 
@@ -1111,6 +1161,8 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         run_diag=run_diag,
         converged_y=converged_y,
         converged_y_batch=converged_y_batch,   # PRIMAL batched twin (run_batch)
+        converged_y_queue=converged_y_queue,   # the same batch on n_lanes lanes
+        #                                        with refill (run_queue)
         converged_y_jvp=converged_y_jvp,
         conv_normal_at_exit=_conv_normal_at_exit,  # certify a raw run_diag final
         #                                            carry (gate on conv_normal,

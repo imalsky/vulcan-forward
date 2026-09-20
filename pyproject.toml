@@ -22,7 +22,7 @@ dependencies = [
     # constraint here -- rather than in the chemistry core, vulcan-jax -- is a
     # main reason this package exists.
     "exojax==2.2.3",
-    "vulcan-jax>=0.15.0",
+    "vulcan-jax>=0.16.0",
     # Core, not an extra: the default opacity_mode of every consumer reads
     # ExoMolOP HDF5 k-tables. The import stays function-local in
     # exomolop.load_tables, so the import-without-data contract is untouched;
