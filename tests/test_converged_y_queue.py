@@ -77,6 +77,10 @@ def ref(chem):
 def _report(tag, y_q, cd_q, y_b, cd_b):
     """Print and check the queue-vs-batch difference job by job."""
     y_q = np.asarray(y_q)
+    # Certified in BOTH arms: equal certificates alone would pass with both
+    # arms uncertified.
+    assert bool(np.all(np.asarray(cd_q.conv_normal)))
+    assert bool(np.all(np.asarray(cd_b.conv_normal)))
     assert np.array_equal(np.asarray(cd_q.conv_normal),
                           np.asarray(cd_b.conv_normal))
     assert np.array_equal(np.asarray(cd_q.conv_branch),
@@ -99,10 +103,22 @@ def test_queue_with_enough_lanes_runs_the_batch_ticks(chem, ref):
     y_q, cd_q = chem.converged_y_queue(th, n_lanes=THETAS.shape[0])
     # The same call signature reuses the same compiled program: the init_fn /
     # out_fn pair is memoized, so run_queue's cache does not grow per call.
+    # The second call takes the thetas REVERSED, which no frozen first-call
+    # result could pass: with n_lanes >= N nothing refills, every lane starts
+    # at tick 0 and is independent of its neighbours, so the answer must be
+    # the first call's, permuted, job for job.
     n_programs = len(chem._integ._vrunner_queue)
-    y_q2, _ = chem.converged_y_queue(th, n_lanes=THETAS.shape[0])
+    y_q2, cd_q2 = chem.converged_y_queue(th[::-1], n_lanes=THETAS.shape[0])
+    y_q2, y_q = np.asarray(y_q2), np.asarray(y_q)
+    print(f"[lanes=4 reversed] accept_count {np.asarray(cd_q2.accept_count).tolist()}"
+          f" vs first call reversed {np.asarray(cd_q.accept_count)[::-1].tolist()};"
+          f" max|y2 - y1[::-1]| {np.abs(y_q2 - y_q[::-1]).max():.3e}", flush=True)
     assert len(chem._integ._vrunner_queue) == n_programs
-    assert np.array_equal(np.asarray(y_q2), np.asarray(y_q))
+    assert np.array_equal(y_q2, y_q[::-1])
+    assert np.array_equal(np.asarray(cd_q2.accept_count),
+                          np.asarray(cd_q.accept_count)[::-1])
+    assert np.array_equal(np.asarray(cd_q2.conv_normal),
+                          np.asarray(cd_q.conv_normal)[::-1])
     # No refill happens, so every job sees the ticks the plain batch gives it:
     # the step counts match exactly, the y's only to the seed's ulp.
     assert np.array_equal(np.asarray(cd_q.accept_count),

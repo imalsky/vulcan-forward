@@ -60,12 +60,12 @@ def runs():
         lambda t: chem.converged_y(t, return_conv_diag=True))(th)
     y_one = [np.asarray(chem.converged_y_batch(th[k:k + 1]))[0]
              for k in range(THETAS.shape[0])]
-    return np.asarray(y_b), cd_b, np.asarray(y_v), cd_v, y_one
+    return chem, np.asarray(y_b), cd_b, np.asarray(y_v), cd_v, y_one
 
 
 @pytest.mark.parametrize("k", range(THETAS.shape[0]))
 def test_batched_lane_is_its_own_solve_and_agrees_with_the_vmap(runs, k):
-    y_b, cd_b, y_v, cd_v, y_one = runs
+    _chem, y_b, cd_b, y_v, cd_v, y_one = runs
     acc_b = int(np.asarray(cd_b.accept_count)[k])
     acc_v = int(np.asarray(cd_v.accept_count)[k])
 
@@ -84,8 +84,14 @@ def test_batched_lane_is_its_own_solve_and_agrees_with_the_vmap(runs, k):
     assert rel[obs].max() < REL_MAX
 
 
-def test_removed_fastchem_profile_key_is_refused():
+def test_removed_inputs_are_refused(runs):
     """A profile still carrying `fastchem_met_scale` expects the seed to scale
-    metallicity; the FastChem seed is gone, so refuse instead of ignoring."""
+    metallicity; the FastChem seed is gone, so refuse instead of ignoring. A
+    warm column with the wrong trailing shape would BROADCAST -- (N, 1, ni)
+    seeds every layer from one layer -- so it is refused too."""
+    chem = runs[0]
     with pytest.raises(ValueError, match="fastchem_met_scale"):
         vulcan_chem.build_chem_model({**PROFILE, "fastchem_met_scale": 10.0})
+    with pytest.raises(ValueError, match="warm_y"):
+        chem.converged_y_batch(jnp.asarray(THETAS),
+                               warm_y=jnp.ones((THETAS.shape[0], 1, chem.ni)))

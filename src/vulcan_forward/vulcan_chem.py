@@ -816,6 +816,17 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         c_o_ref) to warm-start from there. In "elemental" mode the guess is
         projected onto the exact theta targets, so the conserved inventory is
         path-independent; in "masks" mode the incremental scaling IS the map."""
+        # One column per solve, always: the batched entry points map this over
+        # the leading axis, so warm_i is (nz, ni) there too. Any other trailing
+        # shape would BROADCAST silently -- a (1, ni) column would seed every
+        # layer from one layer. Shapes are static, so this check runs under jit
+        # and under vmap.
+        if warm_y is not None and jnp.shape(warm_y) != (nz, ni):
+            raise ValueError(
+                f"warm_y has shape {tuple(jnp.shape(warm_y))}: one converged "
+                f"column of shape ({nz}, {ni}) is expected per solve "
+                f"(batched callers pass ({nz}, {ni}) per lane, i.e. "
+                f"(N, {nz}, {ni}) stacked).")
         _p = _as_params(theta)
         lnZ, c_o, lnKzz = _p.lnZ, _p.c_o, _p.lnKzz
 
