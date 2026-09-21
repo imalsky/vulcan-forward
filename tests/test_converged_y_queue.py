@@ -17,6 +17,10 @@ Three properties:
   vulcan-retrieval's cold path runs -- keeps every theta certified and leaves
   the species the spectrum reads alone.
 
+The two acceptance tests at the bottom are the gate for moving a consumer's
+GRADIENT off a per-theta ``vmap(jvp(converged_y))``: the cold two-stage map,
+and the WARM-capped mutation map with a per-lane reference composition.
+
 The measured differences are printed (``pytest -s``).
 
 Cheap profile: nz=20, photochemistry off, no build-time warm-up solve.
@@ -267,8 +271,14 @@ def test_queue_is_differentiable(chem, ref):
 # plus the queue replayed with the jobs REVERSED (its lanes then free at other
 # ticks). Photo on is the point: the photolysis and geometry-refresh cadences are
 # what the batched runner moves from the lane's own accept count to the loop tick.
+# warm_count_max is the retrieval's production mutation cap against a cold cap
+# of 30000: it makes the warm route below run the CAPPED carry, and it leaves
+# the cold route untouched (warm_cap=False keeps the cold cap).
 PHOTO_PROFILE = {"use_photo": True, "yconv_cri": 1.0e-2, "nz": 20,
-                 "abundance_mode": "elemental", "skip_warmup": True}
+                 "abundance_mode": "elemental", "skip_warmup": True,
+                 "warm_count_max": 1500}
+# An MCMC-sized proposal step away from the carried column, per direction.
+WARM_DELTA = np.array([0.05, 0.02, 0.1, 5.0], dtype=np.float64)
 # PREDECLARED from the measurement (worst over the four jobs and all four
 # comparisons): column worst cell 1.70e-1, column median 1.99e-4, tangent
 # stack-relative 2.87e-5. The bounds sit a modest factor above each.
@@ -411,3 +421,90 @@ def test_two_stage_cold_gradient_three_routes(chem_photo):
     _cmp("queue-vs-batch", queue, batch, n_dir)
     _cmp("queue-vs-solo", queue, solo, n_dir)
     _cmp("queuerev-vs-queue", rev, queue, n_dir)
+
+
+def _warm_routes(chem, th, yw, r0, r1):
+    """(solo, batch, queue, queue-reversed) results of the WARM-capped
+    continuation map -- each theta from its OWN carried column ``yw`` at its
+    OWN reference composition (r0, r1) -- as
+    ``(y (N, nz, ni), ConvDiag over N, dy (N, D, nz, ni))``.
+
+    The carried column and the references are CONSTANTS of the map (the
+    consumer differentiates with respect to theta only), so they ride in as
+    values and only theta carries a tangent.
+    """
+    n_dir = th.shape[1]
+    eye = jnp.eye(n_dir, dtype=jnp.float64)
+
+    def solo(TH):
+        def one(t, y_w, a, b):
+            def f(tt):
+                return chem.converged_y(tt, warm_y=y_w, lnZ_ref=a, c_o_ref=b,
+                                        warm_cap=True, return_conv_diag=True)
+            (y_l, cd_l), (dy_l, _d) = jax.vmap(
+                lambda v: jax.jvp(f, (t,), (v,)))(eye)
+            return y_l[0], jax.tree_util.tree_map(lambda x: x[0], cd_l), dy_l
+        return jax.vmap(one)(TH, yw, r0, r1)
+
+    def stacked(solve, TH):
+        bc = lambda v: jnp.broadcast_to(v, TH.shape)     # noqa: E731
+        (Y_l, CD_l), (dY_l, _d) = jax.vmap(
+            lambda v: jax.jvp(solve, (TH,), (bc(v),)))(eye)
+        return (Y_l[0], jax.tree_util.tree_map(lambda x: x[0], CD_l),
+                jnp.swapaxes(dY_l, 0, 1))
+
+    def batch(TH, y_w=yw, a=r0, b=r1):
+        return stacked(lambda C: chem.converged_y_batch(
+            C, warm_y=y_w, lnZ_ref=a, c_o_ref=b, warm_cap=True,
+            return_conv_diag=True), TH)
+
+    def queue(TH, y_w=yw, a=r0, b=r1):
+        return stacked(lambda C: chem.converged_y_queue(
+            C, 2, chunk=1, warm_y=y_w, lnZ_ref=a, c_o_ref=b, warm_cap=True), TH)
+
+    rev = queue(TH=th[::-1], y_w=yw[::-1], a=r0[::-1], b=r1[::-1])
+    rev = (rev[0][::-1], jax.tree_util.tree_map(lambda x: x[::-1], rev[1]),
+           rev[2][::-1])
+    return solo(th), batch(th), queue(th), rev
+
+
+def test_warm_capped_gradient_three_routes(chem_photo):
+    """The batched and queued WARM mutation gradient agree with the per-theta one.
+
+    The acceptance test for vulcan-retrieval's warm mutation kernel: the cap
+    rides the runner carry per lane, each lane gets its own carried column AND
+    its own reference composition, the tangents stay finite, every theta keeps
+    its certificate on every route, and the columns and the direction stack
+    agree at the convergence scale the primals agree at. Accept counts are
+    PRINTED, not pinned -- a batched lane's photo / refresh cadence rides the
+    loop tick and a queued lane enters at the tick its lane was freed at, so
+    from a converged warm start the loose branch can fire at different
+    relaxation depths.
+    """
+    chem = chem_photo
+    th0 = jnp.asarray(THETAS)
+    th1 = jnp.asarray(THETAS + WARM_DELTA[None, :])
+    n_dir = int(th1.shape[1])
+    # the carried cloud: each theta's own converged column, with the reference
+    # composition it was converged at (distinct per lane)
+    yw, cd0 = chem.converged_y_batch(th0, return_conv_diag=True)
+    assert bool(np.all(np.asarray(cd0.conv_normal))), "carried columns not certified"
+    r0, r1 = th0[:, 0], th0[:, 1]
+    assert len(set(np.asarray(THETAS)[:, 0].tolist())) > 1   # references differ
+    solo, batch, queue, rev = _warm_routes(chem, th1, yw, r0, r1)
+    for tag, r in (("solo", solo), ("batch", batch), ("queue", queue),
+                   ("queue-rev", rev)):
+        y, cd, dy = np.asarray(r[0]), r[1], np.asarray(r[2])
+        print(f"[warm {tag}] conv_normal "
+              f"{np.asarray(cd.conv_normal).astype(int).tolist()} branch "
+              f"{np.asarray(cd.conv_branch).astype(int).tolist()} accept "
+              f"{np.asarray(cd.accept_count).astype(int).tolist()}", flush=True)
+        assert bool(np.all(np.asarray(cd.conv_normal))), tag
+        assert np.all(np.isfinite(y)) and np.all(np.isfinite(dy)), tag
+        assert float(np.abs(dy).max()) > 0.0, tag
+        # every lane ran under the mutation cap, not the cold one
+        assert np.all(np.asarray(cd.accept_count) <= int(chem.warm_count_max)), tag
+    _cmp("warm batch-vs-solo", batch, solo, n_dir)
+    _cmp("warm queue-vs-batch", queue, batch, n_dir)
+    _cmp("warm queue-vs-solo", queue, solo, n_dir)
+    _cmp("warm queuerev-vs-queue", rev, queue, n_dir)

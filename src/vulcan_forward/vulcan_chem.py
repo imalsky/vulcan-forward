@@ -349,9 +349,10 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         cfg.count_max = int(profile["count_max"])
     # Warm-continuation step cap for the MUTATION path only: a proposal still
     # unconverged at warm_count_max is headed for rejection, so cut the loop
-    # there instead of dragging the lockstep batch to the cold cap. Realized as
-    # a SECOND runner (the cap is baked into the jitted while_loop at trace
-    # time); == count_max (or absent) means one shared runner.
+    # there instead of dragging the lockstep batch to the cold cap. The cap
+    # rides the runner CARRY (`count_max_dyn`, seeded by `_runner_carry_seed`),
+    # so the batched entry points take it per lane through `warm_cap=True` and
+    # share one compiled runner with the cold call.
     _wcm = profile.get("warm_count_max")
     warm_count_max = int(_wcm) if _wcm is not None else int(cfg.count_max)
     if warm_count_max > int(cfg.count_max):
@@ -503,11 +504,13 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         print(f"[chem] warm-up converge {time.time() - tw:.1f}s "
               f"(certified={baseline_conv_normal})", flush=True)
 
-    # Warm-capped twin runner for the mutation path. OuterLoop._Statics snapshots
-    # int(cfg.count_max) at _ensure_runner time, so the temporary mutation is safe: the
-    # smaller cap is frozen into integ_warm's while_loop and cfg is restored right after.
-    # Host-side closure construction only -- no extra XLA compile (the retrieval traces
-    # integ_warm._runner inside its own jitted evaluators, exactly like integ._runner).
+    # Warm-capped twin runner for the SOLO mutation path. OuterLoop._Statics
+    # snapshots int(cfg.count_max) at _ensure_runner time, so the temporary mutation is
+    # safe: the smaller cap is frozen into integ_warm's statics and cfg is restored right
+    # after. Host-side closure construction only -- no extra XLA compile (the retrieval
+    # traces integ_warm._runner inside its own jitted evaluators, exactly like
+    # integ._runner). The termination test itself reads the CARRY (count_max_dyn), which
+    # is what the batched entry points use, so this twin is the solo path's route only.
     if warm_count_max != int(cfg.count_max):
         _cold_cap = int(cfg.count_max)
         cfg.count_max = warm_count_max
@@ -988,8 +991,17 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
             return final.y, _conv_diag(final)
         return final.y
 
+    def _ref_leaves(n, lnZ_ref, c_o_ref):
+        """The reference composition as PER-LANE (n,) leaves for the vmapped
+        prep. A scalar broadcasts, so a shared reference still works; the
+        retrieval's warm mutation passes each particle its OWN carried
+        (lnZ, c_o). References are CONSTANTS of the map -- a caller
+        differentiates with respect to theta, never to these."""
+        return (jnp.broadcast_to(jnp.asarray(lnZ_ref, dtype=jnp.float64), (n,)),
+                jnp.broadcast_to(jnp.asarray(c_o_ref, dtype=jnp.float64), (n,)))
+
     def converged_y_batch(thetas, warm_y=None, lnZ_ref=0.0, c_o_ref=0.0,
-                          return_conv_diag=False):
+                          warm_cap=False, return_conv_diag=False):
         """Converged ABSOLUTE number densities for a STACK of thetas (N, n_theta)
         -> y (N, nz, ni), with the optional per-lane continuation warm-start
         ``warm_y`` (N, nz, ni) at lnZ_ref / c_o_ref and, with
@@ -1001,14 +1013,24 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         ``converged_y`` -- the two agree at the convergence scale (5.4e-5 over
         ymix > 1e-10 on vulcan-jax's HD189 batch, its notes 2.9). A lane's
         result does not depend on the other lanes -- each freezes at its own
-        exit -- and this is the PRIMAL path only: forward-mode callers stay on
+        exit. A plain ``jax.jvp`` through this entry point is supported (the
+        stop test reads the primal only); a tangent-CERTIFIED derivative is
         ``converged_y_jvp``.
+
+        ``lnZ_ref`` / ``c_o_ref`` may be scalars or ``(N,)`` arrays: the
+        mutation path gives every lane the reference its carried column was
+        converged at. ``warm_cap=True`` caps every lane at ``warm_count_max``
+        -- the mutation-path semantics of ``converged_y(..., warm_cap=True)``,
+        carried by ``count_max_dyn`` (the runner reads the budget off the
+        carry, so the cap needs no second runner).
         """
-        def prep_one(theta_i, warm_i):
+        lnZ_r, c_o_r = _ref_leaves(int(jnp.shape(thetas)[0]), lnZ_ref, c_o_ref)
+
+        def prep_one(theta_i, warm_i, lnZ_i, c_o_i):
             init, atm_T = _prep(theta_i, warm_y=warm_i,
-                                lnZ_ref=lnZ_ref, c_o_ref=c_o_ref)
+                                lnZ_ref=lnZ_i, c_o_ref=c_o_i)
             return _runner_carry_seed(init, warm_continuation=warm_y is not None,
-                                      warm_cap=False), atm_T
+                                      warm_cap=warm_cap), atm_T
 
         # The AtmStatic toggles are unbatched Python bools (the runner's own
         # lane vmap broadcasts them), so they take out_axes None and every
@@ -1016,7 +1038,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         # is an empty pytree node, so the same vmap covers the cold seed.
         init_b, atm_b = jax.vmap(
             prep_one, out_axes=(0, outer_loop._ATM_STATIC_BATCH_AXES),
-        )(thetas, warm_y)
+        )(thetas, warm_y, lnZ_r, c_o_r)
         final_b = integ.run_batch(init_b, atm_b)
         if return_conv_diag:
             return final_b.y, jax.vmap(_conv_diag)(final_b)
@@ -1024,12 +1046,14 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
 
     # `run_queue` keys its compiled program on the init_fn / out_fn OBJECTS, so
     # fresh closures per call would recompile and grow its cache once per call.
-    # The pair depends only on this key; `float()` refuses a traced reference
-    # composition, which could not ride a closure into that jit anyway.
+    # The pair depends only on this key, which holds STATIC choices only: the
+    # reference composition rides the jobs pytree (gathered per job), so its
+    # VALUES never enter a closure and never cost a compile.
     _queue_fns = {}
 
     def converged_y_queue(thetas, n_lanes, *, chunk=8, refill_every=100,
-                          warm_y=None, lnZ_ref=0.0, c_o_ref=0.0):
+                          warm_y=None, lnZ_ref=0.0, c_o_ref=0.0,
+                          warm_cap=False):
         """``converged_y_batch`` on ``n_lanes`` lanes with refill from the job
         queue (vulcan-jax ``OuterLoop.run_queue``): a lane that certifies is
         written out and takes the next theta inside the same while loop, so
@@ -1046,18 +1070,23 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         by a ulp in y_ini (1.1e-15), which the trajectory amplifies to ~1e-3
         in the worst cell. Returns ``(y (N, nz, ni), ConvDiag stacked over
         N)``; the ConvDiag is not optional here (it rides the per-job
-        write-out)."""
-        key = (warm_y is not None, float(lnZ_ref), float(c_o_ref))
+        write-out).
+
+        ``lnZ_ref`` / ``c_o_ref`` (scalar or ``(N,)``) and ``warm_cap`` mean
+        what they mean on ``converged_y_batch``: the references ride the jobs
+        pytree, so each job is prepped at its own, and the cap rides the
+        carry."""
+        key = (warm_y is not None, bool(warm_cap))
         fns = _queue_fns.get(key)
         if fns is None:
-            warm_cont, lnZ_r, c_o_r = key
+            warm_cont, warm_cap_k = key
 
             def init_fn(job):
-                theta_i, warm_i = job
+                theta_i, warm_i, lnZ_i, c_o_i = job
                 init, atm_T = _prep(theta_i, warm_y=warm_i,
-                                    lnZ_ref=lnZ_r, c_o_ref=c_o_r)
+                                    lnZ_ref=lnZ_i, c_o_ref=c_o_i)
                 return _runner_carry_seed(init, warm_continuation=warm_cont,
-                                          warm_cap=False), atm_T
+                                          warm_cap=warm_cap_k), atm_T
 
             def out_fn(final):
                 return final.y, _conv_diag(final)
@@ -1067,8 +1096,9 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
 
         # warm_y=None is an empty pytree node, so the same jobs pytree covers
         # the cold seed.
+        lnZ_r, c_o_r = _ref_leaves(int(jnp.shape(thetas)[0]), lnZ_ref, c_o_ref)
         (y, cd), _n_iter = integ.run_queue(
-            init_fn, (thetas, warm_y), int(n_lanes), out_fn,
+            init_fn, (thetas, warm_y, lnZ_r, c_o_r), int(n_lanes), out_fn,
             chunk=int(chunk), refill_every=int(refill_every))
         return y, cd
 
@@ -1201,6 +1231,6 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         species_masses=species_masses,
         nz=nz, ni=ni,
         count_max=int(cfg.count_max),   # the resolved (profile-overridden or module-default) cap
-        warm_count_max=warm_count_max,  # mutation-path cap (== count_max when no twin runner)
+        warm_count_max=warm_count_max,  # mutation-path cap (warm_cap=True; == count_max when unset)
         yconv_min=float(cfg.yconv_min), # loose convergence gate: a converged solve has longdy<this
     )

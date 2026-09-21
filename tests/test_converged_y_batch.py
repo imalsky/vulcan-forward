@@ -15,6 +15,10 @@ Two properties, and they pull in opposite directions:
 The measured differences are printed (``pytest -s``): they are the number that
 says whether the batched primal is still the same answer.
 
+The warm-continuation arguments are covered too: the mutation cap
+(``warm_cap``) and the PER-LANE reference composition, both of which the
+retrieval's warm mutation kernel needs from a batched call.
+
 Cheap profile: nz=20, photochemistry off, no build-time warm-up solve -- the
 solve itself is what is under test, not the column.
 """
@@ -82,6 +86,91 @@ def test_batched_lane_is_its_own_solve_and_agrees_with_the_vmap(runs, k):
     assert bool(np.asarray(cd_b.conv_normal)[k]) == bool(
         np.asarray(cd_v.conv_normal)[k])
     assert rel[obs].max() < REL_MAX
+
+
+WARM_CMAX = 5     # under count_min=120: a warm continuation cannot certify
+COLD_CMAX = 50    # well above WARM_CMAX, so the cap that binds is identifiable
+
+
+@pytest.fixture(scope="module")
+def chem_capped():
+    """A model whose warm cap (5) is far below its cold cap (50), the shape the
+    retrieval's mutation path runs (1500 against 5000)."""
+    try:
+        return vulcan_chem.build_chem_model(
+            {**PROFILE, "warm_count_max": WARM_CMAX, "count_max": COLD_CMAX})
+    except (FileNotFoundError, OSError) as e:                # pragma: no cover
+        pytest.skip(f"chem model data unavailable: {e}")
+
+
+def test_warm_cap_binds_per_lane_and_batched(chem_capped):
+    """``warm_cap=True`` cuts every lane of a BATCH at warm_count_max, exactly
+    as it cuts the solo ``converged_y``.
+
+    The cap rides the runner carry (``count_max_dyn``), not a second compiled
+    runner, so the batched call reproduces the mutation-path semantics without
+    one: termination is ``accept_count > cap``, hence cap + 1 accepted steps on
+    every lane. The uncapped arm of the same batch marches on to the cold cap,
+    which is what identifies the warm cap as the thing that stopped it."""
+    chem = chem_capped
+    th = jnp.asarray(THETAS)
+    yw = jnp.broadcast_to(jnp.asarray(chem.y0), (THETAS.shape[0],) + chem.y0.shape)
+    _y, cd_cap = chem.converged_y_batch(th, warm_y=yw, warm_cap=True,
+                                        return_conv_diag=True)
+    _y, cd_cold = chem.converged_y_batch(th, warm_y=yw, warm_cap=False,
+                                         return_conv_diag=True)
+    solo = [chem.converged_y(th[k], warm_y=yw[k], warm_cap=True,
+                             return_conv_diag=True)[1]
+            for k in range(THETAS.shape[0])]
+    acc_cap = np.asarray(cd_cap.accept_count)
+    acc_solo = np.array([int(np.asarray(cd.accept_count)) for cd in solo])
+    print(f"[warm cap {WARM_CMAX} / cold cap {COLD_CMAX}] accept_count batched "
+          f"{acc_cap.tolist()} solo {acc_solo.tolist()} uncapped-batch "
+          f"{np.asarray(cd_cold.accept_count).tolist()}", flush=True)
+    assert np.array_equal(acc_cap, acc_solo)
+    assert np.all(acc_cap == WARM_CMAX + 1)
+    assert np.all(np.asarray(cd_cold.accept_count) == COLD_CMAX + 1)
+    # neither arm can certify this far below count_min: the cap, not
+    # convergence, ended both runs
+    assert not bool(np.any(np.asarray(cd_cap.conv_normal)))
+    assert not bool(np.any(np.asarray(cd_cold.conv_normal)))
+
+
+def test_per_lane_references_match_the_scalar_calls(runs):
+    """``lnZ_ref`` / ``c_o_ref`` as (N,) arrays give every lane the reference
+    composition ITS carried column was converged at -- what the warm mutation
+    needs, since each particle carries its own.
+
+    Reference: the same warm continuation as a batch of ONE with the scalar
+    reference. The bound is the convergence scale (a traced reference is not the
+    folded constant of the scalar call) with the certificate lane for lane; the
+    measured difference is 0 -- subtracting a reference that rides the carry is
+    the same arithmetic as subtracting the constant."""
+    chem, y_conv, _cd_b, _y_v, _cd_v, _y_one = runs
+    th0 = jnp.asarray(THETAS)
+    th1 = jnp.asarray(THETAS + np.array([0.05, 0.02, 0.1, 5.0])[None, :])
+    yw = jnp.asarray(y_conv)
+    # distinct per-lane references: each column's own (lnZ, c_o)
+    y_a, cd_a = chem.converged_y_batch(th1, warm_y=yw, lnZ_ref=th0[:, 0],
+                                       c_o_ref=th0[:, 1], return_conv_diag=True)
+    y_a = np.asarray(y_a)
+    assert len({float(x) for x in np.asarray(THETAS)[:, 0]}) > 1  # not vacuous
+    for k in range(THETAS.shape[0]):
+        y_s, cd_s = chem.converged_y_batch(
+            th1[k:k + 1], warm_y=yw[k:k + 1], lnZ_ref=float(THETAS[k, 0]),
+            c_o_ref=float(THETAS[k, 1]), return_conv_diag=True)
+        y_s = np.asarray(y_s)[0]
+        mix = y_s / y_s.sum(axis=1, keepdims=True)
+        obs = mix > MIX_FLOOR
+        rel = np.abs(y_a[k] - y_s) / np.maximum(np.abs(y_s), 1e-300)
+        print(f"[refs lane {k}] array-vs-scalar reference over {int(obs.sum())} "
+              f"cells: max rel {rel[obs].max():.3e} median "
+              f"{np.median(rel[obs]):.3e}; accept_count "
+              f"{int(np.asarray(cd_a.accept_count)[k])} vs "
+              f"{int(np.asarray(cd_s.accept_count)[0])}", flush=True)
+        assert bool(np.asarray(cd_a.conv_normal)[k]) == bool(
+            np.asarray(cd_s.conv_normal)[0])
+        assert rel[obs].max() < REL_MAX
 
 
 def test_removed_inputs_are_refused(runs):
