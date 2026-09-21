@@ -38,6 +38,7 @@ pytest.importorskip("jax", reason="the batched runner is JAX code")
 
 from vulcan_forward import vulcan_chem                       # noqa: E402
 
+import jax                                                   # noqa: E402
 import jax.numpy as jnp                                      # noqa: E402
 
 PROFILE = {"use_photo": False, "yconv_cri": 1.0e-2, "nz": 20,
@@ -183,3 +184,230 @@ def test_two_stage_warm_queue_keeps_the_observed_species(chem):
         if pinned:
             assert np.all(np.isfinite(worst)), name
             assert max(worst) < SPECIES_MAX, name
+
+
+def _dy_rel(dy, dy_ref, mix):
+    """max|dy - dy_ref| / max|dy_ref| over the cells the spectrum can see.
+
+    Two AD routes are compared against the DIRECTION's own scale, never
+    component by component: a cell whose tangent is accidentally tiny turns
+    floating-point accumulation into a meaningless ratio.
+    """
+    obs = mix > MIX_FLOOR
+    return float(np.abs(dy - dy_ref)[obs].max() / np.abs(dy_ref[obs]).max())
+
+
+def test_queue_is_differentiable(chem, ref):
+    """A plain ``jax.jvp`` runs through the queue, and through the batch.
+
+    This is what lets a consumer take the WHOLE cold gradient on the batched
+    runner instead of a per-theta vmap of jvps: JAX carries the tangent
+    leaves through the refill scatters, the chunk selection and the lane
+    `lax.cond` as it does through the lockstep batch. The stopping rule is
+    unchanged -- the loop predicate reads the primal only -- so the tangent is
+    the plain jvp's, and the three routes (queue, plain batch, solo
+    ``converged_y``) agree at the convergence scale their primals agree at.
+
+    Forward-mode callers that need a CERTIFIED tangent still go through
+    ``converged_y_jvp``; this test pins the plain-jvp route the retrieval's
+    cold gradient uses.
+    """
+    y_b_ref, cd_b_ref = ref
+    th = jnp.asarray(THETAS)
+    # one direction (lnZ), the same for every theta in the stack
+    v = jnp.zeros_like(th).at[:, 0].set(1.0)
+
+    (y_q, cd_q), (dy_q, _dcd) = jax.jvp(
+        lambda t: chem.converged_y_queue(t, 2, chunk=1), (th,), (v,))
+    (y_b, cd_b), (dy_b, _dcd_b) = jax.jvp(
+        lambda t: chem.converged_y_batch(t, return_conv_diag=True), (th,), (v,))
+    dy_q, dy_b, y_b = np.asarray(dy_q), np.asarray(dy_b), np.asarray(y_b)
+    assert np.all(np.isfinite(dy_q)) and np.all(np.isfinite(dy_b))
+    # the primal of the jvp'd batch is the primal-only batch, bit for bit
+    assert np.array_equal(y_b, y_b_ref)
+    assert np.array_equal(np.asarray(cd_b.conv_normal),
+                          np.asarray(cd_b_ref.conv_normal))
+    _report("jvp lanes=2 chunk=1", y_q, cd_q, y_b, cd_b)
+    for k in range(THETAS.shape[0]):
+        mix = y_b[k] / y_b[k].sum(axis=1, keepdims=True)
+        rel = _dy_rel(dy_q[k], dy_b[k], mix)
+        print(f"[jvp lanes=2 chunk=1 job {k}] queue-vs-batch tangent "
+              f"max|ddy|/max|dy| {rel:.3e}", flush=True)
+        assert rel < REL_MAX
+
+    # The contract a batched-gradient consumer relies on: one jvp through the
+    # batch is the per-theta jvp through the solo runner, at the convergence
+    # scale and with the same certificate.
+    th2, v2 = th[:2], v[:2]
+    (_y2, cd_b2), (dy_b2, _d2) = jax.jvp(
+        lambda t: chem.converged_y_batch(t, return_conv_diag=True), (th2,), (v2,))
+    dy_b2 = np.asarray(dy_b2)
+    for k in range(2):
+        (y_s, cd_s), (dy_s, _ds) = jax.jvp(
+            lambda t: chem.converged_y(t, return_conv_diag=True),
+            (th2[k],), (v2[k],))
+        y_s, dy_s = np.asarray(y_s), np.asarray(dy_s)
+        mix = y_s / y_s.sum(axis=1, keepdims=True)
+        rel = _dy_rel(dy_b2[k], dy_s, mix)
+        print(f"[jvp batch-vs-solo job {k}] tangent max|ddy|/max|dy| {rel:.3e}; "
+              f"accept_count batch {int(np.asarray(cd_b2.accept_count)[k])} "
+              f"solo {int(np.asarray(cd_s.accept_count))}", flush=True)
+        assert bool(np.asarray(cd_s.conv_normal))
+        assert bool(np.asarray(cd_b2.conv_normal)[k])
+        assert rel < REL_MAX
+
+
+# --- the three-route acceptance test for a batched cold GRADIENT consumer ---
+# The complete two-stage cold map (stage 1 at baseline composition, stage 2 warm
+# from its own column) with PHOTOCHEMISTRY ON, differentiated along every
+# chemistry direction, on three routes:
+#   solo   vmap over thetas of [vmap over directions of jvp(converged_y)]  -- today
+#   batch  vmap over directions of jvp(converged_y_batch)
+#   queue  vmap over directions of jvp(converged_y_queue) on 2 lanes, chunk 1
+# plus the queue replayed with the jobs REVERSED (its lanes then free at other
+# ticks). Photo on is the point: the photolysis and geometry-refresh cadences are
+# what the batched runner moves from the lane's own accept count to the loop tick.
+PHOTO_PROFILE = {"use_photo": True, "yconv_cri": 1.0e-2, "nz": 20,
+                 "abundance_mode": "elemental", "skip_warmup": True}
+# PREDECLARED from the measurement (worst over the four jobs and all four
+# comparisons): column worst cell 1.70e-1, column median 1.99e-4, tangent
+# stack-relative 2.87e-5. The bounds sit a modest factor above each.
+COL_MAX = 4.0e-1
+COL_MED = 1.0e-3
+DY_STACK_MAX = 2.0e-4
+
+
+@pytest.fixture(scope="module")
+def chem_photo():
+    try:
+        return vulcan_chem.build_chem_model(PHOTO_PROFILE)
+    except (FileNotFoundError, OSError) as e:                # pragma: no cover
+        pytest.skip(f"chem model data unavailable: {e}")
+
+
+def _two_stage_routes(chem, th):
+    """(solo, batch, queue, queue-reversed) results of the two-stage cold map,
+    each ``(y (N, nz, ni), ConvDiag over N, dy (N, D, nz, ni))``."""
+    n_dir = th.shape[1]
+    eye = jnp.eye(n_dir, dtype=jnp.float64)
+
+    def pad(dy1):
+        # directions 0,1 (lnZ, c_o) carry no stage-1 tangent: stage 1 zeroes them
+        return jnp.zeros((n_dir,) + dy1.shape[1:], dy1.dtype).at[2:].set(dy1)
+
+    def solo(TH):
+        def s1(t):
+            return chem.converged_y(t.at[0].set(0.0).at[1].set(0.0))
+
+        def s2(t, y1):
+            return chem.converged_y(t, warm_y=y1, lnZ_ref=0.0, c_o_ref=0.0,
+                                    return_conv_diag=True)
+
+        def one(t):
+            y1_l, dy1 = jax.vmap(lambda v: jax.jvp(s1, (t,), (v,)))(eye[2:])
+            (y_l, cd_l), (dy_l, _d) = jax.vmap(
+                lambda v, dy: jax.jvp(s2, (t, y1_l[0]), (v, dy)))(eye, pad(dy1))
+            return y_l[0], jax.tree_util.tree_map(lambda x: x[0], cd_l), dy_l
+        return jax.vmap(one)(TH)
+
+    def stacked(solve1, solve2, TH):
+        bc = lambda v: jnp.broadcast_to(v, TH.shape)     # noqa: E731
+        Y1_l, dY1 = jax.vmap(lambda v: jax.jvp(solve1, (TH,), (bc(v),)))(eye[2:])
+        (Y_l, CD_l), (dY_l, _d) = jax.vmap(
+            lambda v, dY: jax.jvp(solve2, (TH, Y1_l[0]), (bc(v), dY))
+        )(eye, pad(dY1))
+        return (Y_l[0], jax.tree_util.tree_map(lambda x: x[0], CD_l),
+                jnp.swapaxes(dY_l, 0, 1))
+
+    def batch(TH):
+        return stacked(
+            lambda C: chem.converged_y_batch(C.at[:, 0].set(0.0).at[:, 1].set(0.0)),
+            lambda C, Y1: chem.converged_y_batch(C, warm_y=Y1, lnZ_ref=0.0,
+                                                 c_o_ref=0.0, return_conv_diag=True),
+            TH)
+
+    def queue(TH):
+        return stacked(
+            lambda C: chem.converged_y_queue(
+                C.at[:, 0].set(0.0).at[:, 1].set(0.0), 2, chunk=1)[0],
+            lambda C, Y1: chem.converged_y_queue(C, 2, chunk=1, warm_y=Y1,
+                                                 lnZ_ref=0.0, c_o_ref=0.0),
+            TH)
+
+    rev = queue(th[::-1])
+    rev = (rev[0][::-1], jax.tree_util.tree_map(lambda x: x[::-1], rev[1]),
+           rev[2][::-1])
+    return solo(th), batch(th), queue(th), rev
+
+
+def _cmp(tag, a, b, n_dir):
+    """Print and bound one route pair. ``b`` is the reference.
+
+    The column is judged over the cells the spectrum can see; the tangent by the
+    DIRECTION STACK's own scale (max|ddy| over all directions / max|dy| over all
+    directions). Per-direction ratios are PRINTED with each direction's share of
+    that scale, not asserted: the lnKzz tangent is ~1e-6 of the lnZ tangent here,
+    and a norm-relative error on a direction that carries no signal is
+    floating-point accumulation, not disagreement.
+    """
+    ya, cda, dya = np.asarray(a[0]), a[1], np.asarray(a[2])
+    yb, cdb, dyb = np.asarray(b[0]), b[1], np.asarray(b[2])
+    assert np.array_equal(np.asarray(cda.conv_normal), np.asarray(cdb.conv_normal))
+    for k in range(yb.shape[0]):
+        mix = yb[k] / yb[k].sum(axis=1, keepdims=True)
+        obs = mix > MIX_FLOOR
+        rel = np.abs(ya[k] - yb[k]) / np.maximum(np.abs(yb[k]), 1e-300)
+        scale = float(np.abs(dyb[k][:, obs]).max())
+        stack = float(np.abs(dya[k] - dyb[k])[:, obs].max() / scale)
+        per = [float(np.abs(dya[k, i] - dyb[k, i])[obs].max()
+                     / max(float(np.abs(dyb[k, i][obs]).max()), 1e-300))
+               for i in range(n_dir)]
+        frac = [float(np.abs(dyb[k, i][obs]).max() / scale) for i in range(n_dir)]
+        print(f"[{tag} job {k}] y max rel {rel[obs].max():.2e} median "
+              f"{np.median(rel[obs]):.2e} over {int(obs.sum())} cells; dy "
+              f"stack-rel {stack:.2e}; per direction "
+              + " ".join(f"{p:.2e}(scale {f:.0e})" for p, f in zip(per, frac)),
+              flush=True)
+        assert rel[obs].max() < COL_MAX
+        assert float(np.median(rel[obs])) < COL_MED
+        assert stack < DY_STACK_MAX
+
+
+def test_two_stage_cold_gradient_three_routes(chem_photo):
+    """The batched and queued cold GRADIENT agree with today's per-theta one.
+
+    This is the acceptance test for moving a consumer's cold two-stage gradient
+    off `vmap(jvp(converged_y))` and onto the batched runner (and the queue): the
+    tangents stay finite, every theta keeps its certificate on every route, and
+    the columns and the direction stack agree at the convergence scale the
+    primals already agree at. Accept counts are PRINTED, not pinned: a batched
+    lane's photo / refresh cadence rides the loop tick, and a queued lane enters
+    at the tick its lane was freed at, so the routes certify at different
+    relaxation depths -- which is the same freedom the batch already has against
+    the solo solve.
+    """
+    th = jnp.asarray(THETAS)
+    n_dir = int(th.shape[1])
+    solo, batch, queue, rev = _two_stage_routes(chem_photo, th)
+    for tag, r in (("solo", solo), ("batch", batch), ("queue", queue),
+                   ("queue-rev", rev)):
+        y, cd, dy = np.asarray(r[0]), r[1], np.asarray(r[2])
+        print(f"[{tag}] conv_normal {np.asarray(cd.conv_normal).astype(int).tolist()} "
+              f"branch {np.asarray(cd.conv_branch).astype(int).tolist()} "
+              f"accept {np.asarray(cd.accept_count).astype(int).tolist()}", flush=True)
+        # every theta certifies on every route, and its tangent is finite
+        assert bool(np.all(np.asarray(cd.conv_normal))), tag
+        assert np.all(np.isfinite(y)) and np.all(np.isfinite(dy)), tag
+        assert float(np.abs(dy).max()) > 0.0, tag
+    # Not vacuous: the four thetas are heterogeneous, so their columns differ by
+    # far more than any route-to-route difference below.
+    y0 = np.asarray(solo[0])
+    mix = y0[0] / y0[0].sum(axis=1, keepdims=True)
+    spread = float((np.abs(y0[1] - y0[0])
+                    / np.maximum(np.abs(y0[0]), 1e-300))[mix > MIX_FLOOR].max())
+    print(f"[spread] job1-vs-job0 column max rel {spread:.2e}", flush=True)
+    assert spread > COL_MAX
+    _cmp("batch-vs-solo", batch, solo, n_dir)
+    _cmp("queue-vs-batch", queue, batch, n_dir)
+    _cmp("queue-vs-solo", queue, solo, n_dir)
+    _cmp("queuerev-vs-queue", rev, queue, n_dir)
