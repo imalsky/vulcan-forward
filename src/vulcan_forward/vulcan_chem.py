@@ -479,14 +479,14 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     else:
         tw = time.time()
         rs_warmup = integ(rs)
-        # Certify the warm-up exit (never claim it unchecked): recompute the
-        # two-branch certification and the photo-flux gate host-side. This is
-        # WEAKER than ``_conv_diag``'s ``conv_normal``: the geometry (C21) and
-        # element-budget (C23) terms ride the runner carry and are not on
-        # RunState, so they are not checked here. Exported as
-        # ``baseline_conv_normal``; vulcan-retrieval warns loudly on False
-        # (`retrieval_forward.py`, not a refusal: every descendant draw is
-        # certified on its own), forward-only consumers get the loud print.
+        # Check the warm-up exit: the two-branch certification and the
+        # photo-flux gate, recomputed host-side. WEAKER than ``_conv_diag``'s
+        # ``conv_normal``: the geometry (C21) and element-budget (C23) terms
+        # ride the runner carry and are not on RunState. A diagnostic only
+        # (notes §2): nothing consumes the warm-up column (state0 packs from
+        # the pre-loop ``rs``) and every solve certifies itself, so False
+        # flags a configuration that may not converge. Exported as
+        # ``baseline_conv_normal``; vulcan-retrieval warns on it.
         _w_ld = float(rs_warmup.step.longdy)
         _w_lddt = float(rs_warmup.step.longdydt)
         _w_af = (float(rs_warmup.photo_runtime.aflux_change)
@@ -499,13 +499,13 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
              or ((_w_ld < float(cfg.yconv_min)) and (_w_lddt < _w_slope_min)))
             and (_w_af < float(cfg.flux_cri)))
         if not baseline_conv_normal:
-            print(f"[chem] WARNING: warm-up baseline solve is NOT certified "
-                  f"(longdy={_w_ld:.3e}, longdydt={_w_lddt:.3e}, "
-                  f"aflux_change={_w_af:.3e}); every warm start seeds from a "
-                  f"non-steady baseline. Inference builds refuse this state.",
-                  flush=True)
+            print(f"[chem] WARNING: the warm-up solve did not pass the two-branch "
+                  f"+ flux check (longdy={_w_ld:.3e}, longdydt={_w_lddt:.3e}, "
+                  f"aflux_change={_w_af:.3e}). Its column is not used, but this "
+                  f"configuration may not converge.", flush=True)
         print(f"[chem] warm-up converge {time.time() - tw:.1f}s "
-              f"(certified={baseline_conv_normal})", flush=True)
+              f"(two-branch + flux check, no C21/C23: {baseline_conv_normal})",
+              flush=True)
 
     # --- runner-carry budget/scheme seeding --------------------------------
     # The termination budget and diffusion-scheme blend live on the CARRY, not
