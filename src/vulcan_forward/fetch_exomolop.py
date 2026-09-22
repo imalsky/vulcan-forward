@@ -40,7 +40,7 @@ import sys
 import time
 import urllib.request
 
-from vulcan_forward import exomolop
+from vulcan_forward import exomolop, paths
 
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
@@ -134,6 +134,11 @@ def resolve(mol: str):
     isos = [i for i in sorted(set(re.findall(r'href="([0-9A-Za-z-]+)(?:#[^"]*)?"\s',
                                              html))) if re.match(r"^\d", i)]
     principal = [i for i in isos if _is_principal(i)]
+    if not isos:
+        raise RuntimeError(
+            f"{mol}: no isotopologue links parsed from {ROOT}/{mol}/ -- the page "
+            "layout changed or the response was not the molecule page. Not a "
+            "SKIP (that means a page with no k-table link); fix the parser.")
     if isos and not principal:
         raise RuntimeError(
             f"{mol}: none of the isotopologues ExoMolOP lists {isos} parses as "
@@ -210,15 +215,17 @@ def _assert_grid_matches(mol, dest, dest_dir):
 
 
 def fetch(molecules, force=False):
+    paths.ensure_layout()          # a setup command creates the data root
     dest_dir = exomolop.table_dir()
-    os.makedirs(dest_dir, exist_ok=True)
     prov_path = dest_dir / "provenance.json"
     prov = {}
     if prov_path.exists():
         try:
             prov = json.loads(prov_path.read_text())
-        except ValueError:
-            prov = {}
+        except ValueError as e:
+            raise RuntimeError(
+                f"{prov_path} is not valid JSON ({e}); refusing to overwrite the "
+                "provenance record. Repair or move it, then rerun.") from e
     for mol in molecules:
         dest = exomolop.table_path(mol)
         if dest.exists() and not force:

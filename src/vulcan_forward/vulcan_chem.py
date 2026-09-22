@@ -480,10 +480,13 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         tw = time.time()
         rs_warmup = integ(rs)
         # Certify the warm-up exit (never claim it unchecked): recompute the
-        # runner's canonical two-branch certification host-side (same predicate as
-        # _conv_normal_at_exit below; keep in sync). Exported as
-        # ``baseline_conv_normal``; the inference path refuses an uncertified
-        # baseline, forward-only consumers get the loud print.
+        # two-branch certification and the photo-flux gate host-side. This is
+        # WEAKER than ``_conv_diag``'s ``conv_normal``: the geometry (C21) and
+        # element-budget (C23) terms ride the runner carry and are not on
+        # RunState, so they are not checked here. Exported as
+        # ``baseline_conv_normal``; vulcan-retrieval warns loudly on False
+        # (`retrieval_forward.py`, not a refusal: every descendant draw is
+        # certified on its own), forward-only consumers get the loud print.
         _w_ld = float(rs_warmup.step.longdy)
         _w_lddt = float(rs_warmup.step.longdydt)
         _w_af = (float(rs_warmup.photo_runtime.aflux_change)
@@ -558,9 +561,12 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         )
 
     def _conv_diag(final, tangent_ok=True, tangent_longdy=jnp.nan):
-        """ConvDiag read off the runner's exit carry. ``conv_normal`` mirrors
-        vulcan_jax.outer_loop._convergence_ok (keep in sync with that
-        predicate): tight OR loose branch, AND the photo-flux gate. True only
+        """ConvDiag read off the runner's exit carry. ``conv_normal``
+        recomputes the convergence terms of vulcan_jax.outer_loop
+        ._real_terminate (keep in sync): tight OR loose branch, AND the
+        photo-flux gate, AND the geometry and element-budget terms, AND the
+        supplied tangent certificate -- not the runner's whole exit predicate
+        (its ready gate, hybrid-phase and non-finite handling). True only
         for a certified exit; False when the exit came from the stall fallback
         or exhausted a count/runtime budget. The controlling cell is the argmax
         of the masked per-cell ratio the runner maximised for longdy

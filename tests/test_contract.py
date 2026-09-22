@@ -11,6 +11,7 @@ against real spectra.
 """
 from __future__ import annotations
 
+import importlib.util
 import os
 import sys
 
@@ -114,7 +115,8 @@ def test_geometry_is_required_not_wasp39b():
     A defaulted rp_cm would silently model a different planet. Checked on the
     helper so the test needs neither exojax nor a data tree.
     """
-    pytest.importorskip("exojax")
+    if importlib.util.find_spec("exojax") is None:
+        pytest.skip("exojax not installed (light-CI environment)")
     from vulcan_forward import exojax_rt
 
     with pytest.raises(ValueError, match="required planet geometry"):
@@ -132,7 +134,8 @@ def test_import_order_guard_is_documented_and_live():
     Run in a subprocess so the guard sees a clean interpreter: importing exojax
     first must produce the actionable RuntimeError, not a subtly wrong model.
     """
-    pytest.importorskip("exojax")
+    if importlib.util.find_spec("exojax") is None:
+        pytest.skip("exojax not installed (light-CI environment)")
     import subprocess
 
     code = ("import exojax\n"

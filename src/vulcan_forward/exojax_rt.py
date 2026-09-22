@@ -908,6 +908,12 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
 
         if wo_mols is None:
             return _finish(_dtau(vmr, vmr_h2, vmr_he, T_art, mmw_art, g_em, cloud))
+        if int(profile.get("rt_band_tiles", 1)) != 1:
+            # Same refusal as transmission_depth_r: the leave-one-out fold is
+            # not band-tiled, so the knob must not be dropped on this path.
+            raise ValueError(
+                "wo_mols and band_tiles are mutually exclusive: the "
+                "leave-one-out fold is not band-tiled")
         (flux, tau), rows = _ckd_dtau_batch(
             art, ckd_pack, mols, molmass, opacia, opacia_he,
             vmr, vmr_h2, vmr_he, T_art, mmw_art, g_em,
