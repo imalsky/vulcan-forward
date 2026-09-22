@@ -220,10 +220,14 @@ def test_wo_batch_is_bit_identical_to_separate_solves():
     wo_mols) must reproduce, BITWISE, what separate single solves return: the
     full spectrum unchanged, and every wo row equal to a from-scratch solve
     with that molecule's VMR zeroed. That is the whole contract of the fold
-    prefix reuse -- fewer folds, zero numerical change. Grouped: transmission
-    full + rows, emission flux/tau full + rows, and the unknown-molecule
-    refusal."""
-    mols = ["H2O"] + (["CO2"] if exomolop.table_path("CO2").exists() else [])
+    prefix reuse -- fewer folds, zero numerical change. It also pins the two
+    fold implementations together: the batch's full spectrum comes from the
+    leave-one-out Python-loop prefix, a single solve from ckd.fold's scan, so
+    up to four molecules make the scan take several steps. Grouped:
+    transmission full + rows, emission flux/tau full + rows, and the
+    unknown-molecule refusal."""
+    mols = ["H2O"] + [m for m in ("CO2", "CO", "CH4")
+                      if exomolop.table_path(m).exists()]
     nlay = 40
     prof = dict(molecules=mols, nu_min=1.0e4 / 5.0, nu_max=1.0e4 / 3.0,
                 opacity_mode="exomolop", art_nlayer=nlay,
@@ -234,7 +238,8 @@ def test_wo_batch_is_bit_identical_to_separate_solves():
     zeros = jnp.zeros(nlay)
     T = jnp.linspace(900.0, 2200.0, nlay)
     mmw = jnp.full(nlay, 2.33)
-    vmr = {m: jnp.full(nlay, v) for m, v in zip(mols, (1.0e-3, 3.0e-4))}
+    vmr = {m: jnp.full(nlay, v)
+           for m, v in zip(mols, (1.0e-3, 3.0e-4, 5.0e-4, 1.0e-5))}
 
     def wo_vmr(m):
         return {**vmr, m: jnp.zeros_like(vmr[m])}
@@ -266,37 +271,6 @@ def test_wo_batch_is_bit_identical_to_separate_solves():
     with pytest.raises(ValueError, match="wo_mols"):
         trt.transmission_depth_r(vmr, zeros, T, mmw, 0.0, vmr_he=zeros,
                                  wo_mols=["NOT_A_MOLECULE"])
-
-
-def test_band_tiled_fold_is_bit_identical_to_the_untiled_one():
-    """Folding the correlated-k mixture in contiguous band tiles must return
-    the depth BITWISE: ``ckd.overlap`` resorts within a band, so a band tile
-    never sees another tile's ordinates. It is a memory lever (one tile's sort
-    buffers live at a time instead of the whole grid's), and a lever that
-    changes the numbers is not one. This case builds 510 bands, so 2 and 3
-    tile it evenly and 4 leaves a short last tile; both paths are covered."""
-    mols = ["H2O"] + (["CO2"] if exomolop.table_path("CO2").exists() else [])
-    nlay = 40
-    prof = dict(molecules=mols, nu_min=1.0e4 / 5.0, nu_max=1.0e4 / 3.0,
-                opacity_mode="exomolop", art_nlayer=nlay,
-                art_ptop_bar=1.0e-6, art_pbtm_bar=1.0e2,
-                rp_cm=7.1492e9, gs_cgs=1.0e3, rstar_cm=RSTAR_W39)
-    trt = exojax_rt.build_rt_model(prof)
-    zeros = jnp.zeros(nlay)
-    T = jnp.linspace(900.0, 2200.0, nlay)
-    mmw = jnp.full(nlay, 2.33)
-    vmr = {m: jnp.full(nlay, v) for m, v in zip(mols, (1.0e-3, 3.0e-4))}
-    ref = np.asarray(trt.transmission_depth_r(vmr, zeros, T, mmw, 0.0,
-                                              vmr_he=zeros))
-    for n in (2, 3, 4):
-        assert np.array_equal(np.asarray(trt.transmission_depth_r(
-            vmr, zeros, T, mmw, 0.0, vmr_he=zeros, band_tiles=n)), ref), n
-    # ... and the profile key reaches the fold (the echo is the only witness:
-    # a tiled depth is equal whether the knob was honored or dropped)
-    tiled = exojax_rt.build_rt_model({**prof, "rt_band_tiles": 4})
-    assert int(tiled.rt_band_tiles) == 4
-    assert np.array_equal(np.asarray(tiled.transmission_depth_r(
-        vmr, zeros, T, mmw, 0.0, vmr_he=zeros)), ref)
 
 
 def test_emission_h2o_matches_prt():

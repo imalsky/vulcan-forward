@@ -507,27 +507,11 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         print(f"[chem] warm-up converge {time.time() - tw:.1f}s "
               f"(certified={baseline_conv_normal})", flush=True)
 
-    # Warm-capped twin runner for the SOLO mutation path. OuterLoop._Statics
-    # snapshots int(cfg.count_max) at _ensure_runner time, so the temporary mutation is
-    # safe: the smaller cap is frozen into integ_warm's statics and cfg is restored right
-    # after. Host-side closure construction only -- no extra XLA compile (the retrieval
-    # traces integ_warm._runner inside its own jitted evaluators, exactly like
-    # integ._runner). The termination test itself reads the CARRY (count_max_dyn), which
-    # is what the batched entry points use, so this twin is the solo path's route only.
-    if warm_count_max != int(cfg.count_max):
-        _cold_cap = int(cfg.count_max)
-        cfg.count_max = warm_count_max
-        integ_warm = outer_loop.OuterLoop(solver, op.Output(cfg=cfg), cfg=cfg)
-        integ_warm._ensure_runner(var, atm)
-        cfg.count_max = _cold_cap
-    else:
-        integ_warm = integ
-
     # --- runner-carry budget/scheme seeding --------------------------------
     # The termination budget and diffusion-scheme blend live on the CARRY, not
     # the statics, and state0 is packed ONCE under the COLD statics -- so every
     # per-proposal solve must re-seed them for the runner that consumes it.
-    # Otherwise the warm twin runs to the cold count_max, and under the hybrid
+    # Otherwise a warm-capped solve runs to the cold count_max, and under the hybrid
     # default every warm continuation restarts in upwind phase 0 and exhausts
     # the warm cap before the phase flip can certify. Warm continuations start
     # from a column already converged on the central operator (a completed
@@ -982,8 +966,8 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         solve; under the hybrid vm_mol default a warm continuation runs on the
         central operator instead of re-entering upwind phase 0.
 
-        ``warm_cap=True`` runs the warm-capped twin runner (the SMC mutation
-        path). ``return_conv_diag=True`` returns ``(y, ConvDiag)`` -- free
+        ``warm_cap=True`` caps the solve at ``warm_count_max`` (the SMC mutation
+        path; the cap rides the carry). ``return_conv_diag=True`` returns ``(y, ConvDiag)`` -- free
         reads off the primal carry; ``conv_normal`` is the canonical
         certification recomputed at the exit, so a stall or budget exit reads
         False even when ``longdy < yconv_min``. ConvDiag's integer fields
@@ -992,7 +976,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
                             lnZ_ref=lnZ_ref, c_o_ref=c_o_ref)
         init = _runner_carry_seed(init, warm_continuation=warm_y is not None,
                                   warm_cap=warm_cap)
-        final = (integ_warm if warm_cap else integ)._runner(init, atm_T)
+        final = integ._runner(init, atm_T)
         if return_conv_diag:
             return final.y, _conv_diag(final)
         return final.y

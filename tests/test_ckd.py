@@ -29,11 +29,6 @@ if HAVE_EXOJAX and importlib.util.find_spec("vulcan_jax") is not None:
 from vulcan_forward import ckd  # noqa: E402
 
 
-
-
-
-
-
 def _mean_conservation_error(ng, sigma, seed):
     """Relative error in the g-weighted mean optical depth after resort-rebin."""
     import jax.numpy as jnp
@@ -106,8 +101,6 @@ def test_overlap_is_differentiable():
     assert float(tan) > 0.0
 
 
-
-
 def test_fold_wo_is_bit_identical_to_naive_refolds():
     """The prefix-memoized leave-one-out fold must be the EXACT op sequence of
     a naive left fold per output -- overlap is a resort-rebin, so it is not
@@ -150,6 +143,43 @@ def test_fold_wo_is_bit_identical_to_naive_refolds():
     assert isinstance(summed[0][1], float)
     with pytest.raises(ValueError, match="outside"):
         ckd._fold_wo(dts, lambda i: zero, gg, gw, [n])
+
+
+def test_fold_is_bit_identical_to_the_python_loop_fold():
+    """``fold`` runs the molecule folds under one ``lax.scan`` so a gradient
+    keeps a third of the unrolled loop's memory. It must stay the naive left
+    fold's op sequence: the primal, a jvp and a vjp bitwise equal (both
+    jitted, as production runs them), with enough molecules for several scan
+    steps."""
+    import jax.numpy as jnp
+    rng = np.random.default_rng(4)
+    nl, ng, nb, n = 3, 8, 4, 5
+    g, w = ckd.gauss_legendre(ng)
+    gg, gw = jnp.asarray(g), jnp.asarray(w)
+    dts = jnp.asarray(np.sort(rng.lognormal(-1.0, 1.0, size=(n, nl, ng, nb)),
+                              axis=2))
+    tan = jnp.asarray(rng.normal(size=dts.shape))
+    cot = jnp.asarray(rng.normal(size=(nl, ng, nb)))
+
+    def naive(d):
+        tot = d[0]
+        for i in range(1, n):
+            tot = ckd.overlap(tot, d[i], gg, gw)
+        return tot
+
+    def scan(d):
+        return ckd.fold(d, gg, gw)
+
+    def jvp_vjp(f):
+        p, t = jax.jit(lambda d: jax.jvp(f, (d,), (tan,)))(dts)
+        v = jax.jit(lambda d: jax.vjp(f, d)[1](cot)[0])(dts)
+        return p, t, v
+
+    for got, want in zip(jvp_vjp(scan), jvp_vjp(naive)):
+        assert np.array_equal(np.asarray(got), np.asarray(want))
+    # a single molecule is its own fold
+    assert np.array_equal(np.asarray(ckd.fold(dts[:1], gg, gw)),
+                          np.asarray(dts[0]))
 
 
 def test_interp_logk_clamps_outside_the_table_rather_than_extrapolating():
