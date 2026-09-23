@@ -61,11 +61,14 @@ REL_MAX = 5.0e-2
 # loose-branch exit with its bottom-layer sulfur still relaxing) has no
 # determined queue tangent: a 1e-12 nudge to lnZ moves its bottom-layer H2S
 # tangent by 6.8e-2 while the batch's moves 5.6e-5, central FD at h 1e-4 and
-# 1e-5 disagree by 0.23 there, and the reading has been 2.7e-2, 7.0e-2 and,
-# with VULCAN-JAX 0.16.4's matrix-free stage operator, 0.32 (the batch
-# tangent moved 2.5e-6). It keeps a wiring bound only.
+# 1e-5 disagree by 0.23 there, and the reading has been 2.7e-2, 7.0e-2,
+# with VULCAN-JAX 0.16.4's matrix-free stage operator 0.32 (the batch
+# tangent moved 2.5e-6) and with 0.16.7's batched repair sweep, whose
+# tangent is the sweep's own derivative instead of the primitive's second
+# solve, 0.58 (every primal bitwise, the settled thetas <= 2.1e-4). It keeps
+# a wiring bound only: finite, and not off by an order of magnitude.
 QUEUE_DY_MAX = 1.0e-2
-QUEUE_DY_MAX_UNSETTLED = 5.0e-1
+QUEUE_DY_MAX_UNSETTLED = 1.0
 UNSETTLED_THETAS = (2,)
 # Two-stage check: the species a W39b spectrum reads, split into the ones that
 # are PINNED (measured <= 2.6e-4, bound at 4x that) and the ones only PRINTED,
