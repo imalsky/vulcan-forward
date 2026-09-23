@@ -150,7 +150,9 @@ def test_fold_is_bit_identical_to_the_python_loop_fold():
     keeps a third of the unrolled loop's memory. It must stay the naive left
     fold's op sequence: the primal, a jvp and a vjp bitwise equal (both
     jitted, as production runs them), with enough molecules for several scan
-    steps."""
+    steps. Bitwise on the CPU; on the GH200 the two differ in the last bits
+    (job 79498: XLA fuses a scan body and straight-line code differently and
+    rounds inside a fusion accordingly), so there the bar is rounding."""
     import jax.numpy as jnp
     rng = np.random.default_rng(4)
     nl, ng, nb, n = 3, 8, 4, 5
@@ -175,8 +177,10 @@ def test_fold_is_bit_identical_to_the_python_loop_fold():
         v = jax.jit(lambda d: jax.vjp(f, d)[1](cot)[0])(dts)
         return p, t, v
 
+    rtol = 0.0 if jax.default_backend() == "cpu" else 1e-12
     for got, want in zip(jvp_vjp(scan), jvp_vjp(naive)):
-        assert np.array_equal(np.asarray(got), np.asarray(want))
+        np.testing.assert_allclose(np.asarray(got), np.asarray(want),
+                                   rtol=rtol, atol=0.0, equal_nan=False)
     # a single molecule is its own fold
     assert np.array_equal(np.asarray(ckd.fold(dts[:1], gg, gw)),
                           np.asarray(dts[0]))
