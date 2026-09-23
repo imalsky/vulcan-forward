@@ -55,12 +55,18 @@ THETAS = np.array([[0.0, 0.0, 0.0, 0.0],
                    [0.1, 0.0, 0.2, 80.0]], dtype=np.float64)
 MIX_FLOOR = 1.0e-10   # cells below this carry no observable and no certificate
 REL_MAX = 5.0e-2
-# The queued tangent against the batched one, empirical: a refilled lane
-# enters at a later tick, so its geometry-refresh cadence differs from the
-# batch's even at the same accept count, and on theta 2 (a loose-branch exit
-# with its bottom-layer sulfur still relaxing) the H2S tangent read 2.7e-2
-# on one machine and 7.0e-2 on another with the column itself at 4.4e-2.
-QUEUE_DY_MAX = 1.0e-1
+# The queued tangent against the batched one: a refilled lane enters at a
+# later tick, so its geometry-refresh cadence differs from the batch's even at
+# the same accept count. The settled thetas agree to <= 4.6e-4. Theta 2 (a
+# loose-branch exit with its bottom-layer sulfur still relaxing) has no
+# determined queue tangent: a 1e-12 nudge to lnZ moves its bottom-layer H2S
+# tangent by 6.8e-2 while the batch's moves 5.6e-5, central FD at h 1e-4 and
+# 1e-5 disagree by 0.23 there, and the reading has been 2.7e-2, 7.0e-2 and,
+# with VULCAN-JAX 0.16.4's matrix-free stage operator, 0.32 (the batch
+# tangent moved 2.5e-6). It keeps a wiring bound only.
+QUEUE_DY_MAX = 1.0e-2
+QUEUE_DY_MAX_UNSETTLED = 5.0e-1
+UNSETTLED_THETAS = (2,)
 # Two-stage check: the species a W39b spectrum reads, split into the ones that
 # are PINNED (measured <= 2.6e-4, bound at 4x that) and the ones only PRINTED,
 # which carry the slow chemistry the two arms disagree on.
@@ -245,7 +251,7 @@ def test_queue_is_differentiable(chem, ref):
         rel = _dy_rel(dy_q[k], dy_b[k], mix)
         print(f"[jvp lanes=2 chunk=1 job {k}] queue-vs-batch tangent "
               f"max|ddy|/max|dy| {rel:.3e}", flush=True)
-        assert rel < QUEUE_DY_MAX
+        assert rel < (QUEUE_DY_MAX_UNSETTLED if k in UNSETTLED_THETAS else QUEUE_DY_MAX)
 
     # The contract a batched-gradient consumer relies on: one jvp through the
     # batch is the per-theta jvp through the solo runner, at the convergence
