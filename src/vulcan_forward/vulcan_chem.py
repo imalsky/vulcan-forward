@@ -1079,7 +1079,12 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
                                           warm_cap=warm_cap_k), atm_T
 
             def out_fn(final):
-                return final.y, _conv_diag(final)
+                # The ConvDiag is a report, never differentiated. With a
+                # tangent it would keep the certificate ring's tangent alive
+                # through the queue's refill cond (vulcan-jax `run_queue` zeroes
+                # the ring's at its lane step for the same reason).
+                return final.y, jax.tree_util.tree_map(jax.lax.stop_gradient,
+                                                       _conv_diag(final))
 
             fns = _queue_fns[key] = (init_fn, out_fn)
         init_fn, out_fn = fns
