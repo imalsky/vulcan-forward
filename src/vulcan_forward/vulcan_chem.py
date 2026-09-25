@@ -666,27 +666,17 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     _mOo = np.asarray(o_only_mask)
 
     # --- cold-start seed: the network's own Gibbs equilibrium at the proposal's
-    # own T-P and column elemental ratios (the upstream VULCAN start), instead
-    # of the baseline column scaled by the theta masks. End-to-end JAX
-    # (vulcan_jax.ini_abun.eq_seed): no host callback, so it jits and vmaps with
-    # the rest of the solve. Its tangent is zero by construction (vulcan-jax
-    # carries the custom_jvp), like the baked baseline seed the masks scale (its
-    # T-dependence never carried one); lnZ / c_o tangents still enter through the
-    # exact elemental projection below, so the gradient structure is unchanged.
-    # Only cold solves (warm_y=None) use it.
-    cold_seed = str(profile.get("cold_seed", "eq"))
-    if cold_seed not in ("baseline", "eq"):
-        raise ValueError(f"cold_seed={cold_seed!r}: expected 'baseline' or 'eq'")
-    # Only the "eq" seed reads these, so a "baseline" build never pays for the
-    # equilibrium setup it would not use.
-    if cold_seed == "eq":
-        _ratio_idx = ratio_indices([e for e, _ in elem_pairs])
-        _p_bar_seed = jnp.asarray(np.asarray(pco, dtype=np.float64) / 1.0e6)
+    # own T-P and column elemental ratios (the upstream VULCAN start). End-to-end
+    # JAX (vulcan_jax.ini_abun.eq_seed): no host callback, so it jits and vmaps
+    # with the rest of the solve. Its tangent is zero by construction (vulcan-jax
+    # carries the custom_jvp); lnZ / c_o tangents enter through the exact
+    # elemental projection below. Only cold solves (warm_y=None) use it.
+    _ratio_idx = ratio_indices([e for e, _ in elem_pairs])
+    _p_bar_seed = jnp.asarray(np.asarray(pco, dtype=np.float64) / 1.0e6)
 
     def _eq_seed(T, ratios, M):
         """The equilibrium column as ABSOLUTE densities (nz, ni): eq_seed
-        returns mixing ratios, and every caller here works in densities.
-        Only a cold_seed="eq" build defines the setup it reads."""
+        returns mixing ratios, and every caller here works in densities."""
         return eq_seed(T, _p_bar_seed,
                        element_vector(ratios, _ratio_idx)) * M[:, None]
 
@@ -741,14 +731,13 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
             y = y * (M / jnp.sum(y, axis=1))[:, None]
         return y, min_adj
 
-    def _guess_y0(lnZ, c_o, warm_y=None, lnZ_ref=0.0, c_o_ref=0.0):
-        """Mask-scaled initial-composition GUESS (shared by _prep and audit_init).
-
-        From the baseline (warm_y=None) the full lnZ/c_o is applied; in continuation
-        only the increments (lnZ - lnZ_ref, c_o - c_o_ref) are, so a large absolute
-        perturbation is reached by small steps from a nearby converged state."""
+    def _guess_y0(lnZ, c_o, warm_y, lnZ_ref, c_o_ref):
+        """Mask-scaled continuation GUESS from the converged column ``warm_y``
+        (shared by _prep and audit_init): only the increments (lnZ - lnZ_ref,
+        c_o - c_o_ref) are applied, so a large absolute perturbation is reached
+        by small steps from a nearby converged state."""
         c_o_inc = c_o - c_o_ref     # incremental C/O relative to the warm state
-        base = y0 if warm_y is None else warm_y
+        base = warm_y
         if co_fixed_o:
             # c_o == delta ln(C/O) at fixed O, exactly, layer by layer: scale
             # C-bearing species by e^c; compensate the O they drag along by
@@ -809,11 +798,11 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         Ti = 0.5 * (T[:-1] + T[1:])
         Kzz_eff = Kzz0 * jnp.exp(lnKzz)
 
-        if warm_y is None and cold_seed == "eq":
+        if warm_y is None:
             ratios = R0_j * jnp.exp(lnZ * zscale_kind + c_o * cscale_kind)
             y0p = _eq_seed(T, ratios, M)
         else:
-            y0p = _guess_y0(lnZ, c_o, warm_y=warm_y, lnZ_ref=lnZ_ref, c_o_ref=c_o_ref)
+            y0p = _guess_y0(lnZ, c_o, warm_y, lnZ_ref, c_o_ref)
 
         # Exact construction: sum_i n_i = M per layer AND exact column elemental
         # ratios; atom_ini rebuilt from the repaired column so the conservation
@@ -1124,12 +1113,11 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         out["ratio_max_rel_err"] = float(np.max(np.abs(ratios / tg - 1.0)))
         # Re-run the projection from the raw GUESS to expose the actual repair
         # magnitude (projecting the already-repaired y would always report ~1).
-        if warm_y is None and cold_seed == "eq":
+        if warm_y is None:
             y_guess = _eq_seed(init.pv.r_Tco, jnp.asarray(tg),
                                jnp.asarray(Mn))
         else:
-            y_guess = _guess_y0(th[0], th[1], warm_y=warm_y,
-                                lnZ_ref=lnZ_ref, c_o_ref=c_o_ref)
+            y_guess = _guess_y0(th[0], th[1], warm_y, lnZ_ref, c_o_ref)
         _yg, min_adj = _elemental_project(y_guess, jnp.asarray(Mn), th[0], th[1])
         out["min_repair_factor"] = float(min_adj)
         ai = np.asarray(init.pv.atom_ini, dtype=np.float64)

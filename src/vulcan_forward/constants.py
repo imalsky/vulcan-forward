@@ -184,7 +184,7 @@ PROFILE_KEYS = frozenset({
     # build_chem_model
     "vulcan_cfg_name", "use_photo", "yconv_cri", "yconv_min", "nz",
     "count_min", "count_max", "warm_count_max", "dt_max", "cfg_overrides",
-    "skip_warmup", "co_mode", "cold_seed",
+    "skip_warmup", "co_mode",
     # build_rt_model / build_emis_model (art_ptop_bar also sets the chemistry top)
     "molecules", "molecule_table", "nu_min", "nu_max", "opacity_mode",
     "art_nlayer", "art_ptop_bar", "art_pbtm_bar", "rt_integration",

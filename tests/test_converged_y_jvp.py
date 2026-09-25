@@ -19,8 +19,7 @@ normalised by primal quantities in ``outer_loop._tangent_conv``) carries the
 same empirical bar.
 
 A second model leaves the endpoint free, so there the tangent certificate
-decides when the run stops; it is also the one model here seeded cold from
-the equilibrium column (``cold_seed="eq"``).
+decides when the run stops.
 
 Cheap profile: nz=20, photochemistry off, no build-time warm-up solve.
 """
@@ -98,7 +97,7 @@ def test_stacked_directions_reproduce_the_single_direction_tangents(runs):
 # the floor, ends a warm continuation, and count_max far above any exit.
 SETTLE_PROFILE = {"use_photo": False, "yconv_cri": 1.0e-2, "nz": 20,
                   "skip_warmup": True,
-                  "cold_seed": "eq", "count_min": 10, "count_max": 3000}
+                  "count_min": 10, "count_max": 3000}
 THETA_WARM = np.array([0.3, 0.1, 0.5, 40.0], dtype=np.float64)
 
 
