@@ -49,6 +49,28 @@ def set_data_root(root: str | os.PathLike) -> None:
     _root_override = Path(root).expanduser()
 
 
+def _configured_root() -> Path:
+    """``set_data_root`` or $VULCAN_FORWARD_DATA, not checked for existence;
+    raises with the remedy when neither is set."""
+    if _root_override is not None:
+        return _root_override
+    env = os.environ.get(ENV_ROOT, "").strip()
+    if not env:
+        raise RuntimeError(
+            f"vulcan_forward needs a data root: set ${ENV_ROOT} to the "
+            "directory holding opacity_cache/ and exomolop/, or call "
+            "vulcan_forward.paths.set_data_root(...) before building a "
+            "model. (The k-tables and CIA tables are ~10 GB, so they are "
+            "never bundled with the package.)")
+    return Path(env).expanduser()
+
+
+def _cache_override() -> Path | None:
+    """$VULCAN_FORWARD_OPACITY_CACHE, or None when unset."""
+    env = os.environ.get(ENV_OPACITY_CACHE, "").strip()
+    return Path(env).expanduser() if env else None
+
+
 def data_root() -> Path:
     """The configured data root, or raise with the remedy.
 
@@ -56,18 +78,7 @@ def data_root() -> Path:
     reporting immediately), but nothing below it is required -- individual
     trees are validated by the accessors that need them.
     """
-    if _root_override is not None:
-        root = _root_override
-    else:
-        env = os.environ.get(ENV_ROOT, "").strip()
-        if not env:
-            raise RuntimeError(
-                f"vulcan_forward needs a data root: set ${ENV_ROOT} to the "
-                "directory holding opacity_cache/ and exomolop/, or call "
-                "vulcan_forward.paths.set_data_root(...) before building a "
-                "model. (The k-tables and CIA tables are ~10 GB, so they are "
-                "never bundled with the package.)")
-        root = Path(env).expanduser()
+    root = _configured_root()
     if not root.is_dir():
         raise RuntimeError(
             f"vulcan_forward data root does not exist: {root}. Set ${ENV_ROOT} "
@@ -87,45 +98,29 @@ def ensure_layout() -> Path:
     location -- but it is created if it does not exist, together with the two
     subdirectories the engine reads.
     """
-    if _root_override is not None:
-        root = _root_override
-    else:
-        env = os.environ.get(ENV_ROOT, "").strip()
-        if not env:
-            raise RuntimeError(
-                f"vulcan_forward needs a data root: set ${ENV_ROOT} to the "
-                "directory that should hold opacity_cache/ and exomolop/, "
-                "then run the setup command again.")
-        root = Path(env).expanduser()
+    root = _configured_root()
     root.mkdir(parents=True, exist_ok=True)
-    override = os.environ.get(ENV_OPACITY_CACHE, "").strip()
-    cache = Path(override).expanduser() if override else root / "opacity_cache"
-    cache.mkdir(parents=True, exist_ok=True)
+    (_cache_override() or root / "opacity_cache").mkdir(parents=True, exist_ok=True)
     (root / "exomolop").mkdir(parents=True, exist_ok=True)
     return root
 
 
-def _tree(env_var: str, subdir: str, *, what: str) -> Path:
-    """Resolve one data tree: per-tree env var wins, else <root>/<subdir>."""
-    env = os.environ.get(env_var, "").strip()
-    path = Path(env).expanduser() if env else data_root() / subdir
+def opacity_cache_dir() -> Path:
+    """Offline opacity cache (the two CIA tables): $VULCAN_FORWARD_OPACITY_CACHE
+    wins, else <root>/opacity_cache."""
+    path = _cache_override() or data_root() / "opacity_cache"
     if not path.is_dir():
         raise RuntimeError(
-            f"vulcan_forward {what} directory not found: {path}. Set "
-            f"${env_var} to override it, or create it under the data root "
-            f"(${ENV_ROOT}).")
+            f"vulcan_forward opacity-cache directory not found: {path}. Set "
+            f"${ENV_OPACITY_CACHE} to override it, or create it under the data "
+            f"root (${ENV_ROOT}).")
     return path
-
-
-def opacity_cache_dir() -> Path:
-    """Offline opacity cache: the two CIA tables."""
-    return _tree(ENV_OPACITY_CACHE, "opacity_cache", what="opacity-cache")
 
 
 def exomolop_dir() -> Path:
     """ExoMolOP k-table tree (<MOL>.ktable.h5 + provenance.json).
 
-    No existence check HERE, unlike the ``_tree`` accessor: the loud
+    No existence check HERE, unlike ``opacity_cache_dir``: the loud
     FileNotFoundError with the exact fetch command lives in
     ``exomolop.load_tables``, and datacheck wants the path even when the
     tree is absent so it can report per-molecule MISSING items.
