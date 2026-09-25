@@ -1,11 +1,12 @@
 name: tests
 
-# The contract suite is deliberately dependency-light (no exojax, no
-# vulcan_jax): it pins that the package imports with no data installed, that the
-# $VULCAN_FORWARD_DATA contract fails loudly instead of guessing, that the
-# molecule table is injectable, and that planet geometry is required -- the
-# properties the two consumer repos build on. The physics runs locally, where
-# the RT stack and the data are installed.
+# The contract suite runs without exojax: it pins that the package imports
+# with no data installed, that the $VULCAN_FORWARD_DATA contract fails loudly
+# instead of guessing, that the molecule table is injectable, and that planet
+# geometry is required -- the properties the two consumer repos build on.
+# vulcan_jax IS installed (its speed branch), so the chemistry tests (batch,
+# queue, jvp) run too; the RT physics runs locally, where exojax and the data
+# are installed.
 on:
   push:
     branches: [main, speed]
@@ -14,7 +15,9 @@ on:
 jobs:
   contract:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # The chemistry tests run serially here; on a daw core their --durations
+    # sum to ~48 min, the two three-routes tests ~29 min of it.
+    timeout-minutes: 120
     strategy:
       matrix:
         # requires-python = ">=3.10"; keep the floor claim verified.
@@ -27,10 +30,14 @@ jobs:
       # --no-deps for the package itself: the contract must hold WITHOUT the
       # heavy tree (exojax pins numpy<2, so it is absent and the modules that
       # need it skip via find_spec). jax + numpy + h5py ARE installed so the
-      # ckd, interp_map, exomolop and params_from_vector tests run.
-      - name: Install (contract only, no exojax)
+      # ckd, interp_map, exomolop and params_from_vector tests run. vulcan-jax
+      # comes from its speed branch with --no-deps, its own deps listed here,
+      # and exogibbs --no-deps plus pandas as VULCAN-JAX's CI installs them.
+      - name: Install (no exojax)
         run: |
-          pip install pytest numpy "jax>=0.6" h5py
+          pip install pytest numpy "jax>=0.6" h5py scipy pyyaml pandas
+          pip install --no-deps "exogibbs==0.6.0"
+          pip install --no-deps "vulcan-jax @ git+https://github.com/imalsky/jax-vulcan.git@speed"
           pip install --no-deps -e .
       - name: Run contract tests
         run: python -m pytest tests -q -ra
