@@ -5,16 +5,11 @@
 ``converged_y(theta)`` re-converges the column as a function of
 ``theta = [lnZ, c_o, lnKzz, T...]``.
 
-Abundance knobs -- two modes (``profile["abundance_mode"]``):
-  * ``"masks"`` (legacy): multiplicative species-mask y0 directions, NOT exact
-    elemental directions (bound H scales along, ~0.6% of elemental H per e-fold
-    of Z at 10x solar). Kept to reproduce the published demo caches.
-  * ``"elemental"`` (default): the mask scaling is only an initial guess; the
-    column is renormalized to sum_i n_i = M per layer and repaired (fixed
-    Newton-style iterations on He/H2O/CO/N2/H2S) so the column elemental ratios
-    hit the theta targets exactly (He/H fixed; O/N/S x Z; C x Z e^{c_o}).
-    ``pv.atom_ini`` is rebuilt from the repaired column. Residuals ~1e-8
-    relative; measure with ``audit_init``.
+Abundance knobs: the initial column is renormalized to sum_i n_i = M per layer
+and repaired (fixed Newton-style iterations on He/H2O/CO/N2/H2S) so the column
+elemental ratios hit the theta targets exactly (He/H fixed; O/N/S x Z; C x Z
+e^{c_o}). ``pv.atom_ini`` is rebuilt from the repaired column. Residuals ~1e-8
+relative; measure with ``audit_init``.
 
 Rate constants and the T/composition-dependent structure (Dzz + vm/vs, pv.Kzz,
 the initial carry geometry) are rebuilt on-graph per proposal. Condensation
@@ -291,9 +286,6 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     profile : dict
         A caller-owned settings dict (keys: ``constants.PROFILE_KEYS``; an
         unknown key raises). ``use_photo`` and ``yconv_cri`` are required.
-        ``profile["abundance_mode"]`` selects "masks" (legacy) or
-        "elemental" (the default: exact conserved-inventory construction; see
-        module docstring).
         ``profile["skip_warmup"]`` (default False) skips the build-time
         warm-up SOLVE and keeps only its runner-closure half: bit-identical
         for consumers that never read ``baseline_conv_normal`` (which is then
@@ -615,9 +607,8 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     compo = np.asarray(composition.compo_array)
     metal_cols = [constants.ATOM_COLS[a] for a in ("O", "C", "N", "S")]
     # Scales every C/N/O/S-bearing species; NOT an exact elemental direction
-    # (bound H scales along, ~0.6% per e-fold of Z at 10x solar). In
-    # "elemental" mode this is only the initial guess and the repair removes
-    # the leakage; in legacy "masks" mode it IS the knob definition.
+    # (bound H scales along, ~0.6% per e-fold of Z at 10x solar). It is only
+    # the initial guess: the elemental repair removes the leakage.
     metal_mask = jnp.asarray((compo[:, metal_cols].sum(axis=1) > 0).astype(np.float64))
     carbon_mask = jnp.asarray(                                   # C/O proxy
         (compo[:, constants.ATOM_COLS["C"]] > 0).astype(np.float64))
@@ -637,15 +628,8 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     # runner's own (ni, n_atoms) composition table, columns in its internal _atom_order --
     # used to rebuild the conserved atom totals (atom_ini) in the runner's exact basis.
     compo_run = jnp.asarray(np.asarray(integ._compo_arr, dtype=np.float64))
-    # Legacy-mode opt-in: re-anchor the conserved atom totals to the perturbed column
-    # (needed for finite metallicity/C-O steps in "masks" mode; see _prep). Moot in
-    # "elemental" mode, where atom_ini is ALWAYS rebuilt from the repaired column.
-    reanchor_atom_ini = bool(profile.get("reanchor_atom_ini", False))
-    abundance_mode = str(profile.get("abundance_mode", "elemental"))
-    if abundance_mode not in ("masks", "elemental"):
-        raise ValueError(f"abundance_mode={abundance_mode!r}: expected 'masks' or 'elemental'")
 
-    # --- exact-elemental targets + repair tables (abundance_mode="elemental") ----
+    # --- exact-elemental targets + repair tables ----------------------------
     # Baseline column-integrated elemental totals from the pristine y0 (which sums to
     # M_base per layer by construction: equilibrium mixing ratios x layer density).
     # Targets are RATIOS to elemental H; absolute densities follow from sum_i n_i = M.
@@ -658,24 +642,23 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     rep_cols = np.asarray([sidx[sp] for _, sp in elem_pairs], dtype=np.int64)
     A0 = _y0_np @ np.asarray(compo[:, _elem_cols], dtype=np.float64)  # per-layer (nz, 1+nrep)
     A0 = A0.sum(axis=0)                                               # column totals
-    if abundance_mode == "elemental":
-        missing = [sp for _, sp in _ELEMENTAL_REPAIR if sp not in sidx]
-        if not elem_pairs:
-            raise RuntimeError("elemental mode: no repair species found in the network")
-        R0_ratios = A0[1:] / A0[0]
-        # per-element theta-scaling kind: He fixed; O/N/S x Z; C x Z e^{c_o}
-        _zk = np.asarray([0.0 if e == "He" else 1.0 for e, _ in elem_pairs])
-        _ck = np.asarray([1.0 if e == "C" else 0.0 for e, _ in elem_pairs])
-        zscale_kind = jnp.asarray(_zk)
-        cscale_kind = jnp.asarray(_ck)
-        R0_j = jnp.asarray(R0_ratios)
-        _names = [e for e, _ in elem_pairs]
-        print("[chem] elemental mode: exact column ratios to H via repair species "
-              f"{[sp for _, sp in elem_pairs]}"
-              + (f" (absent: {missing})" if missing else "")
-              + "; baseline C/O = "
-              f"{A0[1 + _names.index('C')] / A0[1 + _names.index('O')]:.4f}",
-              flush=True)
+    missing = [sp for _, sp in _ELEMENTAL_REPAIR if sp not in sidx]
+    if not elem_pairs:
+        raise RuntimeError("elemental mode: no repair species found in the network")
+    R0_ratios = A0[1:] / A0[0]
+    # per-element theta-scaling kind: He fixed; O/N/S x Z; C x Z e^{c_o}
+    _zk = np.asarray([0.0 if e == "He" else 1.0 for e, _ in elem_pairs])
+    _ck = np.asarray([1.0 if e == "C" else 0.0 for e, _ in elem_pairs])
+    zscale_kind = jnp.asarray(_zk)
+    cscale_kind = jnp.asarray(_ck)
+    R0_j = jnp.asarray(R0_ratios)
+    _names = [e for e, _ in elem_pairs]
+    print("[chem] elemental mode: exact column ratios to H via repair species "
+          f"{[sp for _, sp in elem_pairs]}"
+          + (f" (absent: {missing})" if missing else "")
+          + "; baseline C/O = "
+          f"{A0[1 + _names.index('C')] / A0[1 + _names.index('O')]:.4f}",
+          flush=True)
 
     _nC = np.asarray(compo[:, constants.ATOM_COLS["C"]], dtype=np.float64)
     _nO = np.asarray(compo[:, constants.ATOM_COLS["O"]], dtype=np.float64)
@@ -694,9 +677,6 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     cold_seed = str(profile.get("cold_seed", "eq"))
     if cold_seed not in ("baseline", "eq"):
         raise ValueError(f"cold_seed={cold_seed!r}: expected 'baseline' or 'eq'")
-    if cold_seed == "eq" and abundance_mode != "elemental":
-        raise ValueError("cold_seed='eq' needs abundance_mode='elemental' (the "
-                         "seed's elemental ratios are the theta targets)")
     # Only the "eq" seed reads these, so a "baseline" build never pays for the
     # equilibrium setup it would not use.
     if cold_seed == "eq":
@@ -797,9 +777,8 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         the positional vector [lnZ, c_o, lnKzz, T...]).
 
         Continuation: pass warm_y = a previously-CONVERGED y (with its lnZ_ref /
-        c_o_ref) to warm-start from there. In "elemental" mode the guess is
-        projected onto the exact theta targets, so the conserved inventory is
-        path-independent; in "masks" mode the incremental scaling IS the map."""
+        c_o_ref) to warm-start from there. The guess is projected onto the
+        exact theta targets, so the conserved inventory is path-independent."""
         # One column per solve, always: the batched entry points map this over
         # the leading axis, so warm_i is (nz, ni) there too. Any other trailing
         # shape would BROADCAST silently -- a (1, ni) column would seed every
@@ -836,26 +815,13 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         else:
             y0p = _guess_y0(lnZ, c_o, warm_y=warm_y, lnZ_ref=lnZ_ref, c_o_ref=c_o_ref)
 
-        if abundance_mode == "elemental":
-            # Exact construction: sum_i n_i = M per layer AND exact column elemental
-            # ratios; atom_ini rebuilt from the repaired column so the conservation
-            # anchor matches the actual initial gas (no reanchor knob needed).
-            y0p, _min_adj = _elemental_project(y0p, M, lnZ, c_o)
-            ymix0 = y0p / M[:, None]
-            atom_ini_new = jnp.einsum("zi,ia->a", y0p, compo_run)  # runner atom order
-            pv_T = pv0._replace(n_0=M, r_Tco=T, Kzz=Kzz_eff, atom_ini=atom_ini_new)
-        else:
-            ymix0 = y0p / jnp.sum(y0p, axis=1, keepdims=True)
-            # Legacy masks mode, opt-in: re-anchor the conserved atom totals to
-            # the PERTURBED column -- without it, finite metallicity/C-O steps
-            # beyond the loss threshold snap back to baseline. y0p is NOT
-            # renormalized to M here (published-demo behavior); "elemental"
-            # mode removes that inconsistency.
-            if reanchor_atom_ini:
-                atom_ini_new = jnp.einsum("zi,ia->a", y0p, compo_run)
-                pv_T = pv0._replace(n_0=M, r_Tco=T, Kzz=Kzz_eff, atom_ini=atom_ini_new)
-            else:
-                pv_T = pv0._replace(n_0=M, r_Tco=T, Kzz=Kzz_eff)
+        # Exact construction: sum_i n_i = M per layer AND exact column elemental
+        # ratios; atom_ini rebuilt from the repaired column so the conservation
+        # anchor matches the actual initial gas.
+        y0p, _min_adj = _elemental_project(y0p, M, lnZ, c_o)
+        ymix0 = y0p / M[:, None]
+        atom_ini_new = jnp.einsum("zi,ia->a", y0p, compo_run)  # runner atom order
+        pv_T = pv0._replace(n_0=M, r_Tco=T, Kzz=Kzz_eff, atom_ini=atom_ini_new)
 
         # --- atmospheric structure at the proposed T + composition --------
         # Hydrostatic geometry via the runner's OWN refresh kernel (so the initial
@@ -1129,9 +1095,8 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
 
         Returns a dict with the quantities the science review asked to see verified at
         every retrieval point: relative density-closure error max_z |sum_i n_i - M|/M,
-        the achieved-vs-target column elemental ratios (elemental mode) or the raw
-        achieved ratios (masks mode), the achieved dln(C/O) vs theta, the smallest
-        elemental-repair factor (elemental mode; must be > 0), and the atom_ini
+        the achieved-vs-target column elemental ratios, the achieved dln(C/O) vs
+        theta, the smallest elemental-repair factor (must be > 0), and the atom_ini
         consistency |atoms(y_init) - atom_ini|/atom_ini in the runner's atom basis.
         """
         th = _as_params(theta).to_vector()
@@ -1150,21 +1115,20 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
             r_now = ratios[names.index("C")] / ratios[names.index("O")]
             r_base = (A0[1:] / A0[0])[names.index("C")] / (A0[1:] / A0[0])[names.index("O")]
             out["dln_CO_achieved"] = float(np.log(r_now / r_base))
-        if abundance_mode == "elemental":
-            tg = np.asarray(R0_j) * np.exp(float(th[0]) * np.asarray(zscale_kind)
-                                           + float(th[1]) * np.asarray(cscale_kind))
-            out["target_ratios_to_H"] = dict(zip(names, tg.tolist()))
-            out["ratio_max_rel_err"] = float(np.max(np.abs(ratios / tg - 1.0)))
-            # Re-run the projection from the raw GUESS to expose the actual repair
-            # magnitude (projecting the already-repaired y would always report ~1).
-            if warm_y is None and cold_seed == "eq":
-                y_guess = _eq_seed(init.pv.r_Tco, jnp.asarray(tg),
-                                   jnp.asarray(Mn))
-            else:
-                y_guess = _guess_y0(th[0], th[1], warm_y=warm_y,
-                                    lnZ_ref=lnZ_ref, c_o_ref=c_o_ref)
-            _yg, min_adj = _elemental_project(y_guess, jnp.asarray(Mn), th[0], th[1])
-            out["min_repair_factor"] = float(min_adj)
+        tg = np.asarray(R0_j) * np.exp(float(th[0]) * np.asarray(zscale_kind)
+                                       + float(th[1]) * np.asarray(cscale_kind))
+        out["target_ratios_to_H"] = dict(zip(names, tg.tolist()))
+        out["ratio_max_rel_err"] = float(np.max(np.abs(ratios / tg - 1.0)))
+        # Re-run the projection from the raw GUESS to expose the actual repair
+        # magnitude (projecting the already-repaired y would always report ~1).
+        if warm_y is None and cold_seed == "eq":
+            y_guess = _eq_seed(init.pv.r_Tco, jnp.asarray(tg),
+                               jnp.asarray(Mn))
+        else:
+            y_guess = _guess_y0(th[0], th[1], warm_y=warm_y,
+                                lnZ_ref=lnZ_ref, c_o_ref=c_o_ref)
+        _yg, min_adj = _elemental_project(y_guess, jnp.asarray(Mn), th[0], th[1])
+        out["min_repair_factor"] = float(min_adj)
         ai = np.asarray(init.pv.atom_ini, dtype=np.float64)
         a_run = y @ np.asarray(integ._compo_arr, dtype=np.float64)
         out["atom_ini_max_rel_err"] = float(np.max(np.abs(a_run.sum(axis=0) - ai) / ai))
@@ -1188,7 +1152,6 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         conden_spec=conden_spec,   # static conden metadata (None when conden off)
         prep_pv=prep_pv,           # theta -> initial ProfileVars (no solve; tests)
         _integ=integ,              # the OuterLoop (baked statics access; tests only)
-        abundance_mode=abundance_mode,
         co_bz_bound=co_bz_bound,   # fixed-O knob validity: b_z > 0 iff c_o < this (build column)
         co_bz_margin=co_bz_margin, # the same margin on any column, e.g. the warm converged one
         y0=np.asarray(y0, dtype=np.float64),   # baked baseline column (warm-start fallback)

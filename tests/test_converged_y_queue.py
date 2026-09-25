@@ -46,7 +46,7 @@ import jax                                                   # noqa: E402
 import jax.numpy as jnp                                      # noqa: E402
 
 PROFILE = {"use_photo": False, "yconv_cri": 1.0e-2, "nz": 20,
-           "abundance_mode": "elemental", "skip_warmup": True}
+           "skip_warmup": True}
 # [lnZ, c_o, lnKzz, T-offset]: the baseline column and three perturbed ones,
 # heterogeneous enough that they do not all converge at the same tick.
 THETAS = np.array([[0.0, 0.0, 0.0, 0.0],
@@ -283,7 +283,7 @@ def test_queue_is_differentiable(chem, ref):
 # of 30000: it makes the warm route below run the CAPPED carry, and it leaves
 # the cold route untouched (warm_cap=False keeps the cold cap).
 PHOTO_PROFILE = {"use_photo": True, "yconv_cri": 1.0e-2, "nz": 20,
-                 "abundance_mode": "elemental", "skip_warmup": True,
+                 "skip_warmup": True,
                  "warm_count_max": 1500}
 # An MCMC-sized proposal step away from the carried column, per direction.
 WARM_DELTA = np.array([0.05, 0.02, 0.1, 5.0], dtype=np.float64)

@@ -43,7 +43,7 @@ import jax                                                   # noqa: E402
 import jax.numpy as jnp                                      # noqa: E402
 
 PROFILE = {"use_photo": False, "yconv_cri": 1.0e-2, "nz": 20,
-           "abundance_mode": "elemental", "skip_warmup": True}
+           "skip_warmup": True}
 # [lnZ, c_o, lnKzz, T-offset]: the baseline column and a perturbed one.
 THETAS = np.array([[0.0, 0.0, 0.0, 0.0],
                    [0.3, 0.1, 0.5, 40.0]], dtype=np.float64)
