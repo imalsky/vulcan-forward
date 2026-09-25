@@ -250,25 +250,23 @@ _SCRATCH_ROOT: str | None = None
 
 
 def _redirect_output_dirs(cfg) -> None:
-    """Point VULCAN-JAX's Output directories away from the caller's CWD.
+    """Point VULCAN-JAX's output directory away from the caller's CWD.
 
-    ``op.Output``'s constructor creates ``cfg.output_dir`` and ``cfg.plot_dir``,
-    and the shipped VULCAN-JAX configs make both RELATIVE -- so building a model
-    would create ./output and ./plot wherever the caller happens to be
-    standing. A library has no business writing into a
-    caller's working directory. This engine never writes .vul output or plots
-    (the Output object exists only to satisfy ``OuterLoop``'s signature), so
-    both are redirected to one per-process temp directory. Absolute paths a
-    caller set deliberately are left alone.
+    ``op.Output``'s constructor creates ``cfg.output_dir``, and the shipped
+    VULCAN-JAX configs make it RELATIVE -- so building a model would create
+    ./output wherever the caller happens to be standing. A library has no
+    business writing into a caller's working directory. This engine never
+    writes .vul output (the Output object exists only to satisfy
+    ``OuterLoop``'s signature), so it is redirected to one per-process temp
+    directory. An absolute path a caller set deliberately is left alone.
     """
     global _SCRATCH_ROOT
-    for attr in ("output_dir", "plot_dir"):
-        val = getattr(cfg, attr, None)
-        if val is None or os.path.isabs(str(val)):
-            continue
-        if _SCRATCH_ROOT is None:
-            _SCRATCH_ROOT = tempfile.mkdtemp(prefix="vulcan_forward_")
-        setattr(cfg, attr, os.path.join(_SCRATCH_ROOT, attr))
+    val = getattr(cfg, "output_dir", None)
+    if val is None or os.path.isabs(str(val)):
+        return
+    if _SCRATCH_ROOT is None:
+        _SCRATCH_ROOT = tempfile.mkdtemp(prefix="vulcan_forward_")
+    cfg.output_dir = os.path.join(_SCRATCH_ROOT, "output_dir")
 
 
 def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> SimpleNamespace:
@@ -313,7 +311,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     # (overridable per profile; the case presets set this). Env VULCAN_JAX_* was
     # set above, so this first vulcan_jax import freezes the SNCHO network.
     cfg = vulcan_jax.load_config(profile.get("vulcan_cfg_name") or constants.DEFAULT_CFG_NAME)
-    cfg.use_live_plot = cfg.use_live_flux = cfg.use_print_prog = False
+    cfg.use_print_prog = False
     cfg.use_photo = bool(profile["use_photo"])
     cfg.yconv_cri = float(profile["yconv_cri"])
     # `is not None`, never truthiness: 0 is a legitimate value for several of
@@ -330,7 +328,9 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     if profile.get("yconv_min") is not None:  # close the loose convergence OR-branch (default 0.1)
         cfg.yconv_min = float(profile["yconv_min"])
     # Generic cfg overrides, applied BEFORE the pre-loop build so they reach
-    # make_atm_static / OuterLoop exactly like use_photo does.
+    # make_atm_static / OuterLoop exactly like use_photo does. setattr checks
+    # nothing, so a removed or misspelled key is refused first.
+    vulcan_jax.validate_overrides(profile.get("cfg_overrides") or {})
     for _k, _v in (profile.get("cfg_overrides") or {}).items():
         setattr(cfg, _k, _v)
     # Warm-continuation step cap for the MUTATION path only: a proposal still
