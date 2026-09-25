@@ -15,8 +15,8 @@ art_ptop_bar and a clamped top is an error, like a clamped bottom always was.)
 
 Interpolation caveats (documented, not silent): linear-in-log-P is not column- or
 mass-conservative and can smear photochemical transitions sharper than the ART layer
-spacing; the vertical-grid convergence test in validation/ is the check that neither
-matters at the quoted precision.
+spacing; the consumers' vertical-grid ladders (vulcan-retrieval
+validation/resolution_ladder.py) check that neither matters at the quoted precision.
 """
 from __future__ import annotations
 

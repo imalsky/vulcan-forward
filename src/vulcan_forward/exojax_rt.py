@@ -74,7 +74,7 @@ def _refuse_removed_knobs(profile: dict) -> None:
     if "rt_band_tiles" in profile:
         raise ValueError(
             "profile key 'rt_band_tiles' was removed in vulcan-forward 0.25.0: "
-            "the correlated-k fold runs as one checkpointed scan, which holds "
+            "the correlated-k fold runs as one scan, which holds "
             "less gradient memory than any band tiling did. Drop the key.")
 
 
@@ -205,7 +205,7 @@ def _accumulate_dtau_ckd(art, pack, mols, molmass, opacia, opacia_he,
 
     The line opacity of each molecule comes from its k-table, interpolated to
     the layer (T, P) and combined across molecules by random-overlap
-    resort-rebin (``ckd.fold``, one checkpointed scan over the molecules). The
+    resort-rebin (``ckd.fold``, one scan over the molecules). The
     continua -- CIA, Rayleigh, the power-law cloud -- are smooth across a band,
     so their band value adds identically to every g-ordinate; that is exact,
     not an approximation, to the accuracy of a smooth function over one R=1000
@@ -350,7 +350,7 @@ def _run_emis_ckd_linsap(art, dtau_g, T_boundary, nu_bands, gw, weight_g=None):
 
     exojax's ``ArtEmisPure.run_ckd`` hard-codes ``rtrun_emis_pureabs_ibased``,
     which has no bottom-boundary term, so every photon entering the grid from
-    below is lost (measured flux deficits: notes.md, "Emission uses it too").
+    below is lost (measured flux deficits: notes.md §1.2, register #8).
     This is upstream's own flatten-solve-reweight structure with
     ``ibased_linsap`` in its place, so CKD emission keeps the interior source
     term the solver carries.

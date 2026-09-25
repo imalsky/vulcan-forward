@@ -2,7 +2,7 @@
 
 ``build_chem_model(profile)`` runs the one-time pre-loop + a warm-up convergence
 (compiles and caches the JIT'd inner runner), then returns a model whose
-``converged_ymix(theta)`` re-converges the column as a function of
+``converged_y(theta)`` re-converges the column as a function of
 ``theta = [lnZ, c_o, lnKzz, T...]``.
 
 Abundance knobs -- two modes (``profile["abundance_mode"]``):
@@ -286,7 +286,7 @@ def _redirect_output_dirs(cfg) -> None:
 
 
 def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> SimpleNamespace:
-    """Build the converged WASP-39b model and the differentiable converged_ymix(theta).
+    """Build the converged WASP-39b model and the differentiable converged_y(theta).
 
     Parameters
     ----------
@@ -312,8 +312,8 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
 
     Returns
     -------
-    SimpleNamespace with fields:
-        converged_ymix(theta) -> (nz, ni) linear VMR, float64, differentiable
+    SimpleNamespace with fields (the full list is the namespace at the end):
+        converged_y(theta, ...) -> (nz, ni) number densities, differentiable
         audit_init(theta) -> host-side dict of elemental/density residuals at init
         T_base   : (nz,) baseline temperature (np.float64)
         p_bar    : (nz,) pressure grid in bar (np.float64)
@@ -368,7 +368,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         cfg.slope_cri = float(profile["slope_cri"])
     # Generic cfg overrides (e.g. use_moldiff=False for the no-transport equilibrium tier).
     # Applied BEFORE the pre-loop build, so they reach make_atm_static / OuterLoop exactly
-    # like use_photo does. The fisher_zco tier configs are the only users.
+    # like use_photo does.
     for _k, _v in (profile.get("cfg_overrides") or {}).items():
         setattr(cfg, _k, _v)
     # The chemistry grid must reach the RT top (interp_map refuses a clamped
@@ -925,18 +925,8 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
                                budget_drift=jnp.zeros_like(state0.budget_drift))
         return init, atm_T
 
-    def converged_ymix(theta):
-        """Re-converge the WASP-39b column under theta=[lnZ, c_o, lnKzz, T...].
-
-        Returns linear VMR (nz, ni). Differentiable end-to-end via forward-mode.
-        """
-        init, atm_T = _prep(theta)
-        init = _runner_carry_seed(init, warm_continuation=False, warm_cap=False)
-        final = integ._runner(init, atm_T)
-        return final.y / jnp.sum(final.y, axis=1, keepdims=True)
-
     def run_diag(theta, return_atm=False):
-        """Diagnostic twin of converged_ymix: returns (final_runner_state, init_state).
+        """Diagnostic cold solve: returns (final_runner_state, init_state).
 
         Lets a caller inspect convergence and conserved-total drift. Not on any
         AD path. ``return_atm=True`` additionally returns the theta-dependent
@@ -1193,7 +1183,6 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         return out
 
     return SimpleNamespace(
-        converged_ymix=converged_ymix,
         run_diag=run_diag,
         converged_y=converged_y,
         converged_y_batch=converged_y_batch,   # PRIMAL batched twin (run_batch)

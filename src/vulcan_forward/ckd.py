@@ -1,4 +1,4 @@
-"""Correlated-k core: quadrature, band grid, (T, P) interpolation, overlap.
+"""Correlated-k core: quadrature, (T, P) interpolation, overlap.
 
 WHY THIS EXISTS
 ---------------
@@ -6,10 +6,9 @@ exojax computes a cross section directly ON the output wavenumber grid; there
 is no internal high-resolution grid, and its own ``wavenumber_grid`` warns for
 any grid below R = 700,000. A JWST-band model sampled at R ~ 1,500 is therefore
 a strided sample of a spectrum that was never resolved, and the sampling error
-does not average out -- it biases both observables (measurements: README,
-"Opacity: correlated-k, not sampled line-by-line"). Correlated-k does the
-expensive integration once, offline, and compresses each band to a few
-g-ordinates.
+does not average out -- it biases both observables (measurements: notes.md
+§1.1). Correlated-k does the expensive integration once, offline, and
+compresses each band to a few g-ordinates.
 
 The k-tables themselves come from ExoMolOP (``vulcan_forward.exomolop``); this
 module holds the source-independent machinery that consumes them.

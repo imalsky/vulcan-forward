@@ -8,7 +8,7 @@ all pushing the same way (too little opacity in the WINDOWS, which inflates
 spectral contrast): a 296 K database applied at 1200 K, terrestrial-air
 pressure broadening in a hydrogen atmosphere (unfixable inside HITRAN -- H2O
 has no H2/He columns there at all), and thin species coverage. The measured
-numbers live in notes.md ("Opacity data: ExoMolOP, not HITRAN").
+numbers live in notes.md §1.1.
 
 ExoMolOP (Chubb et al. 2021, A&A 646, A21) closes all three at once: it
 publishes PRE-COMPUTED opacities for ~80 species, built from the ExoMol and
@@ -26,8 +26,8 @@ WHAT IS DIFFERENT ABOUT THEIR TABLES, and both matter
   8 Gauss-Legendre points on [0, 0.9] plus 8 on [0.9, 1.0]. ``ckd.overlap``
   takes the nodes and weights as arguments, so they carry through from the
   file -- but never assume 16-point Gauss-Legendre downstream.
-* Their PRESSURE grid stops at 1e-5 bar, while the RT column runs to about
-  5e-9 bar. ``ckd._interp_logk`` clamps rather than extrapolating, so the
+* Their PRESSURE grid stops at 1e-5 bar, while the RT column runs to
+  1e-9 bar. ``ckd._interp_logk`` clamps rather than extrapolating, so the
   layers above 1e-5 bar all use the 1e-5 bar table entry. That is defensible
   physics -- up there the lines are Doppler-dominated and k stops depending on
   pressure -- and it is what petitRADTRANS itself does, but it is an

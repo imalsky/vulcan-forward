@@ -77,7 +77,7 @@ P_REF_BAR = 1.0e-3
 # 0.1 bar is HyDRA's stated convention, "the mean pressure of the tau=1 surface"
 # (Gandhi & Madhusudhan 2018). NOTE this only re-anchors the column GRAVITY; the
 # fully correct treatment computes a wavelength-dependent radius at vertical
-# tau = 2/3, as POSEIDON and PLATON II do, and is not implemented here.
+# tau = 2/3, as POSEIDON and PLATON II do: exojax_rt's eclipse_flux_tau.
 P_REF_EMISSION_BAR = 1.0e-1
 
 # Physical constants, cgs (CODATA 2018). Local so this module stays stdlib-only;
