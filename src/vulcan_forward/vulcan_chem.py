@@ -882,16 +882,19 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
                                budget_drift=jnp.zeros_like(state0.budget_drift))
         return init, atm_T
 
-    def run_diag(theta, return_atm=False):
-        """Diagnostic cold solve: returns (final_runner_state, init_state).
+    def run_diag(theta, return_atm=False, warm_y=None, lnZ_ref=0.0, c_o_ref=0.0):
+        """Diagnostic solve: returns (final_runner_state, init_state).
 
         Lets a caller inspect convergence and conserved-total drift. Not on any
         AD path. ``return_atm=True`` additionally returns the theta-dependent
         AtmStatic the runner was actually driven with -- the operating point a
         reverse-mode adjoint must linearize around (the setup-time baseline is
-        WRONG whenever theta carries a T-P or Kzz offset)."""
-        init, atm_T = _prep(theta)
-        init = _runner_carry_seed(init, warm_continuation=False, warm_cap=False)
+        WRONG whenever theta carries a T-P or Kzz offset). Cold by default;
+        ``warm_y`` / ``lnZ_ref`` / ``c_o_ref`` start it as ``converged_y``'s
+        continuation does."""
+        init, atm_T = _prep(theta, warm_y=warm_y, lnZ_ref=lnZ_ref, c_o_ref=c_o_ref)
+        init = _runner_carry_seed(init, warm_continuation=warm_y is not None,
+                                  warm_cap=False)
         final = integ._runner(init, atm_T)
         return (final, init, atm_T) if return_atm else (final, init)
 
