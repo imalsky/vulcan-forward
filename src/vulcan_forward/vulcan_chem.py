@@ -691,7 +691,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     # T-dependence never carried one); lnZ / c_o tangents still enter through the
     # exact elemental projection below, so the gradient structure is unchanged.
     # Only cold solves (warm_y=None) use it.
-    cold_seed = str(profile.get("cold_seed", "baseline"))
+    cold_seed = str(profile.get("cold_seed", "eq"))
     if cold_seed not in ("baseline", "eq"):
         raise ValueError(f"cold_seed={cold_seed!r}: expected 'baseline' or 'eq'")
     if cold_seed == "eq" and abundance_mode != "elemental":
