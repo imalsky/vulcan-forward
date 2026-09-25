@@ -183,13 +183,14 @@ def resolve(mol: str):
     return None
 
 
-def _assert_grid_matches(mol, dest, dest_dir):
-    """Verify the DOWNLOADED file shares the grid of the tables already here.
+def _assert_grid_matches(mol, part, dest, dest_dir):
+    """Verify the DOWNLOADED file (``part``, not yet installed) shares the grid
+    of the tables already here.
 
     ``resolve``'s filename filter is a convention check, which is exactly what
     a wrong guess also passes; this opens the file and compares the arrays
-    ``load_tables`` will demand agree. Deletes the offender before raising --
-    left on disk, the next run finds it and skips the download.
+    ``load_tables`` will demand agree. Deletes the download before raising;
+    ``dest`` (a table ``--force`` would replace) is left untouched.
     """
     import h5py                                    # offline step only
     import numpy as np
@@ -200,18 +201,19 @@ def _assert_grid_matches(mol, dest, dest_dir):
     keys = ("bin_edges", "t", "p", "samples", "weights")
     with h5py.File(peers[0], "r") as f:
         ref = {k: np.asarray(f[k], dtype=np.float64) for k in keys}
-    with h5py.File(dest, "r") as f:
+    with h5py.File(part, "r") as f:
         got = {k: np.asarray(f[k], dtype=np.float64) for k in keys}
     for k in keys:
         a, b = got[k], ref[k]
         if a.shape != b.shape or not np.allclose(a, b, rtol=1e-12, atol=0.0):
-            os.unlink(dest)
+            os.unlink(part)
             raise RuntimeError(
                 f"{mol}: the downloaded table disagrees with {peers[0].name} "
                 f"on '{k}' (shape {a.shape} vs {b.shape}). Correlated-k tables "
                 "are mixed ordinate by ordinate, so they must share one band "
-                "grid, one (T, P) grid and one quadrature. The file has been "
-                "deleted. Re-fetch every table from the same ExoMolOP release.")
+                "grid, one (T, P) grid and one quadrature. The download has "
+                "been deleted and any installed table left as it was. Re-fetch "
+                "every table from the same ExoMolOP release.")
 
 
 def fetch(molecules, force=False):
@@ -268,12 +270,12 @@ def fetch(molecules, force=False):
                     if not chunk:
                         break
                     fh.write(chunk)
-            os.replace(tmp, dest)
         except Exception as e:                                # noqa: BLE001
             if os.path.exists(tmp):
                 os.unlink(tmp)
             raise RuntimeError(f"failed to fetch {mol} from {url}: {e}") from e
-        _assert_grid_matches(mol, dest, dest_dir)
+        _assert_grid_matches(mol, tmp, dest, dest_dir)
+        os.replace(tmp, dest)
         prov[mol] = _record(url, ds, iso, nat)
         tag = "natural-abundance" if nat else f"principal ({iso})"
         print(f"{mol:6s} GET   {dest.stat().st_size/1e6:7.1f} MB  "
