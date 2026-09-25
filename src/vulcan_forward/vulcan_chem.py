@@ -702,12 +702,8 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
 
     def _eq_seed(T, ratios, M):
         """The equilibrium column as ABSOLUTE densities (nz, ni): eq_seed
-        returns mixing ratios, and every caller here works in densities."""
-        if cold_seed != "eq":
-            raise RuntimeError(
-                f"_eq_seed called on a cold_seed={cold_seed!r} build: the "
-                "equilibrium setup is only built for cold_seed='eq'. Every "
-                "call site must be guarded by that test.")
+        returns mixing ratios, and every caller here works in densities.
+        Only a cold_seed="eq" build defines the setup it reads."""
         return eq_seed(T, _p_bar_seed,
                        element_vector(ratios, _ratio_idx)) * M[:, None]
 
@@ -1023,9 +1019,8 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     # VALUES never enter a closure and never cost a compile.
     _queue_fns = {}
 
-    def converged_y_queue(thetas, n_lanes, *, chunk=8, refill_every=100,
-                          warm_y=None, lnZ_ref=0.0, c_o_ref=0.0,
-                          warm_cap=False):
+    def converged_y_queue(thetas, n_lanes, *, chunk=8, warm_y=None,
+                          lnZ_ref=0.0, c_o_ref=0.0, warm_cap=False):
         """``converged_y_batch`` on ``n_lanes`` lanes with refill from the job
         queue (vulcan-jax ``OuterLoop.run_queue``): a lane that certifies is
         written out and takes the next theta inside the same while loop, so
@@ -1076,7 +1071,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         lnZ_r, c_o_r = _ref_leaves(int(jnp.shape(thetas)[0]), lnZ_ref, c_o_ref)
         (y, cd), _n_iter = integ.run_queue(
             init_fn, (thetas, warm_y, lnZ_r, c_o_r), int(n_lanes), out_fn,
-            chunk=int(chunk), refill_every=int(refill_every))
+            chunk=int(chunk))
         return y, cd
 
     def converged_y_jvp(theta, tangent, warm_y=None, lnZ_ref=0.0, c_o_ref=0.0):
