@@ -382,6 +382,15 @@ def _require_geometry(profile: dict, *keys: str) -> None:
             + "; ".join(f"{k} ({_GEOMETRY_KEYS[k]})" for k in missing) + ".")
 
 
+def _require_he(vmr_he):
+    """He is ~14% by number and its CIA is real continuum physics; a None
+    would silently drop the term, so both observables refuse it."""
+    if vmr_he is None:
+        raise ValueError(
+            "vmr_he is required: pass the He VMR profile (chem.sidx['He']) so the "
+            "H2-He CIA term is included. There is no supported He-less mode.")
+
+
 def _check_cia_span(cdb, nu_grid, label):
     """Refuse a CIA table that does not cover the requested wavenumber grid.
 
@@ -422,8 +431,6 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
         molecule_table=profile.get("molecule_table"))
     nu_grid = jnp.asarray(ckd_pack.nu_bands)
     ckd_pack.nu_bands_j = nu_grid
-    print("[rt] pressure broadening: H2/He, as published in the ExoMolOP "
-          "tables", flush=True)
     # Profile-overridable RT knobs, validated loudly here: an out-of-range
     # value must never build a wrong model.
     ptop = float(profile.get("art_ptop_bar", constants.ART_PTOP_BAR))
@@ -476,6 +483,11 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
           f"chord integration {integration}",
           flush=True)
 
+    def _cia(path, label):
+        cdb = CdbCIA(str(path), nurange=nu_grid)
+        _check_cia_span(cdb, nu_grid, label)
+        return OpaCIA(cdb, nu_grid=nu_grid)
+
     cia_h2h2 = paths.cia_h2h2_file()
     if not cia_h2h2.exists():
         # exojax auto-fetches it (~24 MB from hitran.org), but its downloader
@@ -484,26 +496,18 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
         print(f"[rt] H2-H2 CIA absent at {cia_h2h2}; exojax will "
               "download ~24 MB from https://hitran.org/data/CIA/main/"
               "H2-H2_2011.cia now (network required)", flush=True)
-    cdb = CdbCIA(str(cia_h2h2), nurange=nu_grid)
-    _check_cia_span(cdb, nu_grid, "H2-H2")
-    opacia = OpaCIA(cdb, nu_grid=nu_grid)
-    # H2-He CIA is required physics (He is ~14% by number). Missing it
-    # would silently drop a real continuum term -> a wrong spectrum with no error.
-    # Fail loud instead; the file ships in data/opacity_cache/ and the PBS preflight
-    # also checks for it.
+    opacia = _cia(cia_h2h2, "H2-H2")
+    # H2-He CIA is required physics (He is ~14% by number): without it the
+    # spectrum would lose a real continuum term with no error.
     cia_h2he = paths.cia_h2he_file()
     if not cia_h2he.exists():
         raise FileNotFoundError(
-            f"H2-He CIA table missing ({cia_h2he}). It ships in the bundle's "
-            "data/opacity_cache/; if absent download "
+            f"H2-He CIA table missing ({cia_h2he}). Download "
             "https://hitran.org/data/CIA/main/H2-He_2011.cia (~147 MB; note the "
             "/main/ path -- the bare /data/CIA/ URL 404s) to that exact path. "
             "Refusing to build the RT without it (silently skipping the He "
             "continuum would bias the spectrum).")
-    cdb_he = CdbCIA(str(cia_h2he), nurange=nu_grid)
-    _check_cia_span(cdb_he, nu_grid, "H2-He")
-    opacia_he = OpaCIA(cdb_he, nu_grid=nu_grid)
-    print("[rt] H2-He CIA loaded", flush=True)
+    opacia_he = _cia(cia_h2he, "H2-He")
     print(f"[rt] CIA + RT built; total {time.time()-t0:.1f}s", flush=True)
 
     # H2/He Rayleigh cross sections (nu-only, precomputed once; opt-in via profile)
@@ -529,15 +533,6 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
             f"p_ref_bar={p_ref_bar:g} lies outside the RT grid "
             f"[{ptop:g}, {pbtm:g}] bar. It is the pressure at which rp_cm and "
             "gs_cgs are defined, so it must be a level the grid actually covers.")
-
-    def _require_he(vmr_he):
-        # He is ~14% by number and its CIA is real continuum physics; an
-        # accidental None here would SILENTLY drop the term. Fail loud
-        # instead -- standing repo rule.
-        if vmr_he is None:
-            raise ValueError(
-                "vmr_he is required: pass the He VMR profile (chem.sidx['He']) so the "
-                "H2-He CIA term is included. There is no supported He-less mode.")
 
     def transmission_depth(vmr, vmr_h2, T_art, mmw_art, vmr_he=None,
                            cloud=None):
@@ -659,11 +654,7 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
     # CKD emission runs through _run_emis_ckd_linsap, NOT ArtEmisPure.run_ckd:
     # upstream's version hard-codes the "ibased" solver, which has no interior
     # source term.
-    ckd_pack = getattr(trt, "_ckd_pack", None)
-    if ckd_pack is None:
-        raise ValueError(
-            "transmission model carries no k-table pack; it was not built by "
-            "this engine's build_rt_model.")
+    ckd_pack = trt._ckd_pack
     nu_grid = trt._nu_grid
     molmass, opacia, mols = trt._molmass, trt._opacia, trt.molecules
     opacia_he = trt._opacia_he
@@ -747,12 +738,6 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
                       rtsolver="ibased_linsap", nstream=8)
     lnp_em = jnp.asarray(np.log(np.asarray(art.pressure)))
     print(f"[rt] ArtEmisPure {art_nlayer} layers (shares opacities)", flush=True)
-
-    def _require_he(vmr_he):
-        if vmr_he is None:
-            raise ValueError(
-                "vmr_he is required: pass the He VMR profile so the H2-He CIA term "
-                "is included in the emission opacity (parity with transmission).")
 
     def _dtau(vmr, vmr_h2, vmr_he, T_art, mmw_art, g_em, cloud):
         return _accumulate_dtau_ckd(
@@ -891,6 +876,5 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
         # echoed so a consumer can verify the engine honored the key
         p_ref_emission_bar=p_ref_em,
         p_ref_bar=p_ref_used,
-        opacity_mode="exomolop",
         molecules=mols,
     )
