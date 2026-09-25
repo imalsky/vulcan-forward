@@ -17,9 +17,9 @@ Three properties:
   vulcan-retrieval's cold path runs -- keeps every theta certified and leaves
   the species the spectrum reads alone.
 
-The two acceptance tests at the bottom are the gate for moving a consumer's
-GRADIENT off a per-theta ``vmap(jvp(converged_y))``: the cold two-stage map,
-and the WARM-capped mutation map with a per-lane reference composition.
+The two acceptance tests at the bottom pin a consumer's batched GRADIENT
+against the per-theta solve: the cold two-stage map, and the WARM-capped
+mutation map with a per-lane reference composition.
 
 The measured differences are printed (``pytest -s``).
 
@@ -399,10 +399,10 @@ def _cmp(tag, a, b, n_dir):
 
 
 def test_two_stage_cold_gradient_three_routes(chem_photo):
-    """The batched and queued cold GRADIENT agree with today's per-theta one.
+    """The batched and queued cold GRADIENT agree with the per-theta one.
 
-    This is the acceptance test for moving a consumer's cold two-stage gradient
-    off `vmap(jvp(converged_y))` and onto the batched runner (and the queue): the
+    The acceptance test for a consumer's cold two-stage gradient on the
+    batched runner (and the queue), against a per-theta solve: the
     tangents stay finite, every theta keeps its certificate on every route, and
     the columns and the direction stack agree at the convergence scale the
     primals already agree at. Accept counts are PRINTED, not pinned: a batched
