@@ -14,10 +14,10 @@ the chemistry pass straight through to the spectrum. Opacities are float64 (x64
 is globally enabled), matching the chemistry side -- no dtype break.
 
 Correlated-k over the published ExoMolOP tables is the ONLY opacity path. The
-sampled line-by-line mode and the Mie condensate deck were removed in 0.11.0:
-sampling below exojax's critical R = 700,000 is measurably biased and the Mie
-deck was the only thing that still needed it. A profile that asks for either
-is refused, never silently mapped onto this path.
+sampled line-by-line mode and the Mie condensate deck were removed: sampling
+below exojax's critical R = 700,000 is measurably biased and the Mie deck was
+the only thing that still needed it. A profile that asks for either is
+refused, never silently mapped onto this path.
 """
 from __future__ import annotations
 
@@ -48,34 +48,18 @@ _H2_MOLMASS, _HE_MOLMASS = 2.016, 4.0026   # g/mol, for the Rayleigh mmr convers
 # xs are per-molecule cross sections; a per-gram kappa must NOT pick up the 1/m_u.)
 _BAR_CGS = 1.0e6
 
-# Profile keys of the removed line-by-line / Mie paths. Their presence means
-# the caller's code predates 0.11.0 and still expects a knob to do something;
-# refusing is the only honest answer (standing fail-loud rule).
-_REMOVED_PROFILE_KEYS = ("nu_pts", "broadening", "dit_grid_resolution",
-                         "mie_condensate", "mie_data_dir")
-
-
-def _refuse_removed_knobs(profile: dict) -> None:
+def _check_profile(profile: dict) -> None:
+    """Unknown keys raise (``constants.check_profile_keys``), and so does any
+    opacity mode but correlated-k: the line-by-line mode and the Mie deck were
+    removed, and a profile asking for them must not be mapped onto this path."""
+    constants.check_profile_keys(profile)
     mode = str(profile.get("opacity_mode", "exomolop"))
     if mode != "exomolop":
         raise ValueError(
             f"opacity_mode={mode!r} is not available: the sampled line-by-line "
-            "mode ('lbl') and the Mie condensate deck were removed in "
-            "vulcan-forward 0.11.0. Correlated-k over the published ExoMolOP "
-            "tables ('exomolop', the default -- drop the key) is the only "
-            "opacity path.")
-    present = [k for k in _REMOVED_PROFILE_KEYS if k in profile]
-    if present:
-        raise ValueError(
-            f"profile keys {present} were removed in vulcan-forward 0.11.0 "
-            "together with the line-by-line mode and the Mie deck; under "
-            "correlated-k they never had an effect. Drop them rather than "
-            "carrying settings the model does not apply.")
-    if "rt_band_tiles" in profile:
-        raise ValueError(
-            "profile key 'rt_band_tiles' was removed in vulcan-forward 0.25.0: "
-            "the correlated-k fold runs as one scan, which holds "
-            "less gradient memory than any band tiling did. Drop the key.")
+            "mode ('lbl') and the Mie condensate deck were removed. "
+            "Correlated-k over the published ExoMolOP tables ('exomolop', the "
+            "default -- drop the key) is the only opacity path.")
 
 
 def _gravity_profile_invsq(art, T_art, mmw_art, radius_btm, gravity_btm):
@@ -426,7 +410,7 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
         molecules : list[str]
     """
     t0 = time.time()
-    _refuse_removed_knobs(profile)
+    _check_profile(profile)
     mols = list(profile["molecules"])
     # Published ExoMol/HITEMP opacities with H2/He broadening already applied.
     # See vulcan_forward.exomolop for the three measured defects this closes
@@ -671,6 +655,7 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
     _accumulate_dtau_ckd -- a pure-absorption solver must not count scattering
     as thermal absorption, and it is negligible in the thermal bands).
     """
+    constants.check_profile_keys(profile)
     # CKD emission runs through _run_emis_ckd_linsap, NOT ArtEmisPure.run_ckd:
     # upstream's version hard-codes the "ibased" solver, which has no interior
     # source term.

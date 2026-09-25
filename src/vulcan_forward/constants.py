@@ -1,11 +1,11 @@
 """Shared physics constants for the VULCAN-JAX -> ExoJAX forward model.
 
-Pure constants only: NO heavy imports (no jax, no vulcan_jax, no exojax) and NO
-filesystem access, so this module is safe to import before the env-order-
-sensitive VULCAN-JAX setup runs and safe to import on a machine with no data
-installed. Data locations live in ``paths.py``; application-specific settings
-(planet geometry, run profiles, parameter-vector layouts) belong to the
-consumer, not here.
+Pure constants (plus the profile-key check): NO heavy imports (no jax, no
+vulcan_jax, no exojax) and NO filesystem access, so this module is safe to
+import before the env-order-sensitive VULCAN-JAX setup runs and safe to import
+on a machine with no data installed. Data locations live in ``paths.py``;
+application-specific settings (planet geometry, run profiles,
+parameter-vector layouts) belong to the consumer, not here.
 """
 from __future__ import annotations
 
@@ -179,3 +179,30 @@ MOLECULES = {
 
 # Bulk gas used for CIA + the dominant background (H2).
 BULK_H2_VULCAN = "H2"
+
+# Every top-level profile key the engine reads. Consumers pass ONE dict to
+# build_chem_model, build_rt_model and build_emis_model, so this is the union.
+PROFILE_KEYS = frozenset({
+    # build_chem_model
+    "vulcan_cfg_name", "use_photo", "yconv_cri", "yconv_min", "nz",
+    "count_min", "count_max", "warm_count_max", "dt_max", "cfg_overrides",
+    "skip_warmup", "abundance_mode", "co_mode", "cold_seed",
+    "reanchor_atom_ini",
+    # build_rt_model / build_emis_model (art_ptop_bar also sets the chemistry top)
+    "molecules", "molecule_table", "nu_min", "nu_max", "opacity_mode",
+    "art_nlayer", "art_ptop_bar", "art_pbtm_bar", "rt_integration",
+    "use_rayleigh", "rp_cm", "gs_cgs", "rstar_cm", "p_ref_bar",
+    "p_ref_emission_bar",
+})
+
+
+def check_profile_keys(profile) -> None:
+    """Refuse profile keys the engine does not read: a misspelled or retired
+    key would otherwise be a silent no-op. ``cfg_overrides`` contents are not
+    checked here."""
+    unknown = sorted(set(profile) - PROFILE_KEYS)
+    if unknown:
+        raise ValueError(
+            f"profile keys {unknown} are not read by vulcan-forward (misspelled, "
+            "or retired with a removed feature), so they would change nothing. "
+            f"Drop or correct them. Known keys: {sorted(PROFILE_KEYS)}.")

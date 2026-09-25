@@ -173,14 +173,14 @@ def test_per_lane_references_match_the_scalar_calls(runs):
         assert rel[obs].max() < REL_MAX
 
 
-def test_removed_inputs_are_refused(runs):
-    """A profile still carrying `fastchem_met_scale` expects the seed to scale
-    metallicity; the FastChem seed is gone, so refuse instead of ignoring. A
-    warm column with the wrong trailing shape would BROADCAST -- (N, 1, ni)
-    seeds every layer from one layer -- so it is refused too."""
+def test_inputs_that_would_be_ignored_are_refused(runs):
+    """A profile key the engine does not read (a typo, or a retired knob such
+    as `fastchem_met_scale`) would leave its default in place silently, so it
+    is refused. A warm column with the wrong trailing shape would BROADCAST --
+    (N, 1, ni) seeds every layer from one layer -- so it is refused too."""
     chem = runs[0]
-    with pytest.raises(ValueError, match="fastchem_met_scale"):
-        vulcan_chem.build_chem_model({**PROFILE, "fastchem_met_scale": 10.0})
+    with pytest.raises(ValueError, match="'warm_count_mx'"):
+        vulcan_chem.build_chem_model({**PROFILE, "warm_count_mx": 10})
     with pytest.raises(ValueError, match="warm_y"):
         chem.converged_y_batch(jnp.asarray(THETAS),
                                warm_y=jnp.ones((THETAS.shape[0], 1, chem.ni)))

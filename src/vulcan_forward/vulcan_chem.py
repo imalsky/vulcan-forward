@@ -322,15 +322,9 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         nz, ni   : ints
     """
     t0 = time.time()
+    constants.check_profile_keys(profile)
     import vulcan_jax
 
-    # Removed knob, refused rather than ignored (standing fail-loud rule): a
-    # profile still carrying it expects the seed to scale metallicity.
-    if "fastchem_met_scale" in profile:
-        raise ValueError(
-            "fastchem_met_scale was removed with the FastChem seed (vulcan-jax "
-            "0.15.0): metallicity enters only through lnZ / the elemental "
-            "projection. Drop the key.")
     # Baseline VULCAN config, loaded by name from vulcan_jax/configs/*.yaml
     # (overridable per profile; the case presets set this). Env VULCAN_JAX_* was
     # set above, so this first vulcan_jax import freezes the SNCHO network.
@@ -339,8 +333,8 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     cfg.use_photo = bool(profile["use_photo"])
     cfg.yconv_cri = float(profile["yconv_cri"])
     # `is not None`, never truthiness: 0 is a legitimate value for several of
-    # these (count_min=0 no floor, yconv_min=0 closes the OR-branch, slope_cri=0
-    # disables the slope criterion) and must not silently fall back to cfg.
+    # these (count_min=0 no floor, yconv_min=0 closes the OR-branch) and must
+    # not silently fall back to cfg.
     if profile.get("nz") is not None:
         cfg.nz = int(profile["nz"])
     if profile.get("count_min") is not None:
@@ -351,11 +345,8 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         cfg.dt_max = float(profile["dt_max"])  # non-convergence at high Kzz; see config_schema)
     if profile.get("yconv_min") is not None:  # close the loose convergence OR-branch (default 0.1)
         cfg.yconv_min = float(profile["yconv_min"])
-    if profile.get("slope_cri") is not None:
-        cfg.slope_cri = float(profile["slope_cri"])
-    # Generic cfg overrides (e.g. use_moldiff=False for the no-transport equilibrium tier).
-    # Applied BEFORE the pre-loop build, so they reach make_atm_static / OuterLoop exactly
-    # like use_photo does.
+    # Generic cfg overrides, applied BEFORE the pre-loop build so they reach
+    # make_atm_static / OuterLoop exactly like use_photo does.
     for _k, _v in (profile.get("cfg_overrides") or {}).items():
         setattr(cfg, _k, _v)
     # Warm-continuation step cap for the MUTATION path only: a proposal still
@@ -648,9 +639,6 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     # (needed for finite metallicity/C-O steps in "masks" mode; see _prep). Moot in
     # "elemental" mode, where atom_ini is ALWAYS rebuilt from the repaired column.
     reanchor_atom_ini = bool(profile.get("reanchor_atom_ini", False))
-    # Opt-in: zero the eddy-diffusion profile entirely (the no-transport equilibrium tier;
-    # combine with cfg_overrides={"use_moldiff": False} so Dzz is off too). lnKzz is then inert.
-    zero_kzz = bool(profile.get("zero_Kzz", False))
     abundance_mode = str(profile.get("abundance_mode", "elemental"))
     if abundance_mode not in ("masks", "elemental"):
         raise ValueError(f"abundance_mode={abundance_mode!r}: expected 'masks' or 'elemental'")
@@ -841,7 +829,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
             network, T, M, nasa9, remove_list,
             use_lowT_caps=bool(cfg.use_lowT_limit_rates))
         Ti = 0.5 * (T[:-1] + T[1:])
-        Kzz_eff = Kzz0 * 0.0 if zero_kzz else Kzz0 * jnp.exp(lnKzz)
+        Kzz_eff = Kzz0 * jnp.exp(lnKzz)
 
         if warm_y is None and cold_seed == "eq":
             ratios = R0_j * jnp.exp(lnZ * zscale_kind + c_o * cscale_kind)
