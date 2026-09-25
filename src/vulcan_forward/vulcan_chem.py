@@ -347,19 +347,6 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         cfg.count_min = int(profile["count_min"])
     if profile.get("count_max") is not None:
         cfg.count_max = int(profile["count_max"])
-    # Warm-continuation step cap for the MUTATION path only: a proposal still
-    # unconverged at warm_count_max is headed for rejection, so cut the loop
-    # there instead of dragging the lockstep batch to the cold cap. The cap
-    # rides the runner CARRY (`count_max_dyn`, seeded by `_runner_carry_seed`),
-    # so the batched entry points take it per lane through `warm_cap=True` and
-    # share one compiled runner with the cold call.
-    _wcm = profile.get("warm_count_max")
-    warm_count_max = int(_wcm) if _wcm is not None else int(cfg.count_max)
-    if warm_count_max > int(cfg.count_max):
-        raise ValueError(
-            f"warm_count_max={warm_count_max} exceeds count_max={int(cfg.count_max)}: "
-            "the warm mutation cap must be at most the cold cap (it exists to REJECT "
-            "doomed proposals earlier, not to extend them)")
     if profile.get("dt_max") is not None:   # physical step-size cap (prevents the dt-balloon
         cfg.dt_max = float(profile["dt_max"])  # non-convergence at high Kzz; see config_schema)
     if profile.get("yconv_min") is not None:  # close the loose convergence OR-branch (default 0.1)
@@ -371,6 +358,20 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     # like use_photo does.
     for _k, _v in (profile.get("cfg_overrides") or {}).items():
         setattr(cfg, _k, _v)
+    # Warm-continuation step cap for the MUTATION path only: a proposal still
+    # unconverged at warm_count_max is headed for rejection, so cut the loop
+    # there instead of dragging the lockstep batch to the cold cap. The cap
+    # rides the runner CARRY (`count_max_dyn`, seeded by `_runner_carry_seed`),
+    # so the batched entry points take it per lane through `warm_cap=True` and
+    # share one compiled runner with the cold call. Checked after the
+    # overrides: a `cfg_overrides` count_max is the cold cap too.
+    _wcm = profile.get("warm_count_max")
+    warm_count_max = int(_wcm) if _wcm is not None else int(cfg.count_max)
+    if warm_count_max > int(cfg.count_max):
+        raise ValueError(
+            f"warm_count_max={warm_count_max} exceeds count_max={int(cfg.count_max)}: "
+            "the warm mutation cap must be at most the cold cap (it exists to REJECT "
+            "doomed proposals earlier, not to extend them)")
     # The chemistry grid must reach the RT top (interp_map refuses a clamped
     # top). An explicit cfg_overrides P_t wins: the model-top ladder and the
     # condensation pin bring their own grids.
