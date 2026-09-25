@@ -188,37 +188,35 @@ def _assert_grid_matches(mol, part, dest, dest_dir):
     of the tables already here.
 
     ``resolve``'s filename filter is a convention check, which is exactly what
-    a wrong guess also passes; this opens the file and compares the arrays
-    ``load_tables`` will demand agree. Deletes the download before raising;
-    ``dest`` (a table ``--force`` would replace) is left untouched.
+    a wrong guess also passes; this opens the file and runs the layout checks
+    and the grid comparison ``load_tables`` runs. Deletes the download before
+    raising on a grid mismatch; ``dest`` (a table ``--force`` would replace)
+    is left untouched.
     """
     import h5py                                    # offline step only
-    import numpy as np
 
     peers = sorted(p for p in dest_dir.glob("*.ktable.h5") if p != dest)
     if not peers:
         return                                     # first table: nothing to compare
-    keys = ("bin_edges", "t", "p", "samples", "weights")
     with h5py.File(peers[0], "r") as f:
-        ref = {k: np.asarray(f[k], dtype=np.float64) for k in keys}
+        ref = exomolop._validated_layout(f, peers[0])
     with h5py.File(part, "r") as f:
-        got = {k: np.asarray(f[k], dtype=np.float64) for k in keys}
-    for k in keys:
-        a, b = got[k], ref[k]
-        if a.shape != b.shape or not np.allclose(a, b, rtol=1e-12, atol=0.0):
-            os.unlink(part)
-            raise RuntimeError(
-                f"{mol}: the downloaded table disagrees with {peers[0].name} "
-                f"on '{k}' (shape {a.shape} vs {b.shape}). Correlated-k tables "
-                "are mixed ordinate by ordinate, so they must share one band "
-                "grid, one (T, P) grid and one quadrature. The download has "
-                "been deleted and any installed table left as it was. Re-fetch "
-                "every table from the same ExoMolOP release.")
+        got = exomolop._validated_layout(f, part)
+    bad = exomolop._grid_mismatch(got, ref)
+    if bad is not None:
+        os.unlink(part)
+        raise RuntimeError(
+            f"{mol}: the downloaded table disagrees with {peers[0].name} on "
+            f"the {bad}. Correlated-k tables are mixed ordinate by ordinate, "
+            "so they must share one band grid, one (T, P) grid and one "
+            "quadrature. The download has been deleted and any installed "
+            "table left as it was. Re-fetch every table from the same "
+            "ExoMolOP release.")
 
 
 def fetch(molecules, force=False):
     paths.ensure_layout()          # a setup command creates the data root
-    dest_dir = exomolop.table_dir()
+    dest_dir = paths.exomolop_dir()
     prov_path = dest_dir / "provenance.json"
     prov = {}
     if prov_path.exists():

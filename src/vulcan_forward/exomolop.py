@@ -45,9 +45,9 @@ TABLES ARE NEVER DOWNLOADED AT RUN TIME (standing fail-loud rule): a missing
 table raises with the fetch command.
 
 This module is importable WITHOUT the RT stack: h5py and jax are imported
-inside the functions that need them, so the path helpers (``table_dir``,
-``table_path``, ``available``) and ``provenance`` serve stdlib-only consumers
-such as jwst_tool.datacheck.
+inside the functions that need them, so the path helpers (``table_path``,
+``available``) and ``provenance`` serve stdlib-only consumers such as
+jwst_tool.datacheck.
 """
 from __future__ import annotations
 
@@ -72,12 +72,8 @@ P_UNITS = "bar"
 METHOD = "petit_samples"
 
 
-def table_dir() -> Path:
-    return paths.exomolop_dir()
-
-
 def table_path(molecule: str) -> Path:
-    return table_dir() / f"{molecule}.ktable.h5"
+    return paths.exomolop_dir() / f"{molecule}.ktable.h5"
 
 
 def _fetch_hint(missing) -> str:
@@ -91,7 +87,7 @@ def _fetch_hint(missing) -> str:
 
 def available() -> list:
     """Molecules with an ExoMolOP table present, sorted."""
-    d = table_dir()
+    d = paths.exomolop_dir()
     if not d.is_dir():
         return []
     return sorted(p.name.split(".")[0] for p in d.glob("*.ktable.h5"))
@@ -107,7 +103,7 @@ def provenance() -> dict:
     without downloading them again).
     """
     import json
-    path = table_dir() / "provenance.json"
+    path = paths.exomolop_dir() / "provenance.json"
     if not path.exists():
         raise FileNotFoundError(
             f"no ExoMolOP provenance record at {path}. fetch_exomolop writes "
@@ -161,6 +157,23 @@ def _validated_layout(f, path) -> dict:
     if f["kcoeff"].shape != expected:
         raise ValueError(f"{path}: kcoeff shape {f['kcoeff'].shape} != expected {expected}")
     return arrays
+
+
+# The arrays two tables must share to be mixed ordinate by ordinate, and the
+# name each is reported under.
+_GRID = (("bin_edges", "band grid"), ("t", "temperature nodes"),
+         ("p", "pressure nodes"), ("samples", "g ordinates"),
+         ("weights", "g weights"))
+
+
+def _grid_mismatch(a: dict, b: dict):
+    """Name of the first ``_GRID`` array on which two ``_validated_layout``
+    dicts disagree (shape, or values at rtol 1e-12), or None."""
+    for key, name in _GRID:
+        if a[key].shape != b[key].shape or not np.allclose(
+                a[key], b[key], rtol=1e-12, atol=0.0):
+            return name
+    return None
 
 
 def _header(f, path) -> dict:
@@ -287,16 +300,15 @@ def load_tables(molecules, nu_min, nu_max, *, molecule_table=None,
     missing = [m for m in mols if not table_path(m).exists()]
     if missing:
         raise FileNotFoundError(
-            f"ExoMolOP k-table missing for {missing}: looked in {table_dir()}\n"
+            f"ExoMolOP k-table missing for {missing}: looked in {paths.exomolop_dir()}\n"
             + _fetch_hint(missing))
 
-    out, ref = {}, None
+    out, ref, m0 = {}, None, None
     for m in mols:
         with h5py.File(table_path(m), "r") as f:
             arrays = _validated_layout(f, table_path(m))
             _header(f, table_path(m))
-            edges, gg, gw = (arrays[k] for k in ("bin_edges", "samples", "weights"))
-            t_grid, p_grid = (arrays[k] for k in ("t", "p"))
+            edges = arrays["bin_edges"]
             # bands fully inside the requested span; edges has n_band+1 entries
             keep = np.where((edges[:-1] >= nu_min) & (edges[1:] <= nu_max))[0]
             if keep.size == 0:
@@ -307,7 +319,7 @@ def load_tables(molecules, nu_min, nu_max, *, molecule_table=None,
             b0, b1 = int(keep[0]), int(keep[-1]) + 1
             # hyperslab read: (n_P, n_T, n_band, n_g) -> only the bands wanted
             k = np.asarray(f["kcoeff"][:, :, b0:b1, :], dtype=np.float64)
-            sub_edges = edges[b0:b1 + 1]
+            grid = dict(arrays, bin_edges=edges[b0:b1 + 1])
 
         if not np.all(np.isfinite(k)) or np.any(k < 0.0):
             raise ValueError(f"{table_path(m)}: kcoeff must be finite and non-negative")
@@ -316,25 +328,18 @@ def load_tables(molecules, nu_min, nu_max, *, molecule_table=None,
                 f"{table_path(m)}: kcoeff must be non-decreasing along the g ordinate")
 
         if ref is None:
-            ref = (sub_edges, t_grid, p_grid, gg, gw, m)
-        else:
-            e0, t0, p0, g0, w0, m0 = ref
-            for name, a, b in (("band grid", sub_edges, e0),
-                               ("temperature nodes", t_grid, t0),
-                               ("pressure nodes", p_grid, p0),
-                               ("g ordinates", gg, g0),
-                               ("g weights", gw, w0)):
-                if a.shape != b.shape or not np.allclose(a, b, rtol=1e-12,
-                                                         atol=0.0):
-                    raise ValueError(
-                        f"ExoMolOP tables for {m} and {m0} disagree on the "
-                        f"{name}. They are mixed ordinate by ordinate, so "
-                        "tables from different releases cannot be combined; "
-                        "re-fetch both from the same ExoMolOP release.")
+            ref, m0 = grid, m
+        elif (bad := _grid_mismatch(grid, ref)) is not None:
+            raise ValueError(
+                f"ExoMolOP tables for {m} and {m0} disagree on the {bad}. "
+                "They are mixed ordinate by ordinate, so tables from different "
+                "releases cannot be combined; re-fetch both from the same "
+                "ExoMolOP release.")
         # (n_P, n_T, n_band, n_g) -> (n_T, n_P, n_g, n_band)
         out[m] = jnp.asarray(np.log(np.maximum(k, K_FLOOR)).transpose(1, 0, 3, 2))
 
-    sub_edges, t_grid, p_grid, gg, gw, _ = ref
+    sub_edges, t_grid, p_grid, gg, gw = (
+        ref[k] for k in ("bin_edges", "t", "p", "samples", "weights"))
     if verbose:
         print(f"[ckd] ExoMolOP: {len(mols)} species, {sub_edges.size - 1} bands "
               f"over [{sub_edges[0]:.1f},{sub_edges[-1]:.1f}] cm^-1, ng={gg.size}, "

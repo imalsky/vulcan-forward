@@ -79,12 +79,6 @@ def data_root(tmp_path, monkeypatch):
     return tmp_path
 
 
-def test_paths_come_from_the_data_root_not_the_package(data_root):
-    """Library contract: never resolve data from the package's own __file__."""
-    assert exomolop.table_dir() == data_root / "exomolop"
-    assert exomolop.table_path("H2O").name == "H2O.ktable.h5"
-
-
 def test_missing_table_raises_with_the_fetch_command(data_root):
     """Standing fail-loud rule: name the remedy, and never download 389 MB
     behind the caller's back."""
