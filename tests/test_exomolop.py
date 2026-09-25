@@ -95,9 +95,13 @@ def test_missing_table_raises_with_the_fetch_command(data_root):
     assert "--molecules H2O" in msg
 
 
-def test_unknown_molecule_raises_before_touching_the_disk(data_root):
-    with pytest.raises(KeyError):
-        exomolop.load_tables(["NOT_A_MOLECULE"], 100.0, 200.0)
+@pytest.mark.parametrize("mols,err", [(["NOT_A_MOLECULE"], KeyError),
+                                      (["H2O", "H2O"], ValueError)])
+def test_unknown_or_repeated_molecules_raise_before_touching_the_disk(
+        data_root, mols, err):
+    """A repeated name would fold its opacity in twice."""
+    with pytest.raises(err):
+        exomolop.load_tables(mols, 100.0, 200.0)
 
 
 def test_layout_is_transposed_to_the_engine_order(data_root):

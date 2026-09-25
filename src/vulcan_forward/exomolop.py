@@ -280,6 +280,10 @@ def load_tables(molecules, nu_min, nu_max, *, molecule_table=None,
     unknown = [m for m in mols if m not in tbl]
     if unknown:
         raise KeyError(f"no molecule spec for {unknown} in the molecule table")
+    if len(set(mols)) != len(mols):
+        # the fold adds one opacity per list entry, so a repeat counts twice
+        raise ValueError(f"molecules {mols} name a species more than once; "
+                         "each would add its opacity again")
     missing = [m for m in mols if not table_path(m).exists()]
     if missing:
         raise FileNotFoundError(
