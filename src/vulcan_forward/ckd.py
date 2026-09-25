@@ -1,4 +1,4 @@
-"""Correlated-k core: quadrature, (T, P) interpolation, overlap.
+"""Correlated-k core: (T, P) interpolation and overlap.
 
 WHY THIS EXISTS
 ---------------
@@ -24,15 +24,8 @@ still pass through.
 """
 from __future__ import annotations
 
-import numpy as np
 import jax
 import jax.numpy as jnp
-
-
-def gauss_legendre(ng: int):
-    """g-ordinates and weights on [0, 1]."""
-    g, w = np.polynomial.legendre.leggauss(int(ng))
-    return 0.5 * (g + 1.0), 0.5 * w
 
 
 def _interp_logk(logk, t_grid, p_grid, T, P):

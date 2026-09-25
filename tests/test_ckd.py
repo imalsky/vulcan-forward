@@ -1,11 +1,10 @@
 """Correlated-k unit contracts.
 
 These run without exojax on purpose: ``vulcan_forward.ckd`` never imports it,
-so the quadrature, the band grid, the (T, P) interpolation and the overlap are
-all testable in a bare environment. The one exojax-backed test (the
-interpolation oracle) skips via ``find_spec``. (Never
-``pytest.importorskip("exojax")`` in this repo -- it poisons the import-order
-contract for every later module in the session.)
+so the (T, P) interpolation and the overlap are testable in a bare
+environment. The one exojax-backed test (the interpolation oracle) skips via
+``find_spec``, never ``pytest.importorskip("exojax")``, which poisons the
+import-order contract for every later module in the session.
 """
 from __future__ import annotations
 
@@ -29,12 +28,19 @@ if HAVE_EXOJAX and importlib.util.find_spec("vulcan_jax") is not None:
 from vulcan_forward import ckd  # noqa: E402
 
 
+def gauss_legendre(ng):
+    """g-ordinates and weights on [0, 1]: a synthetic quadrature for these
+    unit tests (the engine takes the tables' own)."""
+    g, w = np.polynomial.legendre.leggauss(int(ng))
+    return 0.5 * (g + 1.0), 0.5 * w
+
+
 def _mean_conservation_error(ng, sigma, seed):
     """Relative error in the g-weighted mean optical depth after resort-rebin."""
     import jax.numpy as jnp
     rng = np.random.default_rng(seed)
     nl, nb = 4, 6
-    g, w = ckd.gauss_legendre(ng)
+    g, w = gauss_legendre(ng)
     a = np.sort(rng.lognormal(-2.0, sigma, size=(nl, ng, nb)), axis=1)
     b = np.sort(rng.lognormal(-1.0, sigma, size=(nl, ng, nb)), axis=1)
     out = np.asarray(ckd.overlap(jnp.asarray(a), jnp.asarray(b),
@@ -74,7 +80,7 @@ def test_overlap_returns_a_monotone_g_ordering():
     import jax.numpy as jnp
     rng = np.random.default_rng(1)
     ng = 16
-    g, w = ckd.gauss_legendre(ng)
+    g, w = gauss_legendre(ng)
     a = np.sort(rng.lognormal(0.0, 2.0, size=(2, ng, 3)), axis=1)
     b = np.sort(rng.lognormal(0.0, 2.0, size=(2, ng, 3)), axis=1)
     out = np.asarray(ckd.overlap(jnp.asarray(a), jnp.asarray(b),
@@ -88,7 +94,7 @@ def test_overlap_is_differentiable():
     import jax
     import jax.numpy as jnp
     ng = 8
-    g, w = ckd.gauss_legendre(ng)
+    g, w = gauss_legendre(ng)
     gg, gw = jnp.asarray(g), jnp.asarray(w)
     a = jnp.asarray(np.sort(np.linspace(0.1, 2.0, ng))[None, :, None])
     b = jnp.asarray(np.sort(np.linspace(0.2, 1.0, ng))[None, :, None])
@@ -113,7 +119,7 @@ def test_fold_wo_is_bit_identical_to_naive_refolds():
     import jax.numpy as jnp
     rng = np.random.default_rng(3)
     nl, ng, nb, n = 3, 8, 4, 5
-    g, w = ckd.gauss_legendre(ng)
+    g, w = gauss_legendre(ng)
     gg, gw = jnp.asarray(g), jnp.asarray(w)
     dts = [jnp.asarray(np.sort(rng.lognormal(-1.0, 1.0, size=(nl, ng, nb)),
                                axis=1)) for _ in range(n)]
@@ -156,7 +162,7 @@ def test_fold_is_bit_identical_to_the_python_loop_fold():
     import jax.numpy as jnp
     rng = np.random.default_rng(4)
     nl, ng, nb, n = 3, 8, 4, 5
-    g, w = ckd.gauss_legendre(ng)
+    g, w = gauss_legendre(ng)
     gg, gw = jnp.asarray(g), jnp.asarray(w)
     dts = jnp.asarray(np.sort(rng.lognormal(-1.0, 1.0, size=(n, nl, ng, nb)),
                               axis=2))

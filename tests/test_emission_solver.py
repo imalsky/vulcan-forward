@@ -136,12 +136,12 @@ def test_is_differentiable_through_the_boundary_source():
 # interior term.
 
 from vulcan_forward.exojax_rt import _run_emis_ckd_linsap    # noqa: E402
-from vulcan_forward import ckd                               # noqa: E402
 
 
 def _gquad(ng=16):
-    g, w = ckd.gauss_legendre(ng)
-    return jnp.asarray(g), jnp.asarray(w)
+    """Gauss-Legendre nodes and weights on [0, 1] (a synthetic quadrature)."""
+    g, w = np.polynomial.legendre.leggauss(ng)
+    return jnp.asarray(0.5 * (g + 1.0)), jnp.asarray(0.5 * w)
 
 
 def test_ckd_emission_matches_line_by_line_when_every_g_is_identical():
