@@ -45,8 +45,9 @@ from vulcan_forward import vulcan_chem                       # noqa: E402
 import jax                                                   # noqa: E402
 import jax.numpy as jnp                                      # noqa: E402
 
+# dt_max: the production step cap (vulcan-retrieval's case sets 1e11 s).
 PROFILE = {"use_photo": False, "yconv_cri": 1.0e-2, "nz": 20,
-           "skip_warmup": True}
+           "skip_warmup": True, "dt_max": 1.0e11}
 # [lnZ, c_o, lnKzz, T-offset]: the baseline column and three perturbed ones,
 # heterogeneous enough that they do not all converge at the same tick.
 THETAS = np.array([[0.0, 0.0, 0.0, 0.0],
