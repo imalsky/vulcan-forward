@@ -71,6 +71,13 @@ KCOEFF_UNITS = "cm^2/molecule"
 P_UNITS = "bar"
 METHOD = "petit_samples"
 
+# Two tables mix only if their grids agree to this relative tolerance (float64
+# rounding of one published grid); table_info rounds its grid hash so tables
+# that agree to it share one key.
+_GRID_RTOL = 1.0e-12
+# The quadrature weights must sum to 1 to this tolerance (float64 rounding).
+_WEIGHT_SUM_RTOL, _WEIGHT_SUM_ATOL = 1.0e-10, 1.0e-12
+
 
 def table_path(molecule: str) -> Path:
     return paths.exomolop_dir() / f"{molecule}.ktable.h5"
@@ -149,7 +156,7 @@ def _validated_layout(f, path) -> dict:
     weights = arrays["weights"]
     if np.any(weights <= 0.0) or weights.shape != arrays["samples"].shape:
         raise ValueError(f"{path}: weights must be positive and match samples")
-    if not np.isclose(np.sum(weights), 1.0, rtol=1e-10, atol=1e-12):
+    if not np.isclose(np.sum(weights), 1.0, rtol=_WEIGHT_SUM_RTOL, atol=_WEIGHT_SUM_ATOL):
         raise ValueError(f"{path}: quadrature weights sum to {np.sum(weights):.17g}, not 1")
 
     expected = (arrays["p"].size, arrays["t"].size,
@@ -168,10 +175,10 @@ _GRID = (("bin_edges", "band grid"), ("t", "temperature nodes"),
 
 def _grid_mismatch(a: dict, b: dict):
     """Name of the first ``_GRID`` array on which two ``_validated_layout``
-    dicts disagree (shape, or values at rtol 1e-12), or None."""
+    dicts disagree (shape, or values at ``_GRID_RTOL``), or None."""
     for key, name in _GRID:
         if a[key].shape != b[key].shape or not np.allclose(
-                a[key], b[key], rtol=1e-12, atol=0.0):
+                a[key], b[key], rtol=_GRID_RTOL, atol=0.0):
             return name
     return None
 
@@ -236,7 +243,7 @@ def table_info(molecule: str) -> dict:
         arrays = _validated_layout(f, path)
         rec = _header(f, path)
         t, p, e = (arrays[k] for k in ("t", "p", "bin_edges"))
-        # Signature of the grid as the loader's 1e-12 agreement rule sees it:
+        # Signature of the grid as the loader's _GRID_RTOL rule sees it:
         # round before hashing so tables that load_tables accepts together
         # share one key; each array is prefixed by its shape.
         digest = hashlib.sha256()

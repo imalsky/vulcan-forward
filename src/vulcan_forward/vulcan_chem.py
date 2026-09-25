@@ -112,6 +112,13 @@ _ELEMENTAL_REPAIR = (("He", "He"), ("O", "H2O"), ("C", "CO"), ("N", "N2"), ("S",
 # (~1e-2 -> ~1e-8 by three passes; see audit_init).
 _ELEMENTAL_REPAIR_ITERS = 3
 
+# The loose branch's slope bound, min over the column of Kzz / (frac * Hp)^2
+# clipped to [floor, cap]: these mirror vulcan_jax.outer_loop's `_slope_min`
+# (keep in sync; ConvDiag.conv_normal recomputes its certificate).
+_SLOPE_MIN_HP_FRAC = 0.1
+_SLOPE_MIN_CAP = 1.0e-8
+_SLOPE_MIN_FLOOR = 1.0e-10
+
 # Tolerance (g/mol) for checking constants.ATOMIC_MASSES against the package's
 # composition-table mass column, which carries mild rounding (O listed as 16.0 vs
 # 15.999; the electron as 1e-3 vs 5.4858e-4). Real drift -- a swapped or wrong
@@ -485,7 +492,8 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
                  if rs_warmup.photo_runtime is not None else 0.0)
         _w_slope_min = max(min(float(np.min(
             np.asarray(rs_warmup.atm.Kzz)
-            / (0.1 * np.asarray(rs_warmup.atm.Hp)[:-1]) ** 2)), 1e-8), 1e-10)
+            / (_SLOPE_MIN_HP_FRAC * np.asarray(rs_warmup.atm.Hp)[:-1]) ** 2)),
+            _SLOPE_MIN_CAP), _SLOPE_MIN_FLOOR)
         baseline_conv_normal = bool(
             (((_w_ld < float(cfg.yconv_cri)) and (_w_lddt < float(cfg.slope_cri)))
              or ((_w_ld < float(cfg.yconv_min)) and (_w_lddt < _w_slope_min)))
@@ -553,8 +561,9 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         branch, so a consumer can tell an unsettled sensitivity (branch
         set, ``tangent_longdy`` above the gate) from an uncertified column."""
         slope_min = jnp.minimum(
-            jnp.min(final.pv.Kzz / (0.1 * final.Hp[:-1]) ** 2), jnp.float64(1e-8))
-        slope_min = jnp.maximum(slope_min, jnp.float64(1e-10))
+            jnp.min(final.pv.Kzz / (_SLOPE_MIN_HP_FRAC * final.Hp[:-1]) ** 2),
+            jnp.float64(_SLOPE_MIN_CAP))
+        slope_min = jnp.maximum(slope_min, jnp.float64(_SLOPE_MIN_FLOOR))
         tight = (final.longdy < yconv_cri_v) & (final.longdydt < slope_cri_v)
         loose = (final.longdy < yconv_min_v) & (final.longdydt < slope_min)
         # The photo-flux gate AND the solver's geometry term (vulcan-jax >=

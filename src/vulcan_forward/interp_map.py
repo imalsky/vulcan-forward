@@ -23,6 +23,10 @@ from __future__ import annotations
 import numpy as np
 import jax.numpy as jnp
 
+# Relative slack on the chemistry top: an ART top that equals it up to
+# rounding is not a clamp.
+_TOP_MATCH_RTOL = 1.0e-9
+
 
 def make_to_art(p_bar_vulcan: np.ndarray, p_bar_art: np.ndarray):
     """Build a differentiable ``to_art(profile_nz) -> profile_nlayer`` interpolator.
@@ -74,7 +78,7 @@ def make_to_art(p_bar_vulcan: np.ndarray, p_bar_art: np.ndarray):
 
     # Loud, host-side accounting of the clamped span (runs once at build).
     p_top_v, p_btm_v = float(np.min(p_bar_vulcan)), float(np.max(p_bar_vulcan))
-    n_top_clamp = int(np.sum(np.asarray(p_bar_art) < p_top_v * (1.0 - 1e-9)))
+    n_top_clamp = int(np.sum(np.asarray(p_bar_art) < p_top_v * (1.0 - _TOP_MATCH_RTOL)))
     n_btm_clamp = int(np.sum(np.asarray(p_bar_art) > p_btm_v))
     if n_btm_clamp:
         raise ValueError(
