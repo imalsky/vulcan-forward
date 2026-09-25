@@ -4,11 +4,11 @@ from a queue of thetas (vulcan-jax ``OuterLoop.run_queue``).
 Three properties:
 
 * with at least as many lanes as thetas nothing is ever refilled, so every lane
-  runs the ticks the plain batch gives it: same accept_count, same certificate,
-  and the y's agree at the convergence scale. NOT bitwise -- ``run_queue``
-  builds the seed inside its jitted loop while ``converged_y_batch`` builds it
-  outside, and the two compilations of ``_prep`` differ by a ulp in y_ini,
-  which the trajectory amplifies;
+  runs the ticks the plain batch gives it: from one identical starting column,
+  the same accept_count and certificate. Cold, the y's agree at the
+  convergence scale only -- ``run_queue`` builds the seed inside its jitted
+  loop while ``converged_y_batch`` builds it outside, and the two compilations
+  of ``_prep`` can differ by a ulp in y_ini, which the trajectory amplifies;
 * with fewer lanes a theta enters the loop at the tick its lane was freed at,
   which moves the photolysis / geometry cadence exactly as the batch already
   moves it against the solo solve: agreement is again at the CONVERGENCE
@@ -117,10 +117,12 @@ def _report(tag, y_q, cd_q, y_b, cd_b):
 
 def test_queue_agrees_with_the_batch_with_and_without_refill(chem, ref):
     """Four lanes for four thetas: nothing refills, so every job runs the
-    plain batch's ticks -- the same accept count and certificate, the y's at
-    the convergence scale only (see the module docstring). Two lanes, chunk 1:
-    a theta enters at the tick its lane was freed at, and agreement is again
-    at the convergence scale with the certificate theta for theta."""
+    plain batch's ticks. Started from one identical column (the model's y0,
+    as a continuation) the two routes take the same accept count and
+    certificate; cold, each builds its own seed (the queue inside its jitted
+    loop), which can differ at the last bit, so the cold arm and the refilled
+    two-lane arm (a theta enters at the tick its lane was freed at) agree at
+    the convergence scale, with the certificate theta for theta."""
     y_b, cd_b = ref
     th = jnp.asarray(THETAS)
     y_q, cd_q = chem.converged_y_queue(th, n_lanes=THETAS.shape[0])
@@ -142,9 +144,17 @@ def test_queue_agrees_with_the_batch_with_and_without_refill(chem, ref):
                           np.asarray(cd_q.accept_count)[::-1])
     assert np.array_equal(np.asarray(cd_q2.conv_normal),
                           np.asarray(cd_q.conv_normal)[::-1])
-    assert np.array_equal(np.asarray(cd_q.accept_count),
-                          np.asarray(cd_b.accept_count))
     _report("lanes=4", y_q, cd_q, y_b, cd_b)
+
+    # The batch-tick check: both routes from one column, so only the queue's
+    # tick scheduling is under test.
+    y0 = jnp.broadcast_to(jnp.asarray(chem.y0), (THETAS.shape[0],) + chem.y0.shape)
+    same = {"warm_y": y0, "lnZ_ref": 0.0, "c_o_ref": 0.0}
+    y_qs, cd_qs = chem.converged_y_queue(th, n_lanes=THETAS.shape[0], **same)
+    y_bs, cd_bs = chem.converged_y_batch(th, return_conv_diag=True, **same)
+    assert np.array_equal(np.asarray(cd_qs.accept_count),
+                          np.asarray(cd_bs.accept_count))
+    _report("lanes=4 from y0", y_qs, cd_qs, np.asarray(y_bs), cd_bs)
 
     y_q, cd_q = chem.converged_y_queue(th, n_lanes=2, chunk=1)
     _report("lanes=2 chunk=1", y_q, cd_q, y_b, cd_b)
