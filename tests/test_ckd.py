@@ -50,25 +50,20 @@ def _mean_conservation_error(ng, sigma, seed):
     return np.abs(got / want - 1.0)
 
 
-def test_overlap_nearly_conserves_the_band_mean_optical_depth():
+def test_overlap_nearly_conserves_the_band_mean_and_converges_in_ng():
     """Random overlap redistributes optical depth across g-ordinates and then
     re-interpolates ng*ng combinations back onto ng ordinates, so the
     g-weighted mean is conserved only to the accuracy of that rebin.
 
     It has to be small, because the transit radius goes as ln(tau): a 1 percent
     error in mean optical depth is 0.01 scale heights, about 8 km on WASP-39 b,
-    about 3 ppm of transit depth. That is consistent with the 4.7-7.3 ppm
-    measured end to end against the R = 700,000 line-by-line spectrum.
+    about 3 ppm of transit depth. And the rebin, the only approximation in the
+    mixture treatment, must shrink as ng rises, or the quadrature choice would
+    be unfalsifiable.
     """
     err = _mean_conservation_error(16, 1.0, 0)  # ExoMolOP tables carry ng=16
     assert np.median(err) < 0.01
     assert err.max() < 0.05
-
-
-def test_overlap_rebin_error_falls_as_ng_rises():
-    """The rebin is the only approximation in the mixture treatment, so it must
-    converge; if it did not, raising ng would not buy accuracy and the
-    quadrature choice would be unfalsifiable."""
     coarse = np.median(_mean_conservation_error(8, 1.0, 1))
     fine = np.median(_mean_conservation_error(32, 1.0, 1))
     assert fine < coarse
@@ -157,8 +152,8 @@ def test_fold_is_bit_identical_to_the_python_loop_fold():
     fold's op sequence: the primal, a jvp and a vjp bitwise equal (both
     jitted, as production runs them), with enough molecules for several scan
     steps. Bitwise on the CPU; on the GH200 the two differ in the last bits
-    (job 79498: XLA fuses a scan body and straight-line code differently and
-    rounds inside a fusion accordingly), so there the bar is rounding."""
+    (XLA fuses a scan body and straight-line code differently and rounds
+    inside a fusion accordingly), so there the bar is rounding."""
     import jax.numpy as jnp
     rng = np.random.default_rng(4)
     nl, ng, nb, n = 3, 8, 4, 5

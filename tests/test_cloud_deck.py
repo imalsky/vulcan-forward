@@ -108,18 +108,6 @@ def _kappa(nu, c0, alpha):
     return 10.0 ** c0 * (nu / constants.CLOUD_NUC0) ** alpha
 
 
-def test_grey_deck_is_exactly_flat(rt_cloud_only):
-    """alpha = 0 must give a band-independent depth to the last bit.
-
-    Catches any wavelength dependence leaking into the deck: a wrong power,
-    a wrong reference wavenumber, or the continuum failing to broadcast
-    identically over the g-ordinates.
-    """
-    depth_of, _ = rt_cloud_only
-    d = np.asarray(depth_of(jnp.array([0.0, 0.0])))
-    assert np.ptp(d) == 0.0
-
-
 @pytest.mark.parametrize("c0,alpha", [(-2.0, 0.0), (0.0, 0.0),
                                       (-2.0, 2.0), (-2.0, 4.0)])
 def test_depth_matches_closed_form(rt_cloud_only, c0, alpha):
@@ -127,10 +115,16 @@ def test_depth_matches_closed_form(rt_cloud_only, c0, alpha):
 
     The residual is dominated by the engine's inverse-square gravity, which
     the constant-g closed form does not carry. Measured worst case over these
-    four decks: 1.04e-2 H; the gate is 3x that.
+    four decks: 1.04e-2 H; the gate is 3x that. A grey deck (alpha = 0) must
+    also be band-independent to the last bit: a wrong power, a wrong
+    reference wavenumber, or a continuum that fails to broadcast identically
+    over the g-ordinates would leak a wavelength dependence.
     """
     depth_of, nu = rt_cloud_only
-    reff = np.sqrt(np.asarray(depth_of(jnp.array([c0, alpha])))) * CASE["rstar_cm"]
+    depth = np.asarray(depth_of(jnp.array([c0, alpha])))
+    if alpha == 0.0:
+        assert np.ptp(depth) == 0.0
+    reff = np.sqrt(depth) * CASE["rstar_cm"]
     ana = _reff_analytic(_kappa(nu, c0, alpha))
     assert np.max(np.abs(reff - ana)) / H_SCALE < 3.1e-2
 

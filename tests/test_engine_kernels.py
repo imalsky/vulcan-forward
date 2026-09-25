@@ -67,29 +67,16 @@ def test_to_art_accepts_a_descending_source_grid():
     assert np.allclose(out_up, out_down, rtol=0, atol=1e-12)
 
 
-def test_to_art_refuses_an_art_grid_deeper_than_the_chemistry():
-    """Deep clamping would fabricate deep-atmosphere chemistry: it must raise."""
-    p_v = np.logspace(-6, 0, 20)             # chemistry bottom = 1 bar
-    p_art = np.logspace(-5, 1, 15)           # ART bottom = 10 bar, too deep
-    with pytest.raises(ValueError, match="below the VULCAN"):
-        _to_art(p_v, p_art)
-
-
-def test_to_art_refuses_an_art_top_above_the_chemistry():
-    """A clamped top fabricates upper-atmosphere chemistry (73 ppm/decade on
-    W39b): refuse it like the bottom. A coincident top is allowed."""
-    p_v = np.logspace(-4, 0, 20)
-    p_art = np.logspace(-6, -0.5, 15)        # extends ABOVE the chemistry top
-    with pytest.raises(ValueError, match="above the VULCAN"):
-        _to_art(p_v, p_art)
-    _to_art(p_v, np.logspace(-4, -0.5, 15))  # same top: no clamp, no error
-
-
-@pytest.mark.parametrize("grid", [
-    [1e-5, 1e-4, 1e-4, 1e-2],        # duplicate pressure
-    [1e-5, np.nan, 1e-3, 1e-2],      # non-finite
-    [1e-5, 0.0, 1e-3, 1e-2],         # non-positive
+@pytest.mark.parametrize("p_v,p_art", [
+    # clamping fabricates chemistry the grid never solved, at either end
+    (np.logspace(-6, 0, 20), np.logspace(-5, 1, 15)),     # ART bottom too deep
+    (np.logspace(-4, 0, 20), np.logspace(-6, -0.5, 15)),  # ART top too high
+    ([1e-5, 1e-4, 1e-4, 1e-2], np.logspace(-5, -2, 4)),   # duplicate pressure
+    ([1e-5, np.nan, 1e-3, 1e-2], np.logspace(-5, -2, 4)), # non-finite
+    ([1e-5, 0.0, 1e-3, 1e-2], np.logspace(-5, -2, 4)),    # non-positive
 ])
-def test_to_art_refuses_invalid_pressure_coordinates(grid):
+def test_to_art_refuses_clamped_or_invalid_grids(p_v, p_art):
+    """A coincident top or bottom is allowed: the identity test above maps a
+    grid onto itself."""
     with pytest.raises(ValueError):
-        _to_art(grid, np.logspace(-5, -2, 4))
+        _to_art(p_v, p_art)

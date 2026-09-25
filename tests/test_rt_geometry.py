@@ -1,17 +1,15 @@
 """Geometry contracts for the transmission RT.
 
-These exist because of a real, shipped defect. Handing exojax the consumer's
-``rp_cm``/``gs_cgs`` directly as ``radius_btm``/``gravity_btm`` places them at
-the LOWER boundary of the bottom layer (7 bar). A catalogue planet radius is
-instead the transit radius, near the terminator photosphere at roughly a
-millibar. That stacks the whole 7 bar -> mbar column on top of a radius that
-already was the photospheric one: WASP-39 b's modelled transit depth came out
-at 26,754 ppm against a published 21,381, with 1.42x too much spectral
-contrast.
+Handing exojax the consumer's ``rp_cm``/``gs_cgs`` directly as
+``radius_btm``/``gravity_btm`` places them at the LOWER boundary of the bottom
+layer. A catalogue planet radius is instead the transit radius, near the
+terminator photosphere at roughly a millibar, so that stacks the whole
+column on top of a radius that already was the photospheric one (notes
+register #10).
 
-The tests below are deliberately cheap: they exercise the real
-``_anchor_to_grid_bottom`` against an independent closed-form solution and a set
-of physical invariants, with no line lists, no opacity build and no network.
+The tests are cheap: the real ``_radius_at`` / ``_anchor_to_grid_bottom``
+against an independent closed form and two physical invariants, with no line
+lists, no opacity build and no network.
 """
 from __future__ import annotations
 
@@ -67,108 +65,51 @@ def _isothermal(T=1097.0, mmw=2.502, n=NLAYER):
     return jnp.full(n, T), jnp.full(n, mmw)
 
 
-def test_matches_the_closed_form_for_an_isothermal_column():
-    """u = 1/r is linear in lnP, so an isothermal column has an exact answer.
+@pytest.mark.parametrize("n", (20, 60, 100, 400))
+def test_matches_the_isothermal_closed_form_at_every_level(n):
+    """u = 1/r is linear in lnP, so an isothermal column has an exact answer:
+    1/r(p) = 1/r_ref + C ln(p/p_ref), C = k T / (mu m_u g_ref r_ref^2), with
+    GM fixed so g = g_ref (r_ref/r)^2.
 
-    du/dlnP = kT/(mu m_H g_ref r_ref^2) = const, hence
-    u_btm = u_ref + const * ln(P_btm/P_ref). If the cumulative integral in
-    _anchor_to_grid_bottom ever drifts (wrong sign, wrong direction, an
-    off-by-one in the trapezoid) this catches it exactly.
+    Checked at the top boundary, inside the top half layer, an interior level,
+    a FIXED 1 bar level (so r(p) is the same at every layer count) and the
+    bottom boundary: the integration nodes must reach half a layer beyond
+    both end centres (``jnp.interp`` clamps outside them, which returned the
+    top-centre radius and no derivative in the top half layer).
+    ``_anchor_to_grid_bottom`` must land on the bottom layer's LOWER
+    BOUNDARY, not its centre, at any resolution: anchoring to the centre made
+    the transit depth depend on art_nlayer. Deeper is then smaller and
+    heavier by construction, and the correction scales with H/Rp.
     """
     T, mmw, r_ref, g_ref, p_ref = 1097.0, 2.502, 1.279 * R_JUP_CM, 422.0, 1.0e-3
-    lnp = _grid()
-    Ti, mi = _isothermal(T, mmw)
-
-    r_btm, g_btm = _anchor_to_grid_bottom(lnp, Ti, mi, r_ref, g_ref, p_ref)
-
+    lnp = _grid(n)
+    Ti, mi = _isothermal(T, mmw, n)
+    d = float(lnp[1] - lnp[0])
     c = constants.K_B_CGS * T / (mmw * constants.M_U_CGS * g_ref * r_ref ** 2)
-    u_exact = 1.0 / r_ref + c * np.log(_p_boundary() / p_ref)
-    assert float(r_btm) == pytest.approx(1.0 / u_exact, rel=1e-9)
-    # GM is held fixed, so gravity must follow the inverse square exactly.
-    assert float(g_btm) == pytest.approx(
-        g_ref * (r_ref / float(r_btm)) ** 2, rel=1e-12)
 
+    def exact(lnp_t):
+        return 1.0 / (1.0 / r_ref + c * (lnp_t - np.log(p_ref)))
 
-def test_deeper_is_smaller_and_heavier():
-    """The direction of the correction. Getting this backwards would inflate
-    the radius instead of shrinking it, which is the original bug with a sign
-    flip and would still look plausible on a single planet."""
-    lnp = _grid()
-    Ti, mi = _isothermal()
-    r_ref, g_ref = 1.279 * R_JUP_CM, 422.0
-    r_btm, g_btm = _anchor_to_grid_bottom(lnp, Ti, mi, r_ref, g_ref, 1.0e-3)
-    assert float(r_btm) < r_ref
-    assert float(g_btm) > g_ref
-
-
-
-
-def test_the_anchor_level_is_the_grid_bottom_BOUNDARY_at_any_resolution():
-    """``radius_btm`` means the radius at the bottom layer's LOWER BOUNDARY.
-
-    Anchoring to the deepest layer CENTRE instead is half a log-layer
-    shallower, and the size of that half layer shrinks with resolution. A
-    requested 1 mbar reference then lands at 1.11 mbar on the planner's
-    100-layer grid and 1.71 mbar on vulcan-retrieval's 20-layer SMOKE preset,
-    which made the absolute transit depth depend on art_nlayer (+0.20% and
-    +1.02%). Here _anchor_to_grid_bottom must agree with _radius_at aimed
-    explicitly at the boundary, at every layer count.
-    """
-    r_ref, g_ref, p_ref = 1.279 * R_JUP_CM, 422.0, 1.0e-3
-    for n in (20, 60, 100, 400):
-        lnp = _grid(n)
-        Ti, mi = _isothermal(n=n)
-        got = float(_anchor_to_grid_bottom(lnp, Ti, mi, r_ref, g_ref, p_ref)[0])
-        want = float(_radius_at(lnp, Ti, mi, r_ref, g_ref, p_ref,
-                                _p_boundary(n))[0])
-        assert got == pytest.approx(want, rel=1e-12), n
-
-
-def test_radius_at_a_fixed_pressure_is_resolution_independent():
-    """The physical content: r(p) at a FIXED pressure must not depend on how
-    many layers the grid happens to have. Isothermal, so the integrand carries
-    no discretisation error of its own and any spread is the anchoring."""
-    r_ref, g_ref, p_ref, p_tgt = 1.279 * R_JUP_CM, 422.0, 1.0e-3, 1.0
-    got = [float(_radius_at(_grid(n), *_isothermal(n=n), r_ref, g_ref,
-                            p_ref, p_tgt)[0])
-           for n in (20, 60, 100, 400)]
-    assert max(got) / min(got) - 1.0 < 1e-9, got
-
-
-def test_correction_scales_with_scale_height():
-    """The error the bug caused scales as H/Rp, which is why it was worst on the
-    low-gravity planets (WASP-107 b, chi2/N 490 against its published spectrum)
-    and mildest on the high-gravity ones. Halving gravity must roughly double
-    the altitude correction."""
-    lnp = _grid()
-    Ti, mi = _isothermal()
-    r_ref = 1.279 * R_JUP_CM
-    dz_hi = r_ref - float(_anchor_to_grid_bottom(lnp, Ti, mi, r_ref, 844.0, 1e-3)[0])
-    dz_lo = r_ref - float(_anchor_to_grid_bottom(lnp, Ti, mi, r_ref, 422.0, 1e-3)[0])
-    assert dz_lo / dz_hi == pytest.approx(2.0, rel=0.05)
-
-
-def test_wasp39b_lands_on_the_published_transit_radius():
-    """The number that matters, on the planet with published data.
-
-    WASP-39 b: Rp = 1.279 R_Jup, g = 422 cm/s^2, isothermal at the ~1097 K
-    photosphere. Converting the catalogue radius down to 7 bar must give
-    ~1.18 R_Jup. The pre-fix code used 1.279 there, and that 8% radius error is
-    the 25% median transit-depth error the JWST ERS comparison showed.
-    """
-    lnp = _grid()
-    Ti, mi = _isothermal()
-    r_btm, _ = _anchor_to_grid_bottom(
-        lnp, Ti, mi, 1.279 * R_JUP_CM, 422.0, 1.0e-3)
-    assert float(r_btm) / R_JUP_CM == pytest.approx(1.180, abs=0.01)
+    for lnp_t in (float(lnp[0]) - 0.5 * d,      # top boundary
+                  float(lnp[0]) - 0.25 * d,     # inside the top half layer
+                  float(lnp[3]) + 0.3 * d,      # an interior level
+                  0.0,                          # 1 bar
+                  np.log(_p_boundary(n))):      # bottom boundary
+        r, g = _radius_at(lnp, Ti, mi, r_ref, g_ref, p_ref, np.exp(lnp_t))
+        assert float(r) == pytest.approx(exact(lnp_t), rel=1e-12), lnp_t
+        assert float(g) == pytest.approx(g_ref * (r_ref / exact(lnp_t)) ** 2,
+                                         rel=1e-12)
+    r_btm, g_btm = _anchor_to_grid_bottom(lnp, Ti, mi, r_ref, g_ref, p_ref)
+    assert float(r_btm) == pytest.approx(exact(np.log(_p_boundary(n))), rel=1e-12)
+    assert float(g_btm) == pytest.approx(g_ref * (r_ref / float(r_btm)) ** 2,
+                                         rel=1e-12)
 
 
 def test_a_hotter_deep_atmosphere_pushes_the_bottom_radius_down():
-    """The correction uses the REAL T(p), not a constant. WASP-39 b's shipped
-    table runs 2246 K at 7.6 bar, far hotter than its 1097 K photosphere, and a
-    puffier deep column means more altitude between 7 bar and the mbar level,
-    hence a smaller bottom radius. If T were ever dropped from the integrand
-    this test fails."""
+    """The correction uses the REAL T(p), not a constant: a puffier deep
+    column means more altitude between the bottom and the mbar level, hence
+    a smaller bottom radius. If T were ever dropped from the integrand this
+    test fails."""
     lnp = _grid()
     _, mi = _isothermal()
     r_ref, g_ref = 1.279 * R_JUP_CM, 422.0

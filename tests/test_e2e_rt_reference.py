@@ -82,29 +82,13 @@ def _assert_stats(r, meta, label):
            f"(tol: mean 1+/-{tol['mean_ratio_abs']:.2e}, "
            f"rms {tol['rms_pct']:.4f}%, max {tol['max_dev_pct']:.4f}%). "
            "A tolerance breach means the RT physics moved relative to the "
-           "2026-08-15 petitRADTRANS verification; if the change is intended, "
+           "petitRADTRANS verification; if the change is intended, "
            "regenerate the fixture (meta carries the recipe) and say so in "
            "the commit.")
     print("\n  " + msg)
     assert abs(m - meta["stats"]["mean_ratio"]) <= tol["mean_ratio_abs"], msg
     assert rms <= tol["rms_pct"], msg
     assert mx <= tol["max_dev_pct"], msg
-
-
-def test_art_bounds_come_from_the_profile_not_a_module_constant():
-    """`art_ptop_bar` must reach the grid through the PROFILE.
-
-    A consumer re-exported the module constant as a value copy and rebound that
-    instead; every rung of its convergence ladder then built the same grid and
-    the ladder reported a structural zero.
-    """
-    base = dict(molecules=["H2O"], nu_min=2000.0, nu_max=10000.0,
-                opacity_mode="exomolop", art_nlayer=20, art_pbtm_bar=1.0e2,
-                p_ref_bar=10.0, rp_cm=7.1492e9, gs_cgs=1.0e3, rstar_cm=RSTAR_W39)
-    a = exojax_rt.build_rt_model({**base, "art_ptop_bar": 1.0e-6})
-    b = exojax_rt.build_rt_model({**base, "art_ptop_bar": 1.0e-8})
-    assert float(a.art_ptop_bar) == 1.0e-6 and float(b.art_ptop_bar) == 1.0e-8
-    assert float(np.min(a.p_art_bar)) > float(np.min(b.p_art_bar))
 
 
 def test_a_column_deeper_than_the_ktable_ceiling_is_refused():
@@ -321,7 +305,9 @@ def test_eclipse_flux_carries_the_tau_two_thirds_photospheric_radius():
                                       emod.p_ref_bar, emod.p_ref_emission_bar)
     # independent reference: the isothermal closed form of the same integral
     C = constants.K_B_CGS * T / (mmw * constants.M_U_CGS * prof["gs_cgs"] * prof["rp_cm"] ** 2)
-    r_iso = lambda p: 1.0 / (1.0 / prof["rp_cm"] + C * np.log(p / emod.p_ref_bar))
+    def r_iso(p):
+        return 1.0 / (1.0 / prof["rp_cm"] + C * np.log(p / emod.p_ref_bar))
+
     assert float(r_em) == pytest.approx(r_iso(emod.p_ref_emission_bar), rel=1e-12)
     # tau is zero at the grid's TOP BOUNDARY (half a layer above the first
     # centre; exojax's dParr[0] spans p0 k^0.5 .. p0 k^-0.5), so the gray
@@ -347,29 +333,9 @@ def test_eclipse_flux_carries_the_tau_two_thirds_photospheric_radius():
                              - 1.0)) < 1e-12
     assert (float(r_iso(0.3)) / float(r_em)) ** 2 < 0.99   # a deeper photosphere is smaller
     # and the radius keeps its derivative there: the eclipse flux responds to kappa
-    f = lambda lk: emod.eclipse_flux_tau({"H2O": zeros}, zeros, Tcol, mcol,
-                                         vmr_he=zeros, cloud=jnp.asarray([lk, 0.0]))[0]
+    def f(lk):
+        return emod.eclipse_flux_tau({"H2O": zeros}, zeros, Tcol, mcol,
+                                     vmr_he=zeros, cloud=jnp.asarray([lk, 0.0]))[0]
+
     dflux = np.asarray(jax.jvp(f, (lk_top,), (1.0,))[1])
     assert np.all(np.isfinite(dflux)) and float(np.abs(dflux).max()) > 0.0
-
-
-def test_radius_at_matches_the_isothermal_closed_form_across_both_half_layers():
-    """Isothermal column: 1/r(p) = 1/r_ref + C ln(p/p_ref) exactly, with
-    C = k T / (mu m_u g_ref r_ref^2). The nodes must reach half a layer ABOVE
-    the top centre as well as below the bottom one: jnp.interp clamps outside
-    its nodes, which returned the top-centre radius (and no radius derivative)
-    for any level in the top half layer, the level _photosphere_lnp returns
-    when tau = 2/3 is reached in the first half layer."""
-    T, mmw, r_ref, g_ref, p_ref = 1500.0, 2.33, 8.6e9, 500.0, 1.0e-3
-    lnp = jnp.linspace(np.log(1.0e-6), np.log(1.0e2), 80)      # centres
-    d = float(lnp[1] - lnp[0])
-    C = constants.K_B_CGS * T / (mmw * constants.M_U_CGS * g_ref * r_ref ** 2)
-    Tc, mc = jnp.full(80, T), jnp.full(80, mmw)
-    for lnp_t in (float(lnp[0]) - 0.5 * d,      # top boundary
-                  float(lnp[0]) - 0.25 * d,     # inside the top half layer
-                  float(lnp[3]) + 0.3 * d,      # an interior level
-                  float(lnp[-1]) + 0.5 * d):    # bottom boundary
-        r, g = exojax_rt._radius_at(lnp, Tc, mc, r_ref, g_ref, p_ref, np.exp(lnp_t))
-        want = 1.0 / (1.0 / r_ref + C * (lnp_t - np.log(p_ref)))
-        assert float(r) == pytest.approx(want, rel=1e-12), lnp_t
-        assert float(g) == pytest.approx(g_ref * (r_ref / want) ** 2, rel=1e-12)

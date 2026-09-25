@@ -9,10 +9,8 @@ collapse onto, and neither raises:
   1/r while its height integrator `normalized_layer_height` is inverse-square.
   Using it leaves heights and opacity columns on different gravities.
 
-Measured on an isothermal gray W39b-like column at nlayer=60 (audit 2026-07-28):
--101.8 ppm constant-g, -50.8 ppm `gravity_profile`, +1.5 ppm this profile,
-against an independent chord quadrature. So the difference between these three
-is a real transmission bias, not a rounding choice.
+Against an independent chord quadrature the three differ by tens of ppm in
+transit depth (notes register #9): a real bias, not a rounding choice.
 
 The test drives the helper with a tiny FAKE ART whose `atmosphere_height`
 returns known arrays, so it pins the algebra without building an opacity grid,
@@ -86,21 +84,12 @@ def _profile():
 
 
 def test_gravity_profile_is_exactly_inverse_square():
-    """g(r) == g_btm / r_mid**2 on the mid-layer normalized radius."""
-    _, g = _profile()
+    """g(r) == g_btm / r_mid**2 on the mid-layer normalized radius, with
+    radius_btm / gravity_btm reaching `atmosphere_height` unmodified (a helper
+    that substituted a default planet would still pass the algebra)."""
+    art, g = _profile()
     r_mid = _R_LOWER + 0.5 * _HEIGHT
     expected = (_G_BTM / r_mid**2).reshape(_NLAYER, 1)
     # Same operations in the same precision -> exact, not merely close.
     np.testing.assert_array_equal(g, expected)
-
-
-
-
-def test_gravity_profile_uses_the_supplied_geometry():
-    """radius_btm / gravity_btm reach `atmosphere_height` unmodified.
-
-    A helper that quietly substituted a default planet would still pass the
-    algebra tests above, so pin the pass-through too.
-    """
-    art, _ = _profile()
     assert art.calls == [(_R_BTM, _G_BTM)]

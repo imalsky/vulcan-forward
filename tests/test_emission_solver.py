@@ -71,58 +71,42 @@ def test_boundary_temperatures_are_midpoints_with_extrapolated_ends():
     assert got[-1] > float(T[-1]), "the deep end must extrapolate, not clamp"
 
 
-def test_a_transparent_column_returns_the_interior_blackbody():
-    """With ``ibased`` this returns ~0: the flux from below the grid is simply
-    dropped, so a see-through window reads as an empty sky."""
+def test_the_interior_source_is_present_and_fades_with_depth():
+    """The bottom term is exp(-tau_total/mu) times the interior source.
+
+    Transparent: the column returns the interior blackbody (``ibased`` returns
+    ~0 there, a see-through window read as an empty sky). tau_bottom = 3, the
+    band the consumer's gate admits and where dropping the term did the
+    damage: moving only the interior temperature moves the flux, with a
+    finite positive derivative (the term is in the graph). Opaque
+    (tau 200): the flux forgets the interior; the deepest layer still
+    radiates, so a little is allowed.
+    """
     art = _art()
-    dtau = jnp.full((NLAYER, NU.size), 1e-12)
     T_btm = 2600.0
     T = jnp.full(NLAYER, T_btm)
-    got = np.asarray(art.run(dtau, _boundary_temperature(T)))
+    got = np.asarray(art.run(jnp.full((NLAYER, NU.size), 1e-12),
+                             _boundary_temperature(T)))
     want = np.asarray(piBarr(jnp.asarray([T_btm]), NU))[0]
     assert got == pytest.approx(want, rel=1e-5)
 
-
-def test_an_opaque_column_forgets_the_interior_entirely():
-    """The bottom term is exp(-tau_total/mu), so a thick column must be
-    insensitive to what is below it. If this ever fails, the interior
-    temperature is leaking into a spectrum it has no business reaching."""
-    art = _art()
-    dtau, T = _column(200.0)
-    hot = np.asarray(art.run(dtau, _boundary_temperature(T)))
-    T_cooler = T.at[-1].set(float(T[-1]) - 800.0)
-    cool = np.asarray(art.run(dtau, _boundary_temperature(T_cooler)))
-    # the deepest layer still radiates, so allow a little; the BOUNDARY term
-    # itself must be gone
-    assert np.max(np.abs(hot - cool) / hot) < 0.02
-
-
-def test_the_interior_term_dominates_a_marginally_thick_column():
-    """tau_bottom = 3 is exactly the band the consumer's gate admits, and it is
-    where dropping the term did the damage. Moving only the interior
-    temperature must move the flux there."""
-    art = _art()
     dtau, T = _column(3.0)
     base = np.asarray(art.run(dtau, _boundary_temperature(T)))
     hotter = np.asarray(art.run(
         dtau, _boundary_temperature(T.at[-1].set(float(T[-1]) + 1500.0))))
-    rel = (hotter - base) / base
-    assert np.all(rel > 0.05), rel
-
-
-def test_is_differentiable_through_the_boundary_source():
-    """The planner takes jvps through the emission depth for Fisher rows and
-    the retrieval differentiates it end to end. A finite gradient with respect
-    to the interior temperature is what proves the new term is in the graph."""
-    art = _art()
-    dtau, T = _column(3.0)
+    assert np.all((hotter - base) / base > 0.05)
 
     def f(t_int):
-        Tb = _boundary_temperature(T.at[-1].set(t_int))
-        return jnp.sum(art.run(dtau, Tb))
+        return jnp.sum(art.run(dtau, _boundary_temperature(T.at[-1].set(t_int))))
 
     d = float(jax.grad(f)(float(T[-1])))
     assert np.isfinite(d) and d > 0.0
+
+    dtau, T = _column(200.0)
+    hot = np.asarray(art.run(dtau, _boundary_temperature(T)))
+    cool = np.asarray(art.run(
+        dtau, _boundary_temperature(T.at[-1].set(float(T[-1]) - 800.0))))
+    assert np.max(np.abs(hot - cool) / hot) < 0.02
 
 
 # Correlated-k emission
