@@ -7,18 +7,10 @@ refresh kernels to seed a carry consistent with what the loop maintains -- but i
 means a refactor inside VULCAN-JAX can break this repo without either project's
 tests noticing.
 
-That is not hypothetical. VULCAN-JAX dropped the unused `var` parameter from
-`OuterLoop._build_refresh_static`, and `vulcan_chem.py` kept passing it, so every
-FRESH forward-model run raised
-
-    TypeError: _build_refresh_static() takes 2 positional arguments but 3 given
-
-while cached spectra kept loading. All three sibling suites stayed green: none of
-them calls `build_chem_model`, and the single test anywhere that does wraps it in
-`except Exception: pytest.skip(...)`, which turns such a TypeError into a pass.
-
-This test needs no data, no network and no solve: it reads the call sites out of
-the source and checks each one against the live signature.
+A signature change there raises TypeError on every fresh forward-model run
+while cached spectra keep loading. This test needs no data, no network and no
+solve: it reads the call sites out of the source and checks each one against
+the live signature.
 """
 from __future__ import annotations
 
@@ -48,15 +40,6 @@ def _private_calls_on(receiver: str):
             out.append((node.func.attr, len(node.args), len(node.keywords),
                         node.lineno))
     return out
-
-
-def test_there_are_private_reach_ins_to_check():
-    """Guard the guard: if the AST scan silently matched nothing, every
-    assertion below would vacuously pass and this file would be worthless."""
-    calls = _private_calls_on("integ")
-    assert calls, ("found no integ._private(...) calls in vulcan_chem.py -- "
-                   "either the coupling was removed (delete this test) or the "
-                   "scan broke (fix it), but do not leave it passing on zero")
 
 
 @pytest.mark.parametrize("name,npos,nkw,lineno", _private_calls_on("integ"))

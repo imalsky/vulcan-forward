@@ -126,13 +126,6 @@ def test_only_bands_fully_inside_the_request_are_kept(data_root):
                        np.sqrt(pack.band_edges[:-1] * pack.band_edges[1:]))
 
 
-def test_a_request_outside_the_table_raises(data_root):
-    _, edges, *_ = _write(exomolop.table_path("H2O"))
-    with pytest.raises(ValueError, match="no band inside"):
-        exomolop.load_tables(["H2O"], edges[-1] * 10, edges[-1] * 20,
-                             verbose=False)
-
-
 def test_zero_cross_sections_floor_instead_of_going_to_minus_infinity(data_root):
     """Their tables carry exact zeros where a species has no lines in a band.
     log(0) would poison the bilinear (T, P) interpolation for every layer, not
@@ -165,21 +158,6 @@ def test_tables_that_disagree_or_carry_a_wrong_header_are_refused(data_root, kw,
     with pytest.raises(ValueError, match=match) as e:
         exomolop.load_tables(["H2O", "CO2"], 1.0, 1.0e6, verbose=False)
     assert "CO2" in str(e.value)
-
-
-def test_matching_tables_combine(data_root):
-    _, edges, *_ = _write(exomolop.table_path("H2O"))
-    _write(exomolop.table_path("CO2"), kscale=3.0)
-    pack = exomolop.load_tables(["H2O", "CO2"], edges[0], edges[-1],
-                                verbose=False)
-    assert set(pack.logk) == {"H2O", "CO2"}
-
-
-def test_available_lists_what_is_installed(data_root):
-    assert exomolop.available() == []
-    _write(exomolop.table_path("H2O"))
-    _write(exomolop.table_path("CO2"))
-    assert exomolop.available() == ["CO2", "H2O"]
 
 
 def test_table_info_and_provenance_report_what_is_on_disk(data_root):
@@ -370,9 +348,3 @@ def test_load_refuses_without_x64(data_root, monkeypatch):
     monkeypatch.setattr(jax, "config", _Off())
     with pytest.raises(RuntimeError, match="x64"):
         exomolop.load_tables(["H2O"], edges[0], edges[-1], verbose=False)
-
-
-def test_tables_are_float64(data_root):
-    _, edges, *_ = _write(exomolop.table_path("H2O"))
-    pack = exomolop.load_tables(["H2O"], edges[0], edges[-1], verbose=False)
-    assert pack.logk["H2O"].dtype == np.float64

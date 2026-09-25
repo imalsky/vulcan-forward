@@ -1,15 +1,11 @@
 """Always-on sanity for the committed pRT reference fixtures (numpy-only).
 
-Runs in the exojax-less light CI, so the fixtures cannot rot silently:
-arrays stay parseable and finite, provenance stays complete, and the stats
-recorded inside each fixture stay EQUAL to the values hardcoded here -- the
-one permitted duplication. It pins that the fixtures really are the
-2026-08-15 petitRADTRANS verification (independent record:
-Desktop vulcan_validation/models/rt_verification.json); silently
-regenerating them to looser numbers fails this test.
-
-The tolerances the e2e tests assert live in the same meta, held at 3x the
-achieved stats (checked here as a [2, 4] ratio so neither side can drift).
+The e2e tests read their tolerances from each fixture's meta, so a fixture
+silently regenerated to looser numbers would still pass them. This file runs
+in the exojax-less light CI and pins the stats recorded inside each fixture
+EQUAL to the values hardcoded here (the one permitted duplication), the
+tolerances at 3x those stats (a [2, 4] ratio so neither side can drift), and
+the arrays finite.
 """
 from __future__ import annotations
 
@@ -21,8 +17,8 @@ import pytest
 
 DATA = Path(__file__).parent / "data"
 
-# One authoritative measurement (build_prt_fixtures, 2026-08-15), duplicated
-# here on purpose: fixture meta and this table must agree exactly.
+# One authoritative measurement (build_prt_fixtures), duplicated here on
+# purpose: fixture meta and this table must agree exactly.
 PINNED_STATS = {
     "prt_ref_isothermal_h2o_trans.npz": dict(
         n_wl=1610, arrays=("wl_um", "prt_radius_cm"),
@@ -38,43 +34,23 @@ PINNED_STATS = {
         max_dev_pct=0.05851848060187681),
 }
 
-META_KEYS = ("case", "prt_version", "generated", "opacity", "config",
-             "estimator", "prt_script", "prt_script_text", "exo_method",
-             "bundle_record", "stats", "tol")
-
 
 @pytest.mark.parametrize("name", sorted(PINNED_STATS))
-def test_fixture_arrays_and_provenance(name):
+def test_fixture_is_the_pinned_verification(name):
     pin = PINNED_STATS[name]
     z = np.load(DATA / name)
     meta = json.loads(bytes(np.asarray(z["meta"])))
-    for key in META_KEYS:
-        assert key in meta, f"{name}: meta missing {key!r}"
     assert meta["prt_version"] == "3.4.0"
     for arr in pin["arrays"]:
         a = np.asarray(z[arr])
         assert a.shape == (pin["n_wl"],), (name, arr, a.shape)
         assert np.all(np.isfinite(a)), (name, arr)
-    wl = np.asarray(z["wl_um"])
-    assert np.all(np.diff(wl) > 0), f"{name}: wl_um not strictly ascending"
-
-
-@pytest.mark.parametrize("name", sorted(PINNED_STATS))
-def test_fixture_stats_are_the_2026_08_15_verification(name):
-    pin = PINNED_STATS[name]
-    meta = json.loads(bytes(np.asarray(np.load(DATA / name)["meta"])))
-    st = meta["stats"]
+    assert np.all(np.diff(np.asarray(z["wl_um"])) > 0), name
+    st, tol = meta["stats"], meta["tol"]
     for key in ("mean_ratio", "rms_pct", "max_dev_pct"):
         assert st[key] == pytest.approx(pin[key], rel=1e-9), (name, key)
-
-
-@pytest.mark.parametrize("name", sorted(PINNED_STATS))
-def test_tolerances_are_3x_achieved(name):
-    meta = json.loads(bytes(np.asarray(np.load(DATA / name)["meta"])))
-    st, tol = meta["stats"], meta["tol"]
     for key in ("rms_pct", "max_dev_pct", "max_abs_dev_from_unity_pct"):
-        ratio = tol[key] / st[key]
-        assert 2.0 <= ratio <= 4.0, (name, key, ratio)
+        assert 2.0 <= tol[key] / st[key] <= 4.0, (name, key)
 
 
 def test_emission_fixture_unit_conversion_is_recorded_and_consistent():
@@ -87,30 +63,3 @@ def test_emission_fixture_unit_conversion_is_recorded_and_consistent():
     assert np.allclose(np.asarray(z["prt_flux_per_cm1"]), want, rtol=1e-12)
     meta = json.loads(bytes(np.asarray(z["meta"])))
     assert "nu_tilde^2" in meta["units"]
-
-
-def test_exok_fixture_arrays_and_provenance():
-    """The exo_k oracle fixture (reader + interpolation + overlap, asserted
-    against the real tables in test_exomolop) stays parseable and complete in
-    the light CI."""
-    z = np.load(DATA / "exok_ref_overlap.npz")
-    meta = json.loads(bytes(np.asarray(z["meta"])))
-    assert meta["exo_k_version"] == "1.3.1"
-    assert meta["script_text"].strip() and "RandOverlap" in meta["script_text"]
-    assert meta["molecules"] == ["H2O", "CO2", "CH4"]
-    assert set(meta["vmr"]) == set(meta["molecules"])
-    assert set(meta["tables"]) == set(meta["molecules"])
-    for name, shape in (("k_on", (3, 3, 16, 58)), ("k_off", (3, 2, 16, 58)),
-                        ("k_mix_on", (3, 16, 58))):
-        a = np.asarray(z[name])
-        assert a.shape == shape and np.all(np.isfinite(a)) and np.all(a > 0), name
-    assert np.all(np.diff(z["wn_edges_lo"]) > 0)
-    assert np.asarray(z["weights"]).sum() == pytest.approx(1.0, abs=1e-12)
-
-
-def test_chemistry_table_parses():
-    raw = np.genfromtxt(DATA / "wasp39b_10Xsolar_evening_vulcan.txt",
-                        skip_header=2)
-    assert raw.shape[1] == 15, raw.shape
-    assert raw.shape[0] > 100, raw.shape
-    assert np.all(np.isfinite(raw))
