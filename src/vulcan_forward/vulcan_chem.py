@@ -634,7 +634,10 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     nO_per_species = jnp.asarray(np.asarray(compo[:, constants.ATOM_COLS["O"]], dtype=np.float64))
     o_only_mask = jnp.asarray(((compo[:, constants.ATOM_COLS["O"]] > 0)
                                & (compo[:, constants.ATOM_COLS["C"]] == 0)).astype(np.float64))
-    co_fixed_o = str(profile.get("co_mode", "proxy")) == "fixed_O"
+    co_mode = str(profile.get("co_mode", "proxy"))
+    if co_mode not in ("proxy", "fixed_O"):
+        raise ValueError(f"co_mode={co_mode!r}: expected 'proxy' or 'fixed_O'")
+    co_fixed_o = co_mode == "fixed_O"
     atomic_masses = jnp.asarray(np.asarray(constants.ATOMIC_MASSES, dtype=np.float64))
     species_masses = jnp.asarray(np.asarray(compo, dtype=np.float64)) @ atomic_masses  # (ni,)
     # runner's own (ni, n_atoms) composition table, columns in its internal _atom_order --
