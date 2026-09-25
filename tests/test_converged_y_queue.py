@@ -7,8 +7,8 @@ Three properties:
   runs the ticks the plain batch gives it: same accept_count, same certificate,
   and the y's agree at the convergence scale. NOT bitwise -- ``run_queue``
   builds the seed inside its jitted loop while ``converged_y_batch`` builds it
-  outside, and the two compilations of ``_prep`` differ by a ulp in y_ini
-  (measured 1.1e-15), which the trajectory amplifies;
+  outside, and the two compilations of ``_prep`` differ by a ulp in y_ini,
+  which the trajectory amplifies;
 * with fewer lanes a theta enters the loop at the tick its lane was freed at,
   which moves the photolysis / geometry cadence exactly as the batch already
   moves it against the solo solve: agreement is again at the CONVERGENCE
@@ -57,22 +57,17 @@ MIX_FLOOR = 1.0e-10   # cells below this carry no observable and no certificate
 REL_MAX = 5.0e-2
 # The queued tangent against the batched one: a refilled lane enters at a
 # later tick, so its geometry-refresh cadence differs from the batch's even at
-# the same accept count. The settled thetas agree to <= 4.6e-4. Theta 2 (a
-# loose-branch exit with its bottom-layer sulfur still relaxing) has no
-# determined queue tangent: a 1e-12 nudge to lnZ moves its bottom-layer H2S
-# tangent by 6.8e-2 while the batch's moves 5.6e-5, central FD at h 1e-4 and
-# 1e-5 disagree by 0.23 there, and the reading has been 2.7e-2, 7.0e-2,
-# with VULCAN-JAX 0.16.4's matrix-free stage operator 0.32 (the batch
-# tangent moved 2.5e-6) and with 0.16.7's batched repair sweep, whose
-# tangent is the sweep's own derivative instead of the primitive's second
-# solve, 0.58 (every primal bitwise, the settled thetas <= 2.1e-4). It keeps
-# a wiring bound only: finite, and not off by an order of magnitude.
+# the same accept count. Theta 2 (a loose-branch exit with its bottom-layer
+# sulfur still relaxing) has no determined queue tangent -- a 1e-12 nudge to
+# lnZ moves it by ~7e-2 and central FD at h 1e-4 and 1e-5 disagree by 0.23
+# there (notes §0) -- so it keeps a wiring bound only: finite, and not off by
+# an order of magnitude.
 QUEUE_DY_MAX = 1.0e-2
 QUEUE_DY_MAX_UNSETTLED = 1.0
 UNSETTLED_THETAS = (2,)
 # Two-stage check: the species a W39b spectrum reads, split into the ones that
-# are PINNED (measured <= 2.6e-4, bound at 4x that) and the ones only PRINTED,
-# which carry the slow chemistry the two arms disagree on.
+# are PINNED and the ones only PRINTED, which carry the slow chemistry the two
+# arms disagree on.
 PINNED_SPECIES = ("H2O", "CO", "H2", "He")
 PRINTED_SPECIES = ("CO2", "CH4", "SO2")
 SPECIES_FLOOR = 1.0e-6   # layers below this carry no opacity
@@ -119,7 +114,12 @@ def _report(tag, y_q, cd_q, y_b, cd_b):
         assert rel[obs].max() < REL_MAX
 
 
-def test_queue_with_enough_lanes_runs_the_batch_ticks(chem, ref):
+def test_queue_agrees_with_the_batch_with_and_without_refill(chem, ref):
+    """Four lanes for four thetas: nothing refills, so every job runs the
+    plain batch's ticks -- the same accept count and certificate, the y's at
+    the convergence scale only (see the module docstring). Two lanes, chunk 1:
+    a theta enters at the tick its lane was freed at, and agreement is again
+    at the convergence scale with the certificate theta for theta."""
     y_b, cd_b = ref
     th = jnp.asarray(THETAS)
     y_q, cd_q = chem.converged_y_queue(th, n_lanes=THETAS.shape[0])
@@ -141,16 +141,11 @@ def test_queue_with_enough_lanes_runs_the_batch_ticks(chem, ref):
                           np.asarray(cd_q.accept_count)[::-1])
     assert np.array_equal(np.asarray(cd_q2.conv_normal),
                           np.asarray(cd_q.conv_normal)[::-1])
-    # No refill happens, so every job sees the ticks the plain batch gives it:
-    # the step counts match exactly, the y's only to the seed's ulp.
     assert np.array_equal(np.asarray(cd_q.accept_count),
                           np.asarray(cd_b.accept_count))
     _report("lanes=4", y_q, cd_q, y_b, cd_b)
 
-
-def test_queue_with_refill_agrees_at_the_convergence_scale(chem, ref):
-    y_b, cd_b = ref
-    y_q, cd_q = chem.converged_y_queue(jnp.asarray(THETAS), n_lanes=2, chunk=1)
+    y_q, cd_q = chem.converged_y_queue(th, n_lanes=2, chunk=1)
     _report("lanes=2 chunk=1", y_q, cd_q, y_b, cd_b)
 
 
@@ -162,11 +157,10 @@ def test_two_stage_warm_queue_keeps_the_observed_species(chem):
     What is pinned is the certificate and the species the spectrum reads. What
     is NOT pinned, deliberately: from a converged warm start the loose branch
     (longdy < yconv_min, 0.1 in the production configs too) can fire early, so
-    the two arms certify at different relaxation depths -- 408 accepted steps
-    batched against 124 queued, measured on job 3 -- and may certify on
+    the two arms certify at different relaxation depths and may certify on
     different branches. The difference that buys concentrates in the slow
-    sulfur chemistry (worst cells S / SH just above 1e-6 VMR, up to 5.9e-2)
-    and in CO2 / CH4 / SO2 at the percent level, all of it printed here. A
+    sulfur chemistry and in CO2 / CH4 / SO2 at the percent level, all of it
+    printed here (readings: notes §2 "The speed branch"). A
     worst-cell bound would have to sit above the cold cases' own, which would
     pin nothing; the production gate for `cold_lanes` is the per-draw
     log-likelihood comparison of the GPU bench, not this test."""
@@ -258,23 +252,20 @@ def test_queue_is_differentiable(chem, ref):
 
     # The contract a batched-gradient consumer relies on: one jvp through the
     # batch is the per-theta jvp through the solo runner, at the convergence
-    # scale and with the same certificate.
-    th2, v2 = th[:2], v[:2]
-    (_y2, cd_b2), (dy_b2, _d2) = jax.jvp(
-        lambda t: chem.converged_y_batch(t, return_conv_diag=True), (th2,), (v2,))
-    dy_b2 = np.asarray(dy_b2)
+    # scale and with the same certificate (a lane is its own solve, so the
+    # four-lane batch's first two lanes stand for a batch of two).
     for k in range(2):
         (y_s, cd_s), (dy_s, _ds) = jax.jvp(
             lambda t: chem.converged_y(t, return_conv_diag=True),
-            (th2[k],), (v2[k],))
+            (th[k],), (v[k],))
         y_s, dy_s = np.asarray(y_s), np.asarray(dy_s)
         mix = y_s / y_s.sum(axis=1, keepdims=True)
-        rel = _dy_rel(dy_b2[k], dy_s, mix)
+        rel = _dy_rel(dy_b[k], dy_s, mix)
         print(f"[jvp batch-vs-solo job {k}] tangent max|ddy|/max|dy| {rel:.3e}; "
-              f"accept_count batch {int(np.asarray(cd_b2.accept_count)[k])} "
+              f"accept_count batch {int(np.asarray(cd_b.accept_count)[k])} "
               f"solo {int(np.asarray(cd_s.accept_count))}", flush=True)
         assert bool(np.asarray(cd_s.conv_normal))
-        assert bool(np.asarray(cd_b2.conv_normal)[k])
+        assert bool(np.asarray(cd_b.conv_normal)[k])
         assert rel < REL_MAX
 
 
@@ -282,7 +273,7 @@ def test_queue_is_differentiable(chem, ref):
 # The complete two-stage cold map (stage 1 at baseline composition, stage 2 warm
 # from its own column) with PHOTOCHEMISTRY ON, differentiated along every
 # chemistry direction, on three routes:
-#   solo   vmap over thetas of [vmap over directions of jvp(converged_y)]  -- today
+#   solo   per theta, vmap over directions of jvp(converged_y)
 #   batch  vmap over directions of jvp(converged_y_batch)
 #   queue  vmap over directions of jvp(converged_y_queue) on 2 lanes, chunk 1
 # plus the queue replayed with the jobs REVERSED (its lanes then free at other
@@ -312,6 +303,13 @@ def chem_photo():
         pytest.skip(f"chem model data unavailable: {e}")
 
 
+def _stack_thetas(outs):
+    """The per-theta solo results stacked along a leading theta axis. A Python
+    loop, not a vmap over thetas: each theta is its own solve (the vmap would
+    run them in lockstep), and one compiled program serves all four."""
+    return jax.tree_util.tree_map(lambda *xs: jnp.stack(xs), *outs)
+
+
 def _two_stage_routes(chem, th):
     """(solo, batch, queue, queue-reversed) results of the two-stage cold map,
     each ``(y (N, nz, ni), ConvDiag over N, dy (N, D, nz, ni))``."""
@@ -335,7 +333,7 @@ def _two_stage_routes(chem, th):
             (y_l, cd_l), (dy_l, _d) = jax.vmap(
                 lambda v, dy: jax.jvp(s2, (t, y1_l[0]), (v, dy)))(eye, pad(dy1))
             return y_l[0], jax.tree_util.tree_map(lambda x: x[0], cd_l), dy_l
-        return jax.vmap(one)(TH)
+        return _stack_thetas([one(TH[k]) for k in range(TH.shape[0])])
 
     def stacked(solve1, solve2, TH):
         bc = lambda v: jnp.broadcast_to(v, TH.shape)     # noqa: E731
@@ -461,7 +459,8 @@ def _warm_routes(chem, th, yw, r0, r1):
             (y_l, cd_l), (dy_l, _d) = jax.vmap(
                 lambda v: jax.jvp(f, (t,), (v,)))(eye)
             return y_l[0], jax.tree_util.tree_map(lambda x: x[0], cd_l), dy_l
-        return jax.vmap(one)(TH, yw, r0, r1)
+        return _stack_thetas([one(TH[k], yw[k], r0[k], r1[k])
+                              for k in range(TH.shape[0])])
 
     def stacked(solve, TH):
         bc = lambda v: jnp.broadcast_to(v, TH.shape)     # noqa: E731
@@ -489,7 +488,8 @@ def test_warm_capped_gradient_three_routes(chem_photo):
     """The batched and queued WARM mutation gradient agree with the per-theta one.
 
     The acceptance test for vulcan-retrieval's warm mutation kernel: the cap
-    rides the runner carry per lane, each lane gets its own carried column AND
+    rides the runner carry per lane (that it binds is pinned in
+    test_converged_y_batch), each lane gets its own carried column AND
     its own reference composition, the tangents stay finite, every theta keeps
     its certificate on every route, and the columns and the direction stack
     agree at the convergence scale the primals agree at. Accept counts are
@@ -519,8 +519,6 @@ def test_warm_capped_gradient_three_routes(chem_photo):
         assert bool(np.all(np.asarray(cd.conv_normal))), tag
         assert np.all(np.isfinite(y)) and np.all(np.isfinite(dy)), tag
         assert float(np.abs(dy).max()) > 0.0, tag
-        # every lane ran under the mutation cap, not the cold one
-        assert np.all(np.asarray(cd.accept_count) <= int(chem.warm_count_max)), tag
     _cmp("warm batch-vs-solo", batch, solo, n_dir)
     _cmp("warm queue-vs-batch", queue, batch, n_dir)
     _cmp("warm queue-vs-solo", queue, solo, n_dir)

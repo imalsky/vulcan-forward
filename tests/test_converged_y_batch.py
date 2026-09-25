@@ -67,25 +67,23 @@ def runs():
     return chem, np.asarray(y_b), cd_b, np.asarray(y_v), cd_v, y_one
 
 
-@pytest.mark.parametrize("k", range(THETAS.shape[0]))
-def test_batched_lane_is_its_own_solve_and_agrees_with_the_vmap(runs, k):
+def test_batched_lanes_are_their_own_solves_and_agree_with_the_vmap(runs):
     _chem, y_b, cd_b, y_v, cd_v, y_one = runs
-    acc_b = int(np.asarray(cd_b.accept_count)[k])
-    acc_v = int(np.asarray(cd_v.accept_count)[k])
-
-    mix = y_b[k] / y_b[k].sum(axis=1, keepdims=True)
-    obs = mix > MIX_FLOOR
-    rel = np.abs(y_b[k] - y_v[k]) / np.maximum(np.abs(y_v[k]), 1e-300)
-    print(f"[lane {k}] batch-vs-vmap over {int(obs.sum())} cells > {MIX_FLOOR:g} "
-          f"VMR: max rel {rel[obs].max():.3e}, median {np.median(rel[obs]):.3e}; "
-          f"accept_count batched={acc_b} vmap={acc_v}", flush=True)
-
-    assert np.array_equal(y_b[k], y_one[k]), (
-        "lane is not independent of the batch: lane k of the N-lane batch "
-        "differs from the same theta as a batch of one")
-    assert bool(np.asarray(cd_b.conv_normal)[k]) == bool(
-        np.asarray(cd_v.conv_normal)[k])
-    assert rel[obs].max() < REL_MAX
+    for k in range(THETAS.shape[0]):
+        acc_b = int(np.asarray(cd_b.accept_count)[k])
+        acc_v = int(np.asarray(cd_v.accept_count)[k])
+        mix = y_b[k] / y_b[k].sum(axis=1, keepdims=True)
+        obs = mix > MIX_FLOOR
+        rel = np.abs(y_b[k] - y_v[k]) / np.maximum(np.abs(y_v[k]), 1e-300)
+        print(f"[lane {k}] batch-vs-vmap over {int(obs.sum())} cells > {MIX_FLOOR:g} "
+              f"VMR: max rel {rel[obs].max():.3e}, median {np.median(rel[obs]):.3e}; "
+              f"accept_count batched={acc_b} vmap={acc_v}", flush=True)
+        assert np.array_equal(y_b[k], y_one[k]), (
+            "lane is not independent of the batch: lane k of the N-lane batch "
+            "differs from the same theta as a batch of one")
+        assert bool(np.asarray(cd_b.conv_normal)[k]) == bool(
+            np.asarray(cd_v.conv_normal)[k])
+        assert rel[obs].max() < REL_MAX
 
 
 WARM_CMAX = 5     # under count_min=120: a warm continuation cannot certify
@@ -103,12 +101,12 @@ def chem_capped():
         pytest.skip(f"chem model data unavailable: {e}")
 
 
-def test_warm_cap_binds_per_lane_and_batched(chem_capped):
-    """``warm_cap=True`` cuts every lane of a BATCH at warm_count_max, exactly
-    as it cuts the solo ``converged_y``.
+def test_warm_cap_binds_per_lane_batched_and_queued(chem_capped):
+    """``warm_cap=True`` cuts every lane of a BATCH and of the QUEUE at
+    warm_count_max, exactly as it cuts the solo ``converged_y``.
 
     The cap rides the runner carry (``count_max_dyn``), not a second compiled
-    runner, so the batched call reproduces the mutation-path semantics without
+    runner, so the batched calls reproduce the mutation-path semantics without
     one: termination is ``accept_count > cap``, hence cap + 1 accepted steps on
     every lane. The uncapped arm of the same batch marches on to the cold cap,
     which is what identifies the warm cap as the thing that stopped it."""
@@ -119,16 +117,20 @@ def test_warm_cap_binds_per_lane_and_batched(chem_capped):
                                         return_conv_diag=True)
     _y, cd_cold = chem.converged_y_batch(th, warm_y=yw, warm_cap=False,
                                          return_conv_diag=True)
+    _y, cd_queue = chem.converged_y_queue(th, 1, chunk=1, warm_y=yw, warm_cap=True)
     solo = [chem.converged_y(th[k], warm_y=yw[k], warm_cap=True,
                              return_conv_diag=True)[1]
             for k in range(THETAS.shape[0])]
     acc_cap = np.asarray(cd_cap.accept_count)
+    acc_queue = np.asarray(cd_queue.accept_count)
     acc_solo = np.array([int(np.asarray(cd.accept_count)) for cd in solo])
     print(f"[warm cap {WARM_CMAX} / cold cap {COLD_CMAX}] accept_count batched "
-          f"{acc_cap.tolist()} solo {acc_solo.tolist()} uncapped-batch "
+          f"{acc_cap.tolist()} queued {acc_queue.tolist()} solo "
+          f"{acc_solo.tolist()} uncapped-batch "
           f"{np.asarray(cd_cold.accept_count).tolist()}", flush=True)
     assert np.array_equal(acc_cap, acc_solo)
     assert np.all(acc_cap == WARM_CMAX + 1)
+    assert np.all(acc_queue == WARM_CMAX + 1)
     assert np.all(np.asarray(cd_cold.accept_count) == COLD_CMAX + 1)
     # neither arm can certify this far below count_min: the cap, not
     # convergence, ended both runs
@@ -173,12 +175,12 @@ def test_per_lane_references_match_the_scalar_calls(runs):
         assert rel[obs].max() < REL_MAX
 
 
-def test_inputs_that_would_be_ignored_are_refused(runs):
+def test_inputs_that_would_be_ignored_are_refused(chem_capped):
     """A profile key the engine does not read (a typo, or a retired knob such
     as `fastchem_met_scale`) would leave its default in place silently, so it
     is refused. A warm column with the wrong trailing shape would BROADCAST --
     (N, 1, ni) seeds every layer from one layer -- so it is refused too."""
-    chem = runs[0]
+    chem = chem_capped
     with pytest.raises(ValueError, match="'warm_count_mx'"):
         vulcan_chem.build_chem_model({**PROFILE, "warm_count_mx": 10})
     with pytest.raises(ValueError, match="warm_y"):

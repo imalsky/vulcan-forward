@@ -15,9 +15,12 @@ two derivatives are of different functions.
 Measured on this profile: the primal is bit-identical between the routes and
 the tangents agree to max rel 6.2e-9 over cells above 1e-10 VMR (median 0);
 the bar is 10x that. ``tangent_longdy`` (the tangent's lookback change,
-normalised by primal quantities in ``outer_loop._tangent_conv``) agreed to
-2.9e-10 on one machine and 4.3e-9 on another; it carries the same empirical
-bar.
+normalised by primal quantities in ``outer_loop._tangent_conv``) carries the
+same empirical bar.
+
+A second model leaves the endpoint free, so there the tangent certificate
+decides when the run stops; it is also the one model here seeded cold from
+the equilibrium column (``cold_seed="eq"``).
 
 Cheap profile: nz=20, photochemistry off, no build-time warm-up solve.
 """
@@ -89,3 +92,47 @@ def test_stacked_directions_reproduce_the_single_direction_tangents(runs):
     print(f"[tangent_longdy] stacked {tl_s:.12g} vs max of the singles "
           f"{tl_max:.12g}", flush=True)
     assert abs(tl_s - tl_max) / tl_max < TL_REL_MAX
+
+
+# The endpoint is free here: count_min is low enough that the certificate, not
+# the floor, ends a warm continuation, and count_max far above any exit.
+SETTLE_PROFILE = {"use_photo": False, "yconv_cri": 1.0e-2, "nz": 20,
+                  "abundance_mode": "elemental", "skip_warmup": True,
+                  "cold_seed": "eq", "count_min": 10, "count_max": 3000}
+THETA_WARM = np.array([0.3, 0.1, 0.5, 40.0], dtype=np.float64)
+
+
+@pytest.fixture(scope="module")
+def chem_eq():
+    try:
+        return vulcan_chem.build_chem_model(SETTLE_PROFILE)
+    except (FileNotFoundError, OSError) as e:                # pragma: no cover
+        pytest.skip(f"chem model data unavailable: {e}")
+
+
+def test_eq_seed_certifies_and_the_tangent_certificate_ends_the_run(chem_eq):
+    """The equilibrium seed lands on the theta targets (the elemental
+    projection closes it to rounding) and its cold solve certifies. From that
+    converged column, a warm continuation to another theta: the primal alone
+    certifies at some step; with a tangent along lnZ the solver runs on until
+    the tangent settles too, and stops there -- after the primal's own exit
+    and before the cap, certified (``conv_normal`` carries ``tangent_ok``)."""
+    chem = chem_eq
+    th0 = jnp.asarray(THETA)
+    audit = chem.audit_init(th0)
+    print(f"[eq seed] ratio_max_rel_err {audit['ratio_max_rel_err']:.3e}", flush=True)
+    assert audit["ratio_max_rel_err"] < 1e-12
+    y0, cd0 = chem.converged_y(th0, return_conv_diag=True)
+    assert bool(cd0.conv_normal)
+
+    th1 = jnp.asarray(THETA_WARM)
+    warm = dict(warm_y=y0, lnZ_ref=float(THETA[0]), c_o_ref=float(THETA[1]))
+    _y, cd_p = chem.converged_y(th1, return_conv_diag=True, **warm)
+    _y, dy, cd_j = chem.converged_y_jvp(th1, jnp.asarray(DIRS[0]), **warm)
+    acc_p, acc_j = int(cd_p.accept_count), int(cd_j.accept_count)
+    print(f"[settle] accept_count primal {acc_p} jvp {acc_j} (cap "
+          f"{chem.count_max}); tangent_longdy {float(cd_j.tangent_longdy):.3e}",
+          flush=True)
+    assert bool(cd_p.conv_normal) and bool(cd_j.conv_normal)
+    assert np.all(np.isfinite(np.asarray(dy)))
+    assert acc_p < acc_j <= chem.count_max
