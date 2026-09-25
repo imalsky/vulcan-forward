@@ -98,13 +98,6 @@ _ELEMENTAL_REPAIR = (("He", "He"), ("O", "H2O"), ("C", "CO"), ("N", "N2"), ("S",
 # (~1e-2 -> ~1e-8 by three passes; see audit_init).
 _ELEMENTAL_REPAIR_ITERS = 3
 
-# The loose branch's slope bound, min over the column of Kzz / (frac * Hp)^2
-# clipped to [floor, cap]: these mirror vulcan_jax.outer_loop's `_slope_min`
-# (keep in sync; ConvDiag.conv_normal recomputes its certificate).
-_SLOPE_MIN_HP_FRAC = 0.1
-_SLOPE_MIN_CAP = 1.0e-8
-_SLOPE_MIN_FLOOR = 1.0e-10
-
 # Tolerance (g/mol) for checking constants.ATOMIC_MASSES against the package's
 # composition-table mass column, which carries mild rounding (O listed as 16.0 vs
 # 15.999; the electron as 1e-3 vs 5.4858e-4). Real drift -- a swapped or wrong
@@ -462,34 +455,24 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     else:
         tw = time.time()
         rs_warmup = integ(rs)
-        # Check the warm-up exit: the two-branch certification and the
-        # photo-flux gate, recomputed host-side. WEAKER than ``_conv_diag``'s
-        # ``conv_normal``: the geometry (C21) and element-budget (C23) terms
-        # ride the runner carry and are not on RunState. A diagnostic only
-        # (notes §2): nothing consumes the warm-up column (state0 packs from
-        # the pre-loop ``rs``) and every solve certifies itself, so False
-        # flags a configuration that may not converge. Exported as
-        # ``baseline_conv_normal``; vulcan-retrieval warns on it.
-        _w_ld = float(rs_warmup.step.longdy)
-        _w_lddt = float(rs_warmup.step.longdydt)
-        _w_af = (float(rs_warmup.photo_runtime.aflux_change)
-                 if rs_warmup.photo_runtime is not None else 0.0)
-        _w_slope_min = max(min(float(np.min(
-            np.asarray(rs_warmup.atm.Kzz)
-            / (_SLOPE_MIN_HP_FRAC * np.asarray(rs_warmup.atm.Hp)[:-1]) ** 2)),
-            _SLOPE_MIN_CAP), _SLOPE_MIN_FLOOR)
-        baseline_conv_normal = bool(
-            (((_w_ld < float(cfg.yconv_cri)) and (_w_lddt < float(cfg.slope_cri)))
-             or ((_w_ld < float(cfg.yconv_min)) and (_w_lddt < _w_slope_min)))
-            and (_w_af < float(cfg.flux_cri)))
+        # Check the warm-up exit: the runner's own end classification, so
+        # end_case 1 is a run that stopped certified (past the ready gate,
+        # both branches' terms, the flux gate, C21 and C23) on a finite
+        # column. A diagnostic only (notes §2): nothing consumes the warm-up
+        # column (state0 packs from the pre-loop ``rs``) and every solve
+        # certifies itself, so False flags a configuration that may not
+        # converge. Exported as ``baseline_conv_normal``; vulcan-retrieval
+        # warns on it.
+        _w_end = int(rs_warmup.params.end_case)
+        baseline_conv_normal = _w_end == 1
         if not baseline_conv_normal:
-            print(f"[chem] WARNING: the warm-up solve did not pass the two-branch "
-                  f"+ flux check (longdy={_w_ld:.3e}, longdydt={_w_lddt:.3e}, "
-                  f"aflux_change={_w_af:.3e}). Its column is not used, but this "
-                  f"configuration may not converge.", flush=True)
+            print(f"[chem] WARNING: the warm-up solve did not end certified "
+                  f"(end_case={_w_end}, termination_reason="
+                  f"{int(rs_warmup.params.termination_reason)}, longdy="
+                  f"{float(rs_warmup.step.longdy):.3e}). Its column is not "
+                  f"used, but this configuration may not converge.", flush=True)
         print(f"[chem] warm-up converge {time.time() - tw:.1f}s "
-              f"(two-branch + flux check, no C21/C23: {baseline_conv_normal})",
-              flush=True)
+              f"(certified: {baseline_conv_normal})", flush=True)
 
     # --- runner-carry budget/scheme seeding --------------------------------
     # The termination budget and diffusion-scheme blend live on the CARRY, not
@@ -506,10 +489,6 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     runtime_v = float(cfg.runtime)
     use_vm_mol_v = bool(cfg.use_vm_mol)
     hybrid_v = use_vm_mol_v and bool(getattr(cfg, "use_hybrid_vm_mol", False))
-    yconv_cri_v = float(cfg.yconv_cri)
-    yconv_min_v = float(cfg.yconv_min)
-    slope_cri_v = float(cfg.slope_cri)
-    flux_cri_v = float(cfg.flux_cri)
     _warm_note = ("; warm continuation pinned to central difference (the "
                   "converged phase-1 operator)" if hybrid_v else "")
     print(f"[chem] diffusion scheme: use_vm_mol={use_vm_mol_v} "
@@ -529,14 +508,13 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         )
 
     def _conv_diag(final, tangent_ok=True, tangent_longdy=jnp.nan):
-        """ConvDiag read off the runner's exit carry. ``conv_normal``
-        recomputes the convergence terms of vulcan_jax.outer_loop
-        ._real_terminate (keep in sync): tight OR loose branch, AND the
-        photo-flux gate, AND the geometry and element-budget terms, AND the
-        supplied tangent certificate -- not the runner's whole exit predicate
-        (its ready gate, hybrid-phase and non-finite handling). True only
-        for a certified exit; False when the exit came from the stall fallback
-        or exhausted a count/runtime budget. The controlling cell is the argmax
+        """ConvDiag read off the runner's exit carry. ``conv_normal`` is
+        vulcan-jax's ``conv_normal`` certificate (tight OR loose branch, the
+        photo-flux gate, the geometry and element-budget terms; not the ready
+        gate, hybrid-phase or non-finite exit) AND the supplied tangent
+        certificate. True only for a certified exit; False when the exit came
+        from the stall fallback or exhausted a count/runtime budget. The
+        controlling cell is the argmax
         of the masked per-cell ratio the runner maximised for longdy
         (``where_varies_most`` rides the carry). ``tangent_ok`` is the
         solver's sensitivity certificate on the ``converged_y_jvp`` path
@@ -544,31 +522,16 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         enters ``conv_normal`` only: ``conv_branch`` stays the COLUMN's own
         branch, so a consumer can tell an unsettled sensitivity (branch
         set, ``tangent_longdy`` above the gate) from an uncertified column."""
-        slope_min = jnp.minimum(
-            jnp.min(final.pv.Kzz / (_SLOPE_MIN_HP_FRAC * final.Hp[:-1]) ** 2),
-            jnp.float64(_SLOPE_MIN_CAP))
-        slope_min = jnp.maximum(slope_min, jnp.float64(_SLOPE_MIN_FLOOR))
-        tight = (final.longdy < yconv_cri_v) & (final.longdydt < slope_cri_v)
-        loose = (final.longdy < yconv_min_v) & (final.longdydt < slope_min)
-        # The photo-flux gate AND the solver's geometry term (the carried
-        # geometry agreed with the composition at the certificate step) AND
-        # its cumulative column element budget (C23: the column still holds
-        # the elements this theta started with), mirroring
-        # outer_loop._real_terminate.
-        flux_ok = (
-            (final.aflux_change < flux_cri_v) & final.geom_ok & final.budget_ok
-        )
-        branch = jnp.where(tight, jnp.int32(1),
-                           jnp.where(loose, jnp.int32(2), jnp.int32(0)))
+        ok, branch = vulcan_jax.conv_normal(final, cfg)
         flat = jnp.argmax(final.where_varies_most)
         return ConvDiag(
             accept_count=final.accept_count,
             longdy=final.longdy,
             longdydt=final.longdydt,
             count_since_new_min=final.count_since_new_min,
-            conv_normal=(tight | loose) & flux_ok & tangent_ok,
+            conv_normal=ok & tangent_ok,
             aflux_change=final.aflux_change,
-            conv_branch=jnp.where(flux_ok, branch, jnp.int32(0)),
+            conv_branch=branch,
             cell_species=(flat % ni).astype(jnp.int32),
             cell_layer=(flat // ni).astype(jnp.int32),
             cell_vmr=final.ymix.reshape(-1)[flat],
