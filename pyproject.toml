@@ -53,6 +53,12 @@ where = ["src"]
 [tool.setuptools.dynamic]
 version = { attr = "vulcan_forward._version.__version__" }
 
+# The classic default rule set, pinned: ruff 0.16 widened its defaults (import
+# sorting, which would reorder the load-bearing test preambles) and dropped
+# E402, which the import-order noqa comments exist for.
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
 # vulcan_chem must set the VULCAN_JAX_* import-frozen env vars and jax x64
 # before importing jax/vulcan_jax, so its module-level imports legitimately
 # follow executable statements.
