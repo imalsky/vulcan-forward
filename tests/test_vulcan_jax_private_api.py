@@ -42,6 +42,14 @@ def _private_calls_on(receiver: str):
     return out
 
 
+def test_there_are_private_reach_ins_to_check():
+    """Guard the guard: a scan that matched nothing (a renamed receiver) would
+    turn the parametrized test below into a skip."""
+    assert _private_calls_on("integ"), (
+        "found no integ._private(...) calls in vulcan_chem.py -- either the "
+        "coupling was removed (delete this file) or the scan broke (fix it)")
+
+
 @pytest.mark.parametrize("name,npos,nkw,lineno", _private_calls_on("integ"))
 def test_private_call_matches_the_live_signature(name, npos, nkw, lineno):
     """Each private method we call must exist and accept the arity we pass."""

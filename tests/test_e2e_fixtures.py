@@ -33,6 +33,11 @@ PINNED_STATS = {
         mean_ratio=1.0004052868780968, rms_pct=0.020925888022426987,
         max_dev_pct=0.05851848060187681),
 }
+# The provenance every pRT fixture carries: the generating script (path and
+# text), the configuration, the opacity files and the estimator behind it.
+META_KEYS = ("case", "prt_version", "generated", "opacity", "config",
+             "estimator", "prt_script", "prt_script_text", "exo_method",
+             "bundle_record", "stats", "tol")
 
 
 @pytest.mark.parametrize("name", sorted(PINNED_STATS))
@@ -40,6 +45,8 @@ def test_fixture_is_the_pinned_verification(name):
     pin = PINNED_STATS[name]
     z = np.load(DATA / name)
     meta = json.loads(bytes(np.asarray(z["meta"])))
+    missing = [k for k in META_KEYS if k not in meta]
+    assert not missing, f"{name}: meta missing {missing}"
     assert meta["prt_version"] == "3.4.0"
     for arr in pin["arrays"]:
         a = np.asarray(z[arr])
@@ -63,3 +70,13 @@ def test_emission_fixture_unit_conversion_is_recorded_and_consistent():
     assert np.allclose(np.asarray(z["prt_flux_per_cm1"]), want, rtol=1e-12)
     meta = json.loads(bytes(np.asarray(z["meta"])))
     assert "nu_tilde^2" in meta["units"]
+
+
+def test_exok_fixture_carries_its_provenance():
+    """The exo_k oracle fixture (asserted against the real tables in
+    test_exomolop) keeps its version pin and its generating script."""
+    meta = json.loads(bytes(np.asarray(np.load(DATA / "exok_ref_overlap.npz")["meta"])))
+    assert meta["exo_k_version"] == "1.3.1"
+    assert meta["script_text"].strip() and "RandOverlap" in meta["script_text"]
+    assert meta["molecules"] == ["H2O", "CO2", "CH4"]
+    assert set(meta["vmr"]) == set(meta["tables"]) == set(meta["molecules"])

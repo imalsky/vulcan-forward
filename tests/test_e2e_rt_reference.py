@@ -91,14 +91,21 @@ def _assert_stats(r, meta, label):
     assert mx <= tol["max_dev_pct"], msg
 
 
-def test_a_column_deeper_than_the_ktable_ceiling_is_refused():
-    """The deep clamp is under-broadened, so it must refuse rather than clamp."""
+def test_the_profile_pressure_bounds_reach_the_grid():
+    """`art_ptop_bar` must reach the grid through the PROFILE: a consumer that
+    rebound a value copy of the module constant instead built the same grid
+    on every rung of its convergence ladder. A bottom deeper than the k-table
+    ceiling is refused: the deep clamp is under-broadened."""
+    base = dict(molecules=["H2O"], nu_min=2000.0, nu_max=10000.0,
+                opacity_mode="exomolop", art_nlayer=20, art_pbtm_bar=1.0e2,
+                p_ref_bar=10.0, rp_cm=7.1492e9, gs_cgs=1.0e3, rstar_cm=RSTAR_W39)
+    a = exojax_rt.build_rt_model({**base, "art_ptop_bar": 1.0e-6})
+    b = exojax_rt.build_rt_model({**base, "art_ptop_bar": 1.0e-8})
+    assert float(a.art_ptop_bar) == 1.0e-6 and float(b.art_ptop_bar) == 1.0e-8
+    assert float(np.min(a.p_art_bar)) > float(np.min(b.p_art_bar))
     with pytest.raises(ValueError, match="k-table pressure ceiling"):
-        exojax_rt.build_rt_model(dict(
-            molecules=["H2O"], nu_min=2000.0, nu_max=10000.0,
-            opacity_mode="exomolop", art_nlayer=20,
-            art_ptop_bar=1.0e-6, art_pbtm_bar=3.0e2, p_ref_bar=10.0,
-            rp_cm=7.1492e9, gs_cgs=1.0e3, rstar_cm=RSTAR_W39))
+        exojax_rt.build_rt_model({**base, "art_ptop_bar": 1.0e-6,
+                                  "art_pbtm_bar": 3.0e2})
 
 
 def test_transmission_isothermal_h2o_matches_prt():

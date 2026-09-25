@@ -124,6 +124,10 @@ def test_only_bands_fully_inside_the_request_are_kept(data_root):
     # centres are the geometric means of the kept edges
     assert np.allclose(pack.nu_bands,
                        np.sqrt(pack.band_edges[:-1] * pack.band_edges[1:]))
+    # a request wholly outside the table keeps nothing, and says so
+    with pytest.raises(ValueError, match="no band inside"):
+        exomolop.load_tables(["H2O"], edges[-1] * 10, edges[-1] * 20,
+                             verbose=False)
 
 
 def test_zero_cross_sections_floor_instead_of_going_to_minus_infinity(data_root):
