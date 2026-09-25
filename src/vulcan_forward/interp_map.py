@@ -7,11 +7,9 @@ and therefore differentiable -- so forward-mode tangents pass cleanly across the
 
 ``jnp.interp`` requires ascending sample points, so we sort the VULCAN grid by log10(P)
 once (static index array). ``jnp.interp`` CLAMPS outside the sample range, so the ART
-grid must lie INSIDE the chemistry grid: both edges are refused at build time. (The
-shipped configuration used to let the ART top sit one decade above the chemistry top
-on a constant-VMR clamp; measured against chemistry solved there it moved the R=100
-transit depth by 73 ppm, so vulcan_chem now sets the chemistry P_t from the profile's
-art_ptop_bar and a clamped top is an error, like a clamped bottom always was.)
+grid must lie INSIDE the chemistry grid: both edges are refused at build time
+(vulcan_chem sets the chemistry P_t from the profile's art_ptop_bar; a clamped top
+measured 73 ppm at R=100, notes register #18).
 
 Interpolation caveats (documented, not silent): linear-in-log-P is not column- or
 mass-conservative and can smear photochemical transitions sharper than the ART layer

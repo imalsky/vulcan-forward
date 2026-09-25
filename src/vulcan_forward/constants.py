@@ -54,9 +54,7 @@ CLOUD_NUC0 = 2857.0
 # model-top "wall" (saturated fraction 4.8% at 1e-6 bar, 0.1% at 1e-8; measured
 # on WASP-39 b); 1e-9 bar is where the column is CONVERGED in its top -- one
 # decade higher moves the R=100 depth by 1.14 ppm, against 14.65 ppm for a 1e-8
-# bar top (vulcan-retrieval validation/top_pressure_ladder). The former
-# one-decade constant-VMR clamp above a 1e-7 bar chemistry top measured 73 ppm
-# there and was removed.
+# bar top (vulcan-retrieval validation/top_pressure_ladder).
 ART_PTOP_BAR = 1.0e-9
 ART_PBTM_BAR = 7.0
 

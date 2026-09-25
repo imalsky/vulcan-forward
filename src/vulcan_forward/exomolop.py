@@ -1,53 +1,32 @@
 """ExoMolOP k-tables: the published high-temperature opacities, ingested.
 
-WHY THIS EXISTS
----------------
 ``ckd.py`` holds HOW the opacity is integrated; this module supplies WHAT is
-integrated. Building tables locally from HITRAN had three measured defects,
-all pushing the same way (too little opacity in the WINDOWS, which inflates
-spectral contrast): a 296 K database applied at 1200 K, terrestrial-air
-pressure broadening in a hydrogen atmosphere (unfixable inside HITRAN -- H2O
-has no H2/He columns there at all), and thin species coverage. The measured
-numbers live in notes.md §1.1.
+integrated. ExoMolOP (Chubb et al. 2021, A&A 646, A21) publishes
+pre-computed opacities built from the ExoMol and HITEMP high-temperature line
+lists with H2/He broadening applied (why not HITRAN: notes.md §1.1). Its
+petitRADTRANS-format k-tables (~389 MB per species) land almost exactly on
+the layout ``ckd`` uses, so this is an ingestion adapter, not a second
+opacity implementation.
 
-ExoMolOP (Chubb et al. 2021, A&A 646, A21) closes all three at once: it
-publishes PRE-COMPUTED opacities for ~80 species, built from the ExoMol and
-HITEMP high-temperature line lists with H2/He broadening already applied,
-free and with no account, in each radiative-transfer code's native format.
-Its petitRADTRANS-format k-tables are ~389 MB per species and land almost
-exactly on the layout ``ckd`` uses, so this is an ingestion adapter rather
-than a second opacity implementation: everything downstream -- the
-random-overlap mixing, the (T, P) interpolation, the transmission and
-emission solvers -- is shared code.
+Two things differ from a textbook table:
 
-WHAT IS DIFFERENT ABOUT THEIR TABLES, and both matter
------------------------------------------------------
-* The QUADRATURE is not plain Gauss-Legendre: petitRADTRANS' split scheme,
-  8 Gauss-Legendre points on [0, 0.9] plus 8 on [0.9, 1.0]. ``ckd.overlap``
-  takes the nodes and weights as arguments, so they carry through from the
-  file -- but never assume 16-point Gauss-Legendre downstream.
-* Their PRESSURE grid stops at 1e-5 bar, while the RT column runs to
-  1e-9 bar. ``ckd._interp_logk`` clamps rather than extrapolating, so the
-  layers above 1e-5 bar all use the 1e-5 bar table entry. That is defensible
-  physics -- up there the lines are Doppler-dominated and k stops depending on
-  pressure -- and it is what petitRADTRANS itself does, but it is an
-  ASSUMPTION applied to real layers, so ``load_tables`` prints it rather than
-  letting it pass silently.
+* The QUADRATURE is petitRADTRANS' split scheme, 8 Gauss-Legendre points on
+  [0, 0.9] plus 8 on [0.9, 1.0]. ``ckd.overlap`` takes nodes and weights from
+  the file; never assume 16-point Gauss-Legendre downstream.
+* The PRESSURE grid stops at 1e-5 bar while the RT column runs to 1e-9 bar.
+  ``ckd._interp_logk`` clamps, so the layers above use the 1e-5 bar entry
+  (lines are Doppler-dominated there; petitRADTRANS does the same).
+  ``load_tables`` prints this assumption.
 
-UNITS: verified empirically AND checked on every load. Their ``kcoeff`` is in
-cm^2 per MOLECULE, the same convention ``opacity_profile_xs_ckd`` consumes --
-order unity against a HITRAN-built H2O table, not the 3.34e22 a per-gram
-convention would give (notes.md). ``_header`` refuses a file whose
-``kcoeff``/``p`` unit attributes, ``method`` or ``ngauss`` are not what this
-reader assumes; a mislabelled table must never load as if it were right.
+UNITS: ``kcoeff`` is cm^2 per MOLECULE, the convention
+``opacity_profile_xs_ckd`` consumes. ``_header`` refuses a file whose
+``kcoeff``/``p`` unit attributes, ``method`` or ``ngauss`` differ from what
+this reader assumes.
 
-TABLES ARE NEVER DOWNLOADED AT RUN TIME (standing fail-loud rule): a missing
-table raises with the fetch command.
-
-This module is importable WITHOUT the RT stack: h5py and jax are imported
-inside the functions that need them, so the path helpers (``table_path``,
-``available``) and ``provenance`` serve stdlib-only consumers such as
-jwst_tool.datacheck.
+Tables are never downloaded at run time: a missing table raises with the
+fetch command. h5py and jax are imported inside the functions that need
+them, so the path helpers (``table_path``, ``available``) and ``provenance``
+stay importable stdlib-only.
 """
 from __future__ import annotations
 

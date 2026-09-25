@@ -6,40 +6,31 @@
 ``theta = [lnZ, c_o, lnKzz, T...]``.
 
 Abundance knobs -- two modes (``profile["abundance_mode"]``):
-  * ``"masks"`` (legacy): multiplicative species-mask y0 directions. NOT exact
-    elemental directions (bound hydrogen scales along, ~0.6% of elemental H per
-    e-fold of Z at 10x solar; the fixed-O b_z compensation leaks into N/S).
-    Kept only to reproduce the published demo caches.
-  * ``"elemental"`` (production default): the mask scaling is only a smooth
-    initial guess; the column is renormalized to sum_i n_i = M per layer and
-    repaired (three fixed Newton-style iterations on the reservoir species
-    He/H2O/CO/N2/H2S) so the column elemental ratios hit the theta targets
-    EXACTLY (He/H fixed; O/N/S x Z; C x Z e^{c_o} -> dln(C/O) = c_o at fixed
-    O). ``pv.atom_ini`` is rebuilt from the repaired column, so anchor, third-
-    body density, pressure, and initial composition describe the same gas, and
-    cold/warm paths share conserved inventories by construction. Residuals
-    ~1e-8 relative; measure with ``audit_init``.
+  * ``"masks"`` (legacy): multiplicative species-mask y0 directions, NOT exact
+    elemental directions (bound H scales along, ~0.6% of elemental H per e-fold
+    of Z at 10x solar). Kept to reproduce the published demo caches.
+  * ``"elemental"`` (default): the mask scaling is only an initial guess; the
+    column is renormalized to sum_i n_i = M per layer and repaired (fixed
+    Newton-style iterations on He/H2O/CO/N2/H2S) so the column elemental ratios
+    hit the theta targets exactly (He/H fixed; O/N/S x Z; C x Z e^{c_o}).
+    ``pv.atom_ini`` is rebuilt from the repaired column. Residuals ~1e-8
+    relative; measure with ``audit_init``.
 
-Temperature / atmosphere: rate constants and the T/composition-dependent
-structure (Dzz + vm/vs, the gate's pv.Kzz, the initial carry geometry) are
-rebuilt on-graph per proposal; the runner refreshes hydrostatic geometry
-in-loop. Condensation follows the live T(P) too: static metadata is extracted
-once and ``_prep`` rebuilds every T-dependent conden array per proposal; a
-baseline-frozen conden table never reaches a live-T solve. Unsupported conden
-configs refuse loudly at build (moldiff off, empty condense_sp,
-use_sat_surfaceH2O). The cold-trap index and active-layer set are discrete: a
-jvp through a condensing state is valid only away from those switches.
+Rate constants and the T/composition-dependent structure (Dzz + vm/vs, pv.Kzz,
+the initial carry geometry) are rebuilt on-graph per proposal. Condensation
+follows the live T(P) too: ``_prep`` rebuilds every T-dependent conden array
+per proposal, and unsupported conden configs refuse at build. The cold-trap
+index and active-layer set are discrete, so a jvp through a condensing state
+is valid only away from those switches.
 
 KNOWN LIMITATION -- conden-on does NOT reduce to conden-off when nothing
 condenses: the fix_species pin freezes the reservoirs at their
-stop_conden_time state, a transient on a column too hot to supersaturate.
-Enable condensation only where the species genuinely condenses. A
-criterion-gated pin would change the certified convergence recipe and needs
-measured re-validation first.
+stop_conden_time state. Enable condensation only where the species
+genuinely condenses.
 
-Still frozen by design: the photolysis cross-section T-interpolation.
-The runner's lax.while_loop supports jvp/jacfwd but NOT vjp; forward-mode is
-the end-to-end route (few scalar inputs -> high-dim spectrum).
+The photolysis cross-section T-interpolation stays frozen by design. The
+runner's lax.while_loop supports jvp/jacfwd but NOT vjp; forward mode is the
+end-to-end route.
 """
 from __future__ import annotations
 
@@ -293,13 +284,14 @@ def _redirect_output_dirs(cfg) -> None:
 
 
 def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> SimpleNamespace:
-    """Build the converged WASP-39b model and the differentiable converged_y(theta).
+    """Build the chemistry model and the differentiable converged_y(theta).
 
     Parameters
     ----------
     profile : dict
-        A caller-owned settings dict -- supplies ``use_photo`` and
-        ``yconv_cri``. ``profile["abundance_mode"]`` selects "masks" (legacy) or
+        A caller-owned settings dict (keys: ``constants.PROFILE_KEYS``; an
+        unknown key raises). ``use_photo`` and ``yconv_cri`` are required.
+        ``profile["abundance_mode"]`` selects "masks" (legacy) or
         "elemental" (the default: exact conserved-inventory construction; see
         module docstring).
         ``profile["skip_warmup"]`` (default False) skips the build-time
@@ -309,7 +301,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     tp_eval : callable or None, optional
         Temperature-profile hook. When ``None`` (default) the
         temperature is the validated uniform shift ``T = T_base + theta[3]`` (theta[3]
-        is a bulk offset; the demo's historical "T_int" label). When supplied,
+        is a bulk offset). When supplied,
         ``tp_eval(theta[3:3+n_tp_params], p_bar)`` returns the full (nz,) T-P profile
         (bar-indexed) that replaces the scalar shift -- used by the retrieval framework
         to retrieve an ExoJax Guillot/power-law T-P. Either way the rate table AND the
@@ -566,11 +558,11 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         slope_min = jnp.maximum(slope_min, jnp.float64(_SLOPE_MIN_FLOOR))
         tight = (final.longdy < yconv_cri_v) & (final.longdydt < slope_cri_v)
         loose = (final.longdy < yconv_min_v) & (final.longdydt < slope_min)
-        # The photo-flux gate AND the solver's geometry term (vulcan-jax >=
-        # 0.7.0: the carried geometry agreed with the composition at the
-        # certificate step) AND its cumulative column element budget (>= 0.9.0,
-        # C23: the column still holds the elements this theta started with),
-        # mirroring outer_loop._real_terminate.
+        # The photo-flux gate AND the solver's geometry term (the carried
+        # geometry agreed with the composition at the certificate step) AND
+        # its cumulative column element budget (C23: the column still holds
+        # the elements this theta started with), mirroring
+        # outer_loop._real_terminate.
         flux_ok = (
             (final.aflux_change < flux_cri_v) & final.geom_ok & final.budget_ok
         )
@@ -627,7 +619,8 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     # "elemental" mode this is only the initial guess and the repair removes
     # the leakage; in legacy "masks" mode it IS the knob definition.
     metal_mask = jnp.asarray((compo[:, metal_cols].sum(axis=1) > 0).astype(np.float64))
-    carbon_mask = jnp.asarray((compo[:, constants.ATOM_COLS["C"]] > 0).astype(np.float64))  # C/O proxy
+    carbon_mask = jnp.asarray(                                   # C/O proxy
+        (compo[:, constants.ATOM_COLS["C"]] > 0).astype(np.float64))
     # fixed-O C/O mode ("co_mode": "fixed_O"): every C atom lives in a C-bearing species,
     # and the O-carriers holding no C (H2O, OH, O2, SO, SO2, NO, ...) are disjoint from
     # them -- the two masks partition all O between "dragged along by C-carriers" and
@@ -676,11 +669,12 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         zscale_kind = jnp.asarray(_zk)
         cscale_kind = jnp.asarray(_ck)
         R0_j = jnp.asarray(R0_ratios)
+        _names = [e for e, _ in elem_pairs]
         print("[chem] elemental mode: exact column ratios to H via repair species "
               f"{[sp for _, sp in elem_pairs]}"
               + (f" (absent: {missing})" if missing else "")
               + "; baseline C/O = "
-              f"{A0[1 + [e for e, _ in elem_pairs].index('C')] / A0[1 + [e for e, _ in elem_pairs].index('O')]:.4f}",
+              f"{A0[1 + _names.index('C')] / A0[1 + _names.index('O')]:.4f}",
               flush=True)
 
     _nC = np.asarray(compo[:, constants.ATOM_COLS["C"]], dtype=np.float64)
@@ -882,11 +876,11 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         else:
             vs_new = jnp.zeros((nz - 1, ni), dtype=jnp.float64)
         # y_ini is kept for the end-of-run print; the element-budget
-        # certificate's reference is `budget_ref` (vulcan-jax >= 0.11.0) --
-        # seeded on the init below from THIS theta's starting column on ITS
-        # own grid, with the per-step accumulator zeroed -- as atom_ini is
-        # re-anchored above. The baseline column would charge the proposal's
-        # own composition change to the solver's conservation.
+        # certificate's reference is `budget_ref`, seeded on the init below
+        # from THIS theta's starting column on ITS own grid, with the per-step
+        # accumulator zeroed -- as atom_ini is re-anchored above. The baseline
+        # column would charge the proposal's own composition change to the
+        # solver's conservation.
         pv_T = pv_T._replace(r_Dzz_top=Dzz_new[-1], y_ini=y0p)
 
         # --- condensation at the proposed T ---------------------------------
@@ -987,8 +981,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         (``OuterLoop.run_batch``, one while loop ABOVE the lane vmap):
         photolysis and the geometry refresh follow the loop's iteration tick,
         not the lane's accept count, so a lane is NOT bit-identical to its solo
-        ``converged_y`` -- the two agree at the convergence scale (5.4e-5 over
-        ymix > 1e-10 on vulcan-jax's HD189 batch, its notes 2.9). A lane's
+        ``converged_y`` -- the two agree at the convergence scale. A lane's
         result does not depend on the other lanes -- each freezes at its own
         exit. A plain ``jax.jvp`` through this entry point is supported (the
         stop test reads the primal only); a tangent-CERTIFIED derivative is
@@ -1043,10 +1036,9 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         certificate), but the answer is still not BITWISE the batch's: the
         seed is built inside ``run_queue``'s jitted loop and outside it in
         ``converged_y_batch``, and those two compilations of ``_prep`` differ
-        by a ulp in y_ini (1.1e-15), which the trajectory amplifies to ~1e-3
-        in the worst cell. Returns ``(y (N, nz, ni), ConvDiag stacked over
-        N)``; the ConvDiag is not optional here (it rides the per-job
-        write-out).
+        by a ulp in y_ini, which the trajectory amplifies. Returns
+        ``(y (N, nz, ni), ConvDiag stacked over N)``; the ConvDiag is not
+        optional here (it rides the per-job write-out).
 
         ``lnZ_ref`` / ``c_o_ref`` (scalar or ``(N,)``) and ``warm_cap`` mean
         what they mean on ``converged_y_batch``: the references ride the jobs
@@ -1206,7 +1198,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         #                                           budget_drift_atom indexes this
         T_base=np.asarray(T_base),
         p_bar=p_bar,
-        dz=np.asarray(atm.dz, dtype=np.float64),   # layer thickness (cm); for n0*dz column weighting
+        dz=np.asarray(atm.dz, dtype=np.float64),   # layer thickness (cm), n0*dz weights
         sidx=sidx,
         species_masses=species_masses,
         nz=nz, ni=ni,

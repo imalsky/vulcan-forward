@@ -69,9 +69,8 @@ def _gravity_profile_invsq(art, T_art, mmw_art, radius_btm, gravity_btm):
     ``g_btm / rn`` -- LINEAR in 1/r -- while its height integrator uses the
     physical inverse-square ``g_btm / rn**2``. Using ``gravity_profile`` for
     the opacity columns leaves heights and columns on DIFFERENT gravities and
-    removes only about half of the constant-g bias (measured vs an independent
-    chord quadrature: -101.8 ppm constant-g, -50.8 ppm gravity_profile,
-    +1.5 ppm this profile). Same (nlayer, 1) shape contract as
+    removes only about half of the constant-g bias (notes register #9). Same
+    (nlayer, 1) shape contract as
     ``gravity_profile`` so it broadcasts through the dtau kernels.
     """
     normalized_height, normalized_radius_lower = art.atmosphere_height(
@@ -87,8 +86,7 @@ def _anchor_to_grid_bottom(lnp_art, T_art, mmw_art, r_ref, g_ref, p_ref_bar):
     bottom layer. A published planet radius is instead the transit radius, i.e.
     the radius at roughly the photosphere (~mbar). Handing exojax the literature
     pair stacks the whole p_ref -> p_btm column ON TOP OF a radius that already
-    is the photospheric one, which inflated WASP-39 b's transit depth by
-    5472 ppm (26,853 vs a measured 21,381) and its spectral contrast by 1.42x.
+    is the photospheric one (notes register #10).
 
     Integrating hydrostatic equilibrium with GM held fixed, so that
     ``g(r) = g_ref (r_ref/r)^2``::
@@ -106,10 +104,8 @@ def _anchor_to_grid_bottom(lnp_art, T_art, mmw_art, r_ref, g_ref, p_ref_bar):
     representative (centre) pressure. exojax builds ``art.pressure`` with
     ``pressure_layer_logspace``, whose entries are layer CENTRES, and defines
     ``radius_btm`` at ``pressure_lower_logspace(...) = p[-1] * k**-0.5``
-    (atmprof.py) -- half a log-layer deeper. Anchoring to ``p[-1]`` instead put
-    the reference radius at 1.11 mbar for a requested 1 mbar on the planner's
-    100-layer grid and at 1.71 mbar on a 20-layer one, i.e. it made the
-    absolute transit depth depend on ``art_nlayer`` (+0.20% to +1.02%).
+    (atmprof.py) -- half a log-layer deeper. Anchoring to ``p[-1]`` makes the
+    absolute transit depth depend on ``art_nlayer`` (notes register #11).
 
     lnp_art must be ascending (exojax orders its grid top-to-bottom).
     Returns (r_btm, g_btm) in cgs.
@@ -159,12 +155,11 @@ def _radius_at(lnp_art, T_art, mmw_art, r_ref, g_ref, p_ref_bar, p_target_bar):
 
     The integration nodes extend HALF A LAYER above the top grid centre and
     below the deepest one, holding the end layer's T and mmw over each half
-    layer (which is what a representative layer value means). Without the
-    extra nodes ``jnp.interp`` clamps at the end centres: below, that silently
-    dropped the half layer down to the grid's lower boundary -- the level
-    exojax actually defines ``radius_btm`` at; above, it pinned any level in
-    the top half layer (where ``_photosphere_lnp`` can put the tau = 2/3
-    photosphere) to the top-centre radius with a zero derivative.
+    layer (which is what a representative layer value means). ``jnp.interp``
+    clamps at its end nodes, so without them the half layer down to the grid's
+    lower boundary (where exojax defines ``radius_btm``) would drop out, and a
+    level in the top half layer (where ``_photosphere_lnp`` can put the
+    tau = 2/3 photosphere) would get the top-centre radius and no derivative.
     """
     C = constants.K_B_CGS * T_art / (
         mmw_art * constants.M_U_CGS * g_ref * r_ref ** 2)
@@ -173,8 +168,7 @@ def _radius_at(lnp_art, T_art, mmw_art, r_ref, g_ref, p_ref_bar, p_target_bar):
                            _lnp_grid_bottom_boundary(lnp_art)[None]])
     C = jnp.concatenate([C[:1], C, C[-1:]])
     seg = 0.5 * (C[1:] + C[:-1]) * jnp.diff(lnp)
-    # The integral is zero at the top CENTRE, exactly as before the top node
-    # existed, so every level at or below it evaluates bitwise as it did.
+    # The integral is zero at the top CENTRE.
     cum = jnp.concatenate([-seg[:1], jnp.zeros(1), jnp.cumsum(seg[1:])])
     i_ref = jnp.interp(jnp.log(p_ref_bar), lnp, cum)
     i_tgt = jnp.interp(jnp.log(p_target_bar), lnp, cum)
@@ -272,11 +266,11 @@ def _ckd_dtau_batch(art, pack, mols, molmass, opacia, opacia_he,
     observable. Returns ``(finish(full), [finish(wo) ...])`` with the wo list
     aligned to ``wo_mols``. The dropped molecule is still folded, as the zero
     tensor its zeroed VMR produces through the SAME op pipeline, so every
-    output is bit-identical to a from-scratch solve with that VMR zeroed;
-    only the shared fold prefix is reused (see ckd._fold_wo). The
-    per-molecule tensors are held for the
-    fold tails (~n x 35 MB at planner defaults); wo totals are finished and
-    freed one at a time.
+    output is bit-identical (on the CPU; see ckd.fold) to a from-scratch solve
+    with that VMR zeroed; only the shared fold prefix is reused (see
+    ckd._fold_wo). The per-molecule tensors are held for the fold tails
+    (about n x 35 MB at planner defaults); wo totals are finished and freed
+    one at a time.
     """
     from vulcan_forward import ckd as _ckd
 
@@ -334,7 +328,7 @@ def _run_emis_ckd_linsap(art, dtau_g, T_boundary, nu_bands, gw, weight_g=None):
 
     exojax's ``ArtEmisPure.run_ckd`` hard-codes ``rtrun_emis_pureabs_ibased``,
     which has no bottom-boundary term, so every photon entering the grid from
-    below is lost (measured flux deficits: notes.md §1.2, register #8).
+    below is lost (measured flux deficits: notes.md register #7, #8).
     This is upstream's own flatten-solve-reweight structure with
     ``ibased_linsap`` in its place, so CKD emission keeps the interior source
     term the solver carries.
@@ -552,7 +546,8 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
         # uses for the chord heights in the pressure->column-mass conversion.
         # Constant g_btm makes upper-layer tau too small; art.gravity_profile
         # is 1/r-linear and is NOT this profile (see _gravity_profile_invsq).
-        # Emission is plane-parallel and correctly keeps constant g_btm.
+        # Emission is plane-parallel and keeps one gravity, anchored at
+        # p_ref_emission_bar.
         g_prof = _gravity_profile_invsq(art, T_art, mmw_art, Rp_btm, g_btm)  # (nlayer,1)
         dtau_g = _accumulate_dtau_ckd(
             art, ckd_pack, mols, molmass, opacia, opacia_he,
@@ -572,11 +567,11 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
         fixed, lnR0 must be read as a pressure-radius normalization, NOT a physical
         planet-radius change at fixed mass.
 
-        wo_mols: None (default) returns the depth (n_nu,) exactly as before.
+        wo_mols: None (default) returns the depth (n_nu,).
         A list of molecule names returns ``(depth, depth_wo)`` with one row per
         entry, each the depth with that molecule's VMR zeroed -- bit-identical
-        to a separate call on the zeroed profile, but reusing the shared
-        correlated-k fold prefix (~2x fewer overlap folds for a full set)."""
+        (on the CPU) to a separate call on the zeroed profile, but reusing the
+        shared correlated-k fold prefix (~2x fewer overlap folds for a full set)."""
         _require_he(vmr_he)
         Rp_btm, g_btm = _anchor_to_grid_bottom(
             lnp_art, T_art, mmw_art, Rp_ref, g_ref, p_ref_bar)
@@ -660,31 +655,16 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
     opacia_he = trt._opacia_he
     _require_geometry(profile, "gs_cgs")
     # Emission is plane-parallel, so ArtEmisPure needs ONE gravity for the whole
-    # column: it converts pressure to column mass as dP/g. That gravity must be
-    # the same physical quantity the transmission path anchors, otherwise the two
-    # observables silently disagree about the planet. gs_cgs is quoted at
-    # p_ref_bar (~1 mbar), while the column is dominated by the emission
-    # photosphere near 0.1 bar, so the gravity is re-anchored there.
-    #
-    # The RADIUS must be re-anchored with it. The eclipse depth prefactor is
-    # (R_p/R_star)^2, and R_p there is the radius of the emitting surface. Using
-    # the 1 mbar transit radius with the 0.1 bar gravity makes the pair imply a
-    # planet mass 8.9% off its own GM (measured on WASP-39 b: r(0.1 bar) =
-    # 1.2257 RJ against the 1.2790 RJ transit radius, so the eclipse depth ran
-    # 8.9% high). ``emission_radius`` below returns the consistent value; the
-    # consumer must use it for the prefactor rather than the catalogue radius.
-    #
-    # That single radius is the ANCHOR only. The prefactor a consumer must use
-    # is the wavelength-dependent photospheric radius at vertical tau = 2/3
-    # (Fortney, Lupu, Morley, Freedman & Hood 2019, ApJL 880, L16; what
-    # POSEIDON and PLATON II compute): ``eclipse_flux_tau`` folds
-    # (R_phot/R_em)^2 into the flux per k-ordinate, so depth = that flux / F_s
-    # x (R_em/R_star)^2 is exact. Measured on the planner's WASP-39 b dayside
-    # (g ~ 470 cm/s2) the single-radius depth was low by a median 7% and by 13%
-    # in the CO2 core against 4% in the neighbouring continuum -- a feature
-    # error, not an offset; on HD 189733 b (g ~ 2200) under 2.5% everywhere.
-    # ``emission_flux`` stays the plain emergent flux (the pRT comparison and
-    # the pi*B(T) check are flux tests).
+    # column (it converts pressure to column mass as dP/g). gs_cgs is quoted at
+    # p_ref_bar, while the column is dominated by the emission photosphere near
+    # 0.1 bar, so gravity AND radius are re-anchored at p_ref_emission_bar as
+    # one consistent pair (the transit radius with the emission gravity misstates
+    # GM, notes register #12). ``emission_radius`` returns that radius. The
+    # eclipse prefactor proper is the photospheric radius at vertical tau = 2/3
+    # per k-ordinate (Fortney et al. 2019, ApJL 880, L16), which
+    # ``eclipse_flux_tau`` folds into the flux (a single radius is a feature
+    # error, notes register #24). ``emission_flux`` stays the plain emergent
+    # flux.
     _require_geometry(profile, "rp_cm")
     g_ref_em = float(profile["gs_cgs"])
     r_ref_em = float(profile["rp_cm"])
@@ -711,22 +691,13 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
             "observables share one column anchor (build both from one "
             "profile).")
 
-    # pressure bounds follow the transmission model's (possibly profile-
-    # overridden) grid -- the two share opacities and must share the column
+    # Pressure bounds and nlayer follow the transmission model's grid: the two
+    # share opacities and must share the column.
     #
-    # rtsolver "ibased_linsap", not "ibased". Two measured reasons.
-    # (1) INTERIOR SOURCE. "ibased" drops the bottom-boundary term entirely
-    # (rtransfer.py: its docstring says "with no surface"), so every photon
-    # entering the grid from below is lost. At the tau_bottom = 3 the consumer
-    # gate admits, that term is 12-52% of the flux. linsap carries it: its last
-    # source row is multiplied by exp(-tau_total/mu) over the same streams, so
-    # a transparent column returns the interior blackbody and an opaque one
-    # returns 1.9e-86 of it. (2) ACCURACY. linsap is the linear-source
-    # (Olson & Kunasz) scheme rather than isothermal-layer; at nlayer = 60 and
-    # tau_bottom = 10 it sits within 0.13-0.40% of its own converged answer
-    # where "ibased" sits 2.9-5.3% away. It costs one extra source row.
-    # nlayer follows trt's grid too: a differing value would put the emission
-    # column on different layer centres than trt.p_art_bar with no error.
+    # rtsolver "ibased_linsap", not "ibased": "ibased" drops the bottom-boundary
+    # (interior) source term, so every photon entering the grid from below is
+    # lost (notes register #8), and linsap's linear-source scheme is also the
+    # more accurate one at production layer counts. It costs one source row.
     art_nlayer = int(np.asarray(trt.p_art_bar).size)
     if "art_nlayer" in profile and int(profile["art_nlayer"]) != art_nlayer:
         raise ValueError(
@@ -752,10 +723,8 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
         the None default only upgrades the omission error message)."""
         _require_he(vmr_he)
         _, g_em = _emission_anchor(T_art, mmw_art)
-        # linsap wants the source at the layer BOUNDARIES (nlayer + 1), not at
-        # the representative centres. Passing the centres raises a broadcasting
-        # error rather than modelling the wrong column, so a half-done switch
-        # cannot ship quietly.
+        # linsap takes the source at the layer BOUNDARIES (nlayer + 1); the
+        # representative centres would raise a broadcasting error.
         dtau_g = _dtau(vmr, vmr_h2, vmr_he, T_art, mmw_art, g_em, cloud)
         return _run_emis_ckd_linsap(art, dtau_g, _boundary_temperature(T_art),
                                     nu_grid, ckd_pack.gw)
@@ -768,11 +737,11 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
     # lnR0 CONVENTION for consumers. The eclipse prefactor multiplies this
     # radius by exp(2*lnR0), matching transmission. That is an approximation
     # here: this geometry shifts radii ADDITIVELY at fixed g_btm, which makes
-    # the consistent exponent 2*Rp_btm/r_em (1.888 on WASP-39 b; finite
-    # differences give 1.8814), and it also drops the g_em response to lnR0.
-    # Measured, both are below the eclipse-depth error budget, so the exponent
-    # is left at 2. If it is ever tightened, tighten the gravity response with
-    # it -- correcting one alone moves the answer the wrong way.
+    # the consistent exponent 2*Rp_btm/r_em (1.888 on WASP-39 b), and it also
+    # drops the g_em response to lnR0. Both are below the eclipse-depth error
+    # budget, so the exponent is left at 2. If it is ever tightened, tighten
+    # the gravity response with it -- correcting one alone moves the answer
+    # the wrong way.
     def emission_radius(T_art, mmw_art):
         """Planet radius (cm) at p_ref_emission_bar, for the eclipse-depth
         (R_p/R_star)^2 prefactor.
@@ -845,8 +814,8 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
         same optical depth twice. With ``wo_mols`` (a list of molecule names)
         returns ``(flux, tau_bottom, flux_wo, tau_wo)``, the wo rows aligned to
         ``wo_mols``: each is the observable with that molecule's VMR zeroed,
-        bit-identical to a from-scratch call on the zeroed profile but reusing
-        the shared correlated-k fold prefix (see ckd._fold_wo).
+        bit-identical (on the CPU) to a from-scratch call on the zeroed profile
+        but reusing the shared correlated-k fold prefix (see ckd._fold_wo).
         """
         return _flux_tau(vmr, vmr_h2, T_art, mmw_art, vmr_he, cloud, wo_mols,
                          photosphere=False)
