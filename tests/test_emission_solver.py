@@ -3,8 +3,7 @@
 exojax's ``ibased`` solver drops the bottom-boundary term entirely ("with no
 surface", its own docstring). Every photon entering the model column from
 below is lost, so any wavelength that sees through the grid bottom is
-underestimated -- silently, because the number returned is a perfectly
-ordinary-looking flux.
+underestimated.
 
 The engine runs ``ibased_linsap`` instead, which carries the interior source
 and is also the more accurate scheme at production layer counts. These tests pin the
@@ -20,11 +19,7 @@ import importlib.util
 import numpy as np
 import pytest
 
-# IMPORT ORDER IS LOAD-BEARING (see CLAUDE.md): vulcan_chem fixes jax x64 and
-# the VULCAN_JAX_* import-frozen env vars, and refuses to load if exojax got
-# there first. So check for the RT stack WITHOUT importing it -- an
-# importorskip("exojax") here would poison the ordering contract for every
-# later test module in the session.
+# Import order: vulcan_chem before exojax; find_spec, never importorskip("exojax").
 if importlib.util.find_spec("exojax") is None:              # pragma: no cover
     pytest.skip("RT stack (exojax) not installed; run where exojax is present.",
                 allow_module_level=True)
@@ -76,8 +71,7 @@ def test_the_interior_source_is_present_and_fades_with_depth():
 
     Transparent: the column returns the interior blackbody (``ibased`` returns
     ~0 there, a see-through window read as an empty sky). tau_bottom = 3, the
-    band the consumer's gate admits and where dropping the term did the
-    damage: moving only the interior temperature moves the flux, with a
+    band the consumer's gate admits and where the term matters: moving only the interior temperature moves the flux, with a
     finite positive derivative (the term is in the graph). Opaque
     (tau 200): the flux forgets the interior; the deepest layer still
     radiates, so a little is allowed.
@@ -111,8 +105,8 @@ def test_the_interior_source_is_present_and_fades_with_depth():
 
 # Correlated-k emission
 #
-# exojax's own ArtEmisPure.run_ckd hard-codes the "ibased" solver, which would
-# silently undo the interior-source fix above.
+# exojax's own ArtEmisPure.run_ckd hard-codes the "ibased" solver, which drops
+# the interior source.
 # _run_emis_ckd_linsap is upstream's flatten-solve-reweight with "ibased_linsap"
 # in its place. The tests below pin the two things that can regress silently:
 # the flatten/tile index convention (a transpose here mixes bands into
@@ -152,12 +146,9 @@ def test_ckd_emission_matches_line_by_line_when_every_g_is_identical():
 
 
 def test_ckd_emission_keeps_the_interior_source_upstream_run_ckd_drops():
-    """The reason we do not call ArtEmisPure.run_ckd. On a thin column its
-    "ibased" solver loses the interior blackbody entirely; measured, it returns
-    22-99% less flux than the linsap version over the band. If this test ever
-    fails because the two agree, someone has routed emission back through
-    upstream's CKD entry point.
-    """
+    """ArtEmisPure.run_ckd's "ibased" solver loses the interior blackbody on a
+    thin column (22-99% less flux over the band); the engine's linsap path
+    must not."""
     art = _art()
     art_ibased = ArtEmisPure(nu_grid=NU, pressure_top=1e-8, pressure_btm=100.0,
                              nlayer=NLAYER, rtsolver="ibased", nstream=8)
@@ -176,9 +167,8 @@ def test_ckd_emission_keeps_the_interior_source_upstream_run_ckd_drops():
 def test_ckd_emission_is_not_the_same_as_using_the_band_mean_opacity():
     """Sanity that the k-distribution is doing work. A real k(g) spread at
     FIXED band-mean optical depth must give a different flux from running that
-    mean directly -- that gap (measured 24-38% here) is precisely the grey
-    within-band averaging error correlated-k exists to remove. If these agreed,
-    the g-axis would be decorative.
+    mean directly -- that gap (measured 24-38% here) is the grey within-band
+    averaging error correlated-k exists to remove.
     """
     art = _art()
     ng = 16
@@ -200,8 +190,6 @@ def test_ckd_emission_tangent_sign_follows_the_lapse_rate():
     """Differentiability plus a physics check in one. More opacity moves the
     photosphere UP; on a normal profile that is into cooler gas so the flux
     dims, and on an inversion it is into hotter gas so the flux brightens.
-    Getting both signs right is what shows the solver tracks where the
-    photosphere actually sits, rather than merely returning a finite number.
     """
     art = _art()
     ng = 8

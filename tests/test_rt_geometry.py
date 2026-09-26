@@ -18,10 +18,7 @@ import importlib.util
 import numpy as np
 import pytest
 
-# The geometry helpers live in exojax_rt, whose MODULE imports exojax -- so
-# light CI (jax but no exojax) must skip here, and the import-order contract
-# applies (see CLAUDE.md): check with find_spec, never importorskip("exojax"),
-# and load vulcan_chem before anything exojax.
+# Import order: vulcan_chem before exojax; find_spec, never importorskip("exojax").
 if importlib.util.find_spec("exojax") is None:              # pragma: no cover
     pytest.skip("exojax not installed (light-CI environment)",
                 allow_module_level=True)
@@ -75,10 +72,10 @@ def test_matches_the_isothermal_closed_form_at_every_level(n):
     Checked at the top boundary, inside the top half layer, an interior level,
     a FIXED 1 bar level (so r(p) is the same at every layer count) and the
     bottom boundary: the integration nodes must reach half a layer beyond
-    both end centres (``jnp.interp`` clamps outside them, which returned the
-    top-centre radius and no derivative in the top half layer).
+    both end centres (``jnp.interp`` clamps outside them, which would return
+    the top-centre radius and no derivative in the top half layer).
     ``_anchor_to_grid_bottom`` must land on the bottom layer's LOWER
-    BOUNDARY, not its centre, at any resolution: anchoring to the centre made
+    BOUNDARY, not its centre, at any resolution: anchoring to the centre makes
     the transit depth depend on art_nlayer. Deeper is then smaller and
     heavier by construction, and the correction scales with H/Rp.
     """

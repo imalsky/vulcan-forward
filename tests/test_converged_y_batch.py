@@ -12,8 +12,7 @@ Two properties, and they pull in opposite directions:
   refresh key to the loop's iteration tick instead of a lane's accept count.
   The certificate (``conv_normal``) must still match lane for lane.
 
-The measured differences are printed (``pytest -s``): they are the number that
-says whether the batched primal is still the same answer.
+The measured differences are printed (``pytest -s``).
 
 The warm-continuation arguments are covered too: the mutation cap
 (``warm_cap``) and the PER-LANE reference composition, both of which the
@@ -29,9 +28,7 @@ import importlib.util
 import numpy as np
 import pytest
 
-# vulcan_chem drives VULCAN-JAX's runner, which light CI does not install; the
-# import-order contract applies (see CLAUDE.md): check with find_spec, never
-# importorskip("exojax"), and load vulcan_chem before anything else jax.
+# Import order: skip via find_spec, never importorskip("exojax"); vulcan_chem before jax.
 if importlib.util.find_spec("vulcan_jax") is None:           # pragma: no cover
     pytest.skip("vulcan_jax not installed (light-CI environment)",
                 allow_module_level=True)

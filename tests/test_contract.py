@@ -5,7 +5,7 @@ prose: the package imports with no data installed, its
 data-root contract fails loudly instead of guessing, the molecule table is
 injectable, and planet geometry is required rather than defaulted to WASP-39 b.
 
-Deliberately dependency-light -- no jax, no exojax, no vulcan_jax -- so this
+Dependency-light -- no jax, no exojax, no vulcan_jax -- so this
 file runs anywhere. The physics itself is validated by the consumers' suites
 against real spectra.
 """
@@ -19,12 +19,9 @@ import pytest
 
 
 def test_every_molmass_matches_its_own_formula():
-    """molmass is the only mass the engine uses; it must equal the formula.
-
-    Seven entries once carried an isotopologue or a pre-2009 sulfur weight.
-    Harmless while the mass cancels out of the optical depth -- which is
-    exactly why nothing else would catch it.
-    """
+    """molmass is the only mass the engine uses; it must equal the formula
+    mass. It cancels out of the optical depth, so no other test would catch a
+    wrong one."""
     import re
 
     from vulcan_forward import constants
@@ -131,7 +128,7 @@ def test_chem_params_named_api_matches_the_vector_form():
     """The engine's primitive is named ChemParams; the positional vector stays
     supported as the adapter a sampler or a jvp needs.
 
-    Runs in a SUBPROCESS on purpose. Importing vulcan_chem needs a clean
+    Runs in a SUBPROCESS. Importing vulcan_chem needs a clean
     interpreter: an earlier test in this file imports exojax_rt, and after that
     the import-order guard correctly refuses vulcan_chem.
     """
@@ -170,7 +167,7 @@ print("OK")
 def test_ensure_layout_creates_the_trees(paths, tmp_path, monkeypatch):
     """A setup tool must be able to CREATE the layout.
 
-    data_root() is strict on purpose, but a fetch command knows the directories
+    data_root() is strict, but a fetch command knows the directories
     should exist.
     """
     root = tmp_path / "made-by-setup"

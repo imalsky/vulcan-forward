@@ -12,12 +12,6 @@ runs stop at the same primal state -- otherwise "every direction settled"
 (stacked) and "this direction settled" (single) exit at different steps and the
 two derivatives are of different functions.
 
-Measured on this profile: the primal is bit-identical between the routes and
-the tangents agree to max rel 6.2e-9 over cells above 1e-10 VMR (median 0);
-the bar is 10x that. ``tangent_longdy`` (the tangent's lookback change,
-normalised by primal quantities in ``outer_loop._tangent_conv``) carries the
-same empirical bar.
-
 A second model leaves the endpoint free, so there the tangent certificate
 decides when the run stops.
 
@@ -30,9 +24,7 @@ import importlib.util
 import numpy as np
 import pytest
 
-# vulcan_chem drives VULCAN-JAX's runner, which light CI does not install; the
-# import-order contract applies (see CLAUDE.md): check with find_spec, never
-# importorskip("exojax"), and load vulcan_chem before anything else jax.
+# Import order: skip via find_spec, never importorskip("exojax"); vulcan_chem before jax.
 if importlib.util.find_spec("vulcan_jax") is None:           # pragma: no cover
     pytest.skip("vulcan_jax not installed (light-CI environment)",
                 allow_module_level=True)
@@ -50,7 +42,7 @@ THETA = np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float64)
 DIRS = np.eye(4, dtype=np.float64)[[0, 3]]
 MIX_FLOOR = 1.0e-10   # cells below this carry no observable and no certificate
 REL_MAX = 6.2e-8      # 10x the measured 6.2e-9
-TL_REL_MAX = REL_MAX  # empirical: 2.9e-10 and 4.3e-9 measured, see the docstring
+TL_REL_MAX = REL_MAX  # tangent_longdy: 2.9e-10 and 4.3e-9 measured
 
 
 @pytest.fixture(scope="module")

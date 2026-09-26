@@ -84,8 +84,8 @@ def data_root(tmp_path, monkeypatch):
 
 
 def test_missing_table_raises_with_the_fetch_command(data_root):
-    """Standing fail-loud rule: name the remedy, and never download 389 MB
-    behind the caller's back."""
+    """A missing table raises with the fetch command; nothing is downloaded
+    at run time."""
     with pytest.raises(FileNotFoundError) as e:
         exomolop.load_tables(["H2O"], 100.0, 200.0)
     msg = str(e.value)
@@ -218,7 +218,7 @@ def test_malformed_tables_are_refused(data_root, dataset, index, value):
 # Against a REAL table, when one is installed.
 
 def _need_real(*mols):
-    """Resolve at CALL time, not import time: test_contract.py deliberately
+    """Resolve at CALL time, not import time: test_contract.py
     clears the data root to prove the library imports with no data installed,
     so a module-level skipif marker would be evaluated against whichever
     environment happened to exist when this module was collected."""
@@ -243,11 +243,8 @@ def test_real_tables_share_one_grid_signature():
 
 
 def test_real_table_uses_the_petitradtrans_split_quadrature():
-    """Their quadrature is NOT plain Gauss-Legendre: 8 points on [0, 0.9] plus
-    8 on [0.9, 1.0]. ckd.overlap takes the nodes as arguments so nothing had to
-    change to accept it, but if a future release switched to a flat rule the
-    weights would stop splitting 0.9/0.1 and this is where we would find out.
-    """
+    """The quadrature is petitRADTRANS' split rule (8 points on [0, 0.9] + 8
+    on [0.9, 1.0]), not plain Gauss-Legendre: the weights split 0.9/0.1."""
     _need_real()
     pack = exomolop.load_tables(["H2O"], 2000.0, 2100.0, verbose=False)
     w = np.asarray(pack.gw)
@@ -261,8 +258,7 @@ def test_real_table_uses_the_petitradtrans_split_quadrature():
 
 
 def test_real_table_is_a_cross_section_per_molecule_not_per_gram():
-    """Units were verified empirically, not assumed, and they are load-bearing:
-    ``opacity_profile_xs_ckd`` multiplies by mmr and divides by the molecular
+    """kcoeff is cm^2 per molecule: ``opacity_profile_xs_ckd`` multiplies by mmr and divides by the molecular
     mass, so a cm^2/g table would come out ~3.3e22 times too large. An H2O
     band-mean cross section at 1200 K and 0.1 bar is of order 1e-23 to 1e-19
     cm^2/molecule; per gram it would be 1e-1 to 1e3.
@@ -277,25 +273,18 @@ def test_real_table_is_a_cross_section_per_molecule_not_per_gram():
     kbar = np.exp(lk[it, ip]).T @ np.asarray(pack.gw)     # (nband,)
     med = float(np.median(kbar))
     assert 1e-26 < med < 1e-17, med
-    # the same claim from the file header, now checked on every load
+    # the same claim from the file header, checked on every load
     assert exomolop.table_info("H2O")["kcoeff_units"] == exomolop.KCOEFF_UNITS
 
 
 def test_real_tables_reproduce_the_exo_k_reference():
-    """Independent oracle for the hand-written reader, (T, P) interpolation
-    and random overlap. exo_k 1.3.1 (Leconte 2021) read the SAME three tables
-    and mixed them with ``Ktable.RandOverlap``; the fixture
-    tests/data/exok_ref_overlap.npz carries its output, the generating script
-    and the conventions in its meta. Three assertions of increasing
-    looseness: the reader bitwise (both sides log the same float64 values);
-    the interpolation to 1e-9 (measured 2e-14: exo_k is linear in T and log10
-    P on log k, ours in T and ln P -- identical weights); the overlap at the
-    documented convention gap -- exo_k rebins on the upper-edge cumulative g,
-    ours on the midpoint -- measured per-ordinate median 1.4e-3, p90 1.9e-2,
-    band-mean median 2.2e-3, each asserted at 3x. A median at O(1) means a
-    wrong weight product, sort axis or VMR convention (comparing to the
-    per-molecule-of-MIXTURE convention would be off by ~900x); the same median
-    with a moved tail means only the rebin convention changed.
+    """Oracle: exo_k 1.3.1 (Leconte 2021) on the same three tables with
+    ``Ktable.RandOverlap`` (fixture tests/data/exok_ref_overlap.npz; its meta
+    carries the generating script and the conventions). The reader is
+    bitwise; the interpolation within 1e-9 (measured 2e-14); the overlap at
+    the convention gap (exo_k rebins on the upper-edge cumulative g, ours on
+    the midpoint): measured per-ordinate median 1.4e-3, p90 1.9e-2, band-mean
+    median 2.2e-3, each asserted at 3x.
     """
     import json
     import jax.numpy as jnp

@@ -14,10 +14,8 @@ import pytest
 # interp_map.make_to_art
 jnp = pytest.importorskip("jax.numpy", reason="make_to_art returns a jnp interpolator")
 
-# x64 must be on before the first jnp array is built, exactly as
-# `vulcan_chem` does it in production. Without this the interpolator runs in
-# float32 and agrees only to ~1e-7 -- worth knowing: `make_to_art` inherits
-# whatever precision the process was configured with and never asserts it.
+# x64 on before the first jnp array, as vulcan_chem does in production;
+# make_to_art inherits the process precision (float32 agrees only to ~1e-7).
 import jax  # noqa: E402
 
 jax.config.update("jax_enable_x64", True)

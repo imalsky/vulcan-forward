@@ -17,8 +17,8 @@ import pytest
 
 DATA = Path(__file__).parent / "data"
 
-# One authoritative measurement (build_prt_fixtures), duplicated here on
-# purpose: fixture meta and this table must agree exactly.
+# One authoritative measurement (build_prt_fixtures), duplicated here:
+# fixture meta and this table must agree exactly.
 PINNED_STATS = {
     "prt_ref_isothermal_h2o_trans.npz": dict(
         n_wl=1610, arrays=("wl_um", "prt_radius_cm"),

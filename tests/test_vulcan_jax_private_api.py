@@ -2,7 +2,7 @@
 
 `vulcan_chem.build_chem_model` calls a few PRIVATE methods on
 `vulcan_jax.outer_loop.OuterLoop` (leading underscore, no compatibility promise).
-That is a deliberate coupling -- the engine needs the runner's own packing and
+The coupling is needed: the engine needs the runner's own packing and
 refresh kernels to seed a carry consistent with what the loop maintains -- but it
 means a refactor inside VULCAN-JAX can break this repo without either project's
 tests noticing.

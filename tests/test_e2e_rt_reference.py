@@ -8,9 +8,8 @@ version, opacity files, case constants, the full generating pRT script, the
 achieved agreement, and the tolerances asserted here (3x achieved -- loose
 enough not to flake, tight enough that any physics change trips them).
 
-petitRADTRANS is NEVER a test dependency: the pRT side regenerates from the
-scripts in the Desktop validation bundle (rt_verification/), whose text each
-fixture carries verbatim.
+petitRADTRANS is never a test dependency: each fixture's meta carries its
+generating script verbatim.
 
 Gating (repo rule: never ``pytest.importorskip("exojax")`` at module scope):
 skips cleanly without exojax/h5py/the data root/the H2O k-table, so light CI
@@ -33,10 +32,7 @@ if importlib.util.find_spec("exojax") is None:
 if importlib.util.find_spec("h5py") is None:
     pytest.skip("h5py not installed", allow_module_level=True)
 
-# IMPORT ORDER IS LOAD-BEARING (see CLAUDE.md): vulcan_chem fixes jax x64 and
-# the VULCAN_JAX_* env vars and refuses to load if exojax got there first --
-# so it must come before exojax_rt here, or collecting THIS module would
-# poison every later test module that imports vulcan_chem.
+# Import order: vulcan_chem before exojax; find_spec, never importorskip("exojax").
 if importlib.util.find_spec("vulcan_jax") is not None:
     from vulcan_forward import vulcan_chem  # noqa: F401
 else:
@@ -96,10 +92,9 @@ def _assert_stats(r, meta, label):
 
 
 def test_the_profile_pressure_bounds_reach_the_grid():
-    """`art_ptop_bar` must reach the grid through the PROFILE: a consumer that
-    rebound a value copy of the module constant instead built the same grid
-    on every rung of its convergence ladder. A bottom deeper than the k-table
-    ceiling is refused: the deep clamp is under-broadened."""
+    """`art_ptop_bar` must reach the grid through the profile, and a bottom
+    deeper than the k-table ceiling is refused (the deep clamp is
+    under-broadened)."""
     base = dict(molecules=["H2O"], nu_min=2000.0, nu_max=10000.0,
                 opacity_mode="exomolop", art_nlayer=20, art_pbtm_bar=1.0e2,
                 p_ref_bar=10.0, rp_cm=7.1492e9, gs_cgs=1.0e3, rstar_cm=RSTAR_W39)
@@ -183,8 +178,7 @@ def test_emission_isothermal_atmosphere_radiates_pi_planck():
     cancels). Measured through the full public path with real H2O k-tables:
     machine precision, max |ratio-1| = 6.7e-16 at VMR 1e-3 and 1e-5 alike.
     A g-weight normalization error, a flux unit slip, or a wrong boundary
-    temperature each break this by orders of magnitude, which is why the
-    tolerance is 1e-12 and not something forgiving."""
+    temperature each break this by orders of magnitude."""
     nlay = 80
     prof = dict(molecules=["H2O"], nu_min=1.0e4 / 5.0, nu_max=1.0e4 / 3.0,
                 opacity_mode="exomolop", art_nlayer=nlay,
@@ -323,7 +317,7 @@ def test_eclipse_flux_carries_the_tau_two_thirds_photospheric_radius():
     # tau is zero at the grid's TOP BOUNDARY (half a layer above the first
     # centre; exojax's dParr[0] spans p0 k^0.5 .. p0 k^-0.5), so the gray
     # photosphere sits at P_top + (2/3) g / kappa. Third point: inside the top
-    # half layer, where a clamped integrator returned the top-centre radius.
+    # half layer, where a clamped integrator would return the top-centre radius.
     p0 = float(emod.p_art_bar[0])
     dl = float(np.log(emod.p_art_bar[1] / emod.p_art_bar[0]))
     p_top = p0 * np.exp(-0.5 * dl)

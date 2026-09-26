@@ -1,6 +1,6 @@
 """Correlated-k unit contracts.
 
-These run without exojax on purpose: ``vulcan_forward.ckd`` never imports it,
+These run without exojax: ``vulcan_forward.ckd`` never imports it,
 so the (T, P) interpolation and the overlap are testable in a bare
 environment. The one exojax-backed test (the interpolation oracle) skips via
 ``find_spec``, never ``pytest.importorskip("exojax")``, which poisons the
@@ -21,8 +21,7 @@ jax.config.update("jax_enable_x64", True)
 
 HAVE_EXOJAX = importlib.util.find_spec("exojax") is not None
 if HAVE_EXOJAX and importlib.util.find_spec("vulcan_jax") is not None:
-    # import-order contract: vulcan_chem before anything exojax, in every
-    # collection order (test_contract's geometry test imports exojax_rt)
+    # Import order: vulcan_chem before exojax, in every collection order.
     from vulcan_forward import vulcan_chem  # noqa: F401
 
 from vulcan_forward import ckd  # noqa: E402
@@ -110,8 +109,8 @@ def test_fold_wo_is_bit_identical_to_naive_refolds():
     associative and a zero operand is not guaranteed to pass through as an
     exact identity; any reordering would move the spectrum at the rebin-error
     scale the pRT verification tolerances live at. Grouped contract: full ==
-    naive fold, every wo row == naive refold with the zero operand, order is
-    load-bearing, empty wo_idx returns the full fold only."""
+    naive fold, every wo row == naive refold with the zero operand, order
+    matters, empty wo_idx returns the full fold only."""
     import jax.numpy as jnp
     rng = np.random.default_rng(3)
     nl, ng, nb, n = 3, 8, 4, 5
@@ -134,7 +133,7 @@ def test_fold_wo_is_bit_identical_to_naive_refolds():
     for i, got in wo:
         want = naive([zero if j == i else dts[j] for j in range(n)])
         assert np.array_equal(np.asarray(got), np.asarray(want)), i
-    # order is load-bearing: permuting the operands changes bits
+    # order matters: permuting the operands changes bits
     perm, _ = ckd._fold_wo(dts[::-1], lambda i: zero, gg, gw, [])
     assert not np.array_equal(np.asarray(perm), np.asarray(full))
     # empty wo_idx: full only; finish is applied per wo row
@@ -150,7 +149,7 @@ def test_fold_is_bit_identical_to_the_python_loop_fold():
     keeps a third of the unrolled loop's memory. It must stay the naive left
     fold's op sequence: the primal, a jvp and a vjp bitwise equal (both
     jitted, as production runs them), with enough molecules for several scan
-    steps. Bitwise on the CPU; on the GH200 the two differ in the last bits
+    steps. Bitwise on the CPU; on GPU the two differ in the last bits
     (XLA fuses a scan body and straight-line code differently and rounds
     inside a fusion accordingly), so there the bar is rounding."""
     import jax.numpy as jnp
@@ -208,9 +207,7 @@ def test_interp_logk_matches_exojax_interpolate_log_k_2d():
     on log k with jnp.interp clamping, on the same (nT, nP, ng, nband)
     layout, but interpolates over T per P-column and then over log P, where
     ours forms fractional indices and blends four corners. Agreement is
-    float64 rounding: measured max |dlogk| 2.8e-14 (77% bit-identical) at
-    off-grid and out-of-range points; 1e-12 is 35x that and nine orders below
-    the float32 error the x64 contract exists to prevent."""
+    float64 rounding (measured 2.8e-14; the 1e-12 bar is 35x that)."""
     import jax.numpy as jnp
     from exojax.opacity.ckd.core import interpolate_log_k_2d
 

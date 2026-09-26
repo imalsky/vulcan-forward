@@ -17,7 +17,7 @@ chain has an EXACT answer (Heng & Kitzmann 2017, MNRAS 470, 2972):
     tau0  = (kappa * P0 / g) * sqrt(2 pi R0 / H)
     dR_eff/dlog10(kappa0) = H * ln(10) * (1 - exp(-tau0))
 
-The case here is deliberately thin-shell (R0/H ~ 1e4) so those forms are
+The case here is thin-shell (R0/H ~ 1e4) so those forms are
 exact to well under the tolerances asserted; at production geometry the
 atmosphere spans ~24% of R and the closed form is NOT a valid reference.
 Gas is zeroed while mmw_art is kept, which kills the lines, the CIA
@@ -69,7 +69,7 @@ from vulcan_forward import constants  # noqa: E402
 from vulcan_forward.exojax_rt import build_rt_model  # noqa: E402
 
 KB, M_U, GAMMA_E = 1.380649e-16, 1.66053906660e-24, 0.5772156649015329
-# thin shell on purpose: R0/H = 1.05e4, so the column spans 0.2% of R0
+# thin shell: R0/H = 1.05e4, so the column spans 0.2% of R0
 CASE = dict(T=800.0, mmw=2.33, g=3.0e4, rp_cm=1.0e10, rstar_cm=6.957e10,
             p_ref_bar=1.0, ptop=1e-9, pbtm=100.0, nlayer=200)
 H_SCALE = KB * CASE["T"] / (CASE["mmw"] * M_U * CASE["g"])

@@ -14,8 +14,7 @@ transit depth (notes register #9): a real bias, not a rounding choice.
 
 The test drives the helper with a tiny FAKE ART whose `atmosphere_height`
 returns known arrays, so it pins the algebra without building an opacity grid,
-reading a line list, or running RT. Deliberately narrow: this is not an RT
-validation framework.
+reading a line list, or running RT.
 """
 from __future__ import annotations
 
@@ -24,21 +23,10 @@ import importlib.util
 import numpy as np
 import pytest
 
-# `exojax_rt` imports exojax at module scope, so this file needs the RT stack.
-# Check WITHOUT importing: `vulcan_forward.vulcan_chem` refuses to load if exojax
-# reached sys.modules first, so an `importorskip` here would poison the ordering
-# contract for every later test in the session.
+# Import order: vulcan_chem before exojax; find_spec, never importorskip("exojax").
 if importlib.util.find_spec("exojax") is None:                  # pragma: no cover
-    pytest.skip(
-        "RT stack (exojax) not installed; this is the one test in the package "
-        "that needs it. Run locally where exojax is present.",
-        allow_module_level=True,
-    )
-
-# Honor the load-bearing import order: vulcan_chem owns the first jax import
-# (it sets x64 and the VULCAN_JAX_* import-frozen env vars). Import it first
-# when the chemistry side is installed; otherwise enable x64 directly, because
-# the exactness assertions below are meaningless in float32.
+    pytest.skip("exojax not installed (light-CI environment)",
+                allow_module_level=True)
 if importlib.util.find_spec("vulcan_jax") is not None:          # pragma: no cover
     from vulcan_forward import vulcan_chem  # noqa: F401
 else:                                                            # pragma: no cover

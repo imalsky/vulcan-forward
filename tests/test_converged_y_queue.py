@@ -32,9 +32,7 @@ import importlib.util
 import numpy as np
 import pytest
 
-# vulcan_chem drives VULCAN-JAX's runner, which light CI does not install; the
-# import-order contract applies (see CLAUDE.md): check with find_spec, never
-# importorskip("exojax"), and load vulcan_chem before anything else jax.
+# Import order: skip via find_spec, never importorskip("exojax"); vulcan_chem before jax.
 if importlib.util.find_spec("vulcan_jax") is None:           # pragma: no cover
     pytest.skip("vulcan_jax not installed (light-CI environment)",
                 allow_module_level=True)
@@ -55,13 +53,9 @@ THETAS = np.array([[0.0, 0.0, 0.0, 0.0],
                    [0.1, 0.0, 0.2, 80.0]], dtype=np.float64)
 MIX_FLOOR = 1.0e-10   # cells below this carry no observable and no certificate
 REL_MAX = 5.0e-2
-# The queued tangent against the batched one: a refilled lane enters at a
-# later tick, so its geometry-refresh cadence differs from the batch's even at
-# the same accept count. Theta 2 (a loose-branch exit with its bottom-layer
-# sulfur still relaxing) has no determined queue tangent -- a 1e-12 nudge to
-# lnZ moves it by ~7e-2 and central FD at h 1e-4 and 1e-5 disagree by 0.23
-# there (notes §0) -- so it keeps a wiring bound only: finite, and not off by
-# an order of magnitude.
+# The queued tangent vs the batched one: a refilled lane's refresh cadence
+# differs. Theta 2 (loose-branch exit, bottom-layer sulfur still relaxing) has
+# no determined queue tangent (notes §0), so it keeps a wiring bound only.
 QUEUE_DY_MAX = 1.0e-2
 QUEUE_DY_MAX_UNSETTLED = 1.0
 UNSETTLED_THETAS = (2,)
@@ -95,10 +89,8 @@ def _report(tag, y_q, cd_q, y_b, cd_b):
     assert bool(np.all(np.asarray(cd_b.conv_normal)))
     assert np.array_equal(np.asarray(cd_q.conv_normal),
                           np.asarray(cd_b.conv_normal))
-    # `conv_branch` is NOT compared: the queue's seed is built inside its
-    # jitted loop, and when the controlling cell is an ultratrace species (S4
-    # at 1e-20 VMR on theta 0) the same accept count certifies tight in one
-    # compilation and loose in another (longdy 0.002 against 0.07).
+    # conv_branch is not compared: with an ultratrace controlling cell the same
+    # accept count can certify tight in one compilation and loose in another.
     for k in range(THETAS.shape[0]):
         mix_b = y_b[k] / y_b[k].sum(axis=1, keepdims=True)
         obs = mix_b > MIX_FLOOR
@@ -161,16 +153,11 @@ def test_two_stage_warm_queue_keeps_the_observed_species(chem):
     composition (batched once, shared), stage 2 warm-started from its columns
     and queued on 2 lanes.
 
-    What is pinned is the certificate and the species the spectrum reads. What
-    is NOT pinned, deliberately: from a converged warm start the loose branch
-    (longdy < yconv_min, 0.1 in the production configs too) can fire early, so
-    the two arms certify at different relaxation depths and may certify on
-    different branches. The difference that buys concentrates in the slow
-    sulfur chemistry and in CO2 / CH4 / SO2 at the percent level, all of it
-    printed here (readings: notes §2 "The speed branch"). A
-    worst-cell bound would have to sit above the cold cases' own, which would
-    pin nothing; the production gate for `cold_lanes` is the per-draw
-    log-likelihood comparison of the GPU bench, not this test."""
+    Pins the certificate and the observed species. From a converged warm start
+    the loose branch can fire early, so the arms certify at different depths;
+    CO2/CH4/SO2 and slow sulfur differ at the percent level and are printed
+    only. The production gate for cold_lanes is the GPU bench's per-draw
+    log-likelihood comparison."""
     th = jnp.asarray(THETAS)
     y1 = chem.converged_y_batch(th.at[:, 0].set(0.0).at[:, 1].set(0.0))
     y_b, cd_b = chem.converged_y_batch(th, warm_y=y1, lnZ_ref=0.0, c_o_ref=0.0,
@@ -276,27 +263,16 @@ def test_queue_is_differentiable(chem, ref):
         assert rel < REL_MAX
 
 
-# --- the three-route acceptance test for a batched cold GRADIENT consumer ---
-# The complete two-stage cold map (stage 1 at baseline composition, stage 2 warm
-# from its own column) with PHOTOCHEMISTRY ON, differentiated along every
-# chemistry direction, on three routes:
-#   solo   per theta, vmap over directions of jvp(converged_y)
-#   batch  vmap over directions of jvp(converged_y_batch)
-#   queue  vmap over directions of jvp(converged_y_queue) on 2 lanes, chunk 1
-# plus the queue replayed with the jobs REVERSED (its lanes then free at other
-# ticks). Photo on is the point: the photolysis and geometry-refresh cadences are
-# what the batched runner moves from the lane's own accept count to the loop tick.
-# warm_count_max is the retrieval's production mutation cap against a cold cap
-# of 30000: it makes the warm route below run the CAPPED carry, and it leaves
-# the cold route untouched (warm_cap=False keeps the cold cap).
+# Three-route acceptance test (solo, batch, queue; plus the queue reversed) for
+# the two-stage cold gradient with photochemistry on, which exercises the
+# tick-keyed photolysis and refresh cadences. warm_count_max is the production
+# mutation cap (1500) against a cold cap of 30000.
 PHOTO_PROFILE = {"use_photo": True, "yconv_cri": 1.0e-2, "nz": 20,
                  "skip_warmup": True,
                  "warm_count_max": 1500}
 # An MCMC-sized proposal step away from the carried column, per direction.
 WARM_DELTA = np.array([0.05, 0.02, 0.1, 5.0], dtype=np.float64)
-# PREDECLARED from the measurement (worst over the four jobs and all four
-# comparisons): column worst cell 1.70e-1, column median 1.99e-4, tangent
-# stack-relative 2.87e-5. The bounds sit a modest factor above each.
+# Bounds a modest factor above the measured worst (1.7e-1, 2.0e-4, 2.9e-5).
 COL_MAX = 4.0e-1
 COL_MED = 1.0e-3
 DY_STACK_MAX = 2.0e-4
@@ -405,15 +381,10 @@ def _cmp(tag, a, b, n_dir):
 def test_two_stage_cold_gradient_three_routes(chem_photo):
     """The batched and queued cold GRADIENT agree with the per-theta one.
 
-    The acceptance test for a consumer's cold two-stage gradient on the
-    batched runner (and the queue), against a per-theta solve: the
-    tangents stay finite, every theta keeps its certificate on every route, and
-    the columns and the direction stack agree at the convergence scale the
-    primals already agree at. Accept counts are PRINTED, not pinned: a batched
-    lane's photo / refresh cadence rides the loop tick, and a queued lane enters
-    at the tick its lane was freed at, so the routes certify at different
-    relaxation depths -- which is the same freedom the batch already has against
-    the solo solve.
+    Tangents finite, every theta certified on every route, columns and the
+    direction stack at the convergence scale. Accept counts are printed only:
+    the routes' photo / refresh cadences differ, so they certify at different
+    depths.
     """
     th = jnp.asarray(THETAS)
     n_dir = int(th.shape[1])
@@ -491,16 +462,9 @@ def _warm_routes(chem, th, yw, r0, r1):
 def test_warm_capped_gradient_three_routes(chem_photo):
     """The batched and queued WARM mutation gradient agree with the per-theta one.
 
-    The acceptance test for vulcan-retrieval's warm mutation kernel: the cap
-    rides the runner carry per lane (that it binds is pinned in
-    test_converged_y_batch), each lane gets its own carried column AND
-    its own reference composition, the tangents stay finite, every theta keeps
-    its certificate on every route, and the columns and the direction stack
-    agree at the convergence scale the primals agree at. Accept counts are
-    PRINTED, not pinned -- a batched lane's photo / refresh cadence rides the
-    loop tick and a queued lane enters at the tick its lane was freed at, so
-    from a converged warm start the loose branch can fire at different
-    relaxation depths.
+    vulcan-retrieval's warm mutation kernel: per-lane cap, carried column and
+    reference composition; the same bars as the cold test. Accept counts are
+    printed only (the loose branch can fire at different depths).
     """
     chem = chem_photo
     th0 = jnp.asarray(THETAS)
