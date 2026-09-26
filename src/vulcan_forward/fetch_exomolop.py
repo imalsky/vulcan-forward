@@ -32,20 +32,17 @@ from __future__ import annotations
 import argparse
 import http.client
 import json
-import logging
 import os
 import re
 import sys
 import time
-import urllib.error
 import urllib.request
 
 from vulcan_forward import exomolop, paths
 
-# What a failed page fetch or table download raises (URLError and socket
-# timeouts are OSErrors too); anything else is a bug and propagates.
-_NET_ERRORS = (urllib.error.URLError, http.client.HTTPException, TimeoutError,
-               OSError)
+# What a failed page fetch or table download raises (URLError, socket timeouts
+# and TLS errors are OSErrors); anything else is a bug and propagates.
+_NET_ERRORS = (http.client.HTTPException, OSError)
 
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
@@ -287,7 +284,6 @@ def fetch(molecules, force=False):
 
 
 def main(argv=None):
-    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--molecules", required=True,
                     help="comma-separated, e.g. H2O,CO2,CO,CH4,SO2")
