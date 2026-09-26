@@ -48,7 +48,8 @@ CLOUD_NUC0 = 2857.0
 # 1e-9 bar the top is converged: one decade higher moves the R=100 depth by
 # ~1 ppm (vulcan-retrieval validation/top_pressure_ladder).
 ART_PTOP_BAR = 1.0e-9   # model top
-ART_PBTM_BAR = 7.0      # grid bottom
+ART_PBTM_BAR = 7.0      # grid bottom, above W39b's chemistry bottom P_b = 7.6 bar
+                        # (interp_map refuses an ART grid below the chemistry)
 
 # Pressure (bar) at which rp_cm / gs_cgs apply: a published transit radius
 # belongs near the transmission photosphere, not the RT grid bottom where

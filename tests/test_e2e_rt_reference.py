@@ -63,7 +63,8 @@ DATA = Path(__file__).parent / "data"
 RSTAR_W39 = 0.932 * 6.957e10
 ROUND_TOL = 1e-12      # float64 rounding bar
 # Eclipse flux against the gray closed form: _photosphere_lnp interpolates
-# ln P linearly in tau between layer boundaries (80 layers).
+# ln P linearly in tau between layer boundaries (80 layers); the worst of the
+# three cases measures 1.6e-4, a deterministic discretization error.
 ECLIPSE_RTOL = 2e-4
 
 
