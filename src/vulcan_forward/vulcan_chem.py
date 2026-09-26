@@ -30,8 +30,10 @@ end-to-end route.
 """
 from __future__ import annotations
 
+import atexit
 import logging
 import os
+import shutil
 import sys
 import tempfile
 import time
@@ -250,9 +252,9 @@ _SCRATCH_ROOT: str | None = None
 
 
 def _redirect_output_dirs(cfg) -> None:
-    """Redirect a relative ``cfg.output_dir`` to a per-process temp directory:
-    ``op.Output`` creates it, and this engine never writes .vul output. An
-    absolute path is left alone.
+    """Redirect a relative ``cfg.output_dir`` to a per-process temp directory,
+    removed at exit: ``op.Output`` creates it, and this engine never writes .vul
+    output. An absolute path is left alone.
     """
     global _SCRATCH_ROOT
     val = getattr(cfg, "output_dir", None)
@@ -260,6 +262,7 @@ def _redirect_output_dirs(cfg) -> None:
         return
     if _SCRATCH_ROOT is None:
         _SCRATCH_ROOT = tempfile.mkdtemp(prefix="vulcan_forward_")
+        atexit.register(shutil.rmtree, _SCRATCH_ROOT, ignore_errors=True)
     cfg.output_dir = os.path.join(_SCRATCH_ROOT, "output_dir")
 
 
