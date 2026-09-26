@@ -30,15 +30,22 @@ sent. Downloads run sequentially (I/O bound).
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import logging
 import os
 import re
 import sys
 import time
+import urllib.error
 import urllib.request
 
 from vulcan_forward import exomolop, paths
+
+# What a failed page fetch or table download raises (URLError and socket
+# timeouts are OSErrors too); anything else is a bug and propagates.
+_NET_ERRORS = (urllib.error.URLError, http.client.HTTPException, TimeoutError,
+               OSError)
 
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
@@ -86,7 +93,7 @@ def _get(url, retries=HTTP_RETRIES):
             req = urllib.request.Request(url, headers={"User-Agent": UA})
             with urllib.request.urlopen(req, timeout=PAGE_TIMEOUT_S) as r:
                 return r.read().decode("utf-8", "replace")
-        except Exception as e:                                # noqa: BLE001
+        except _NET_ERRORS as e:
             last = e
             if k < retries - 1:
                 time.sleep(RETRY_WAIT_S)
@@ -265,7 +272,7 @@ def fetch(molecules, force=False):
                     if not chunk:
                         break
                     fh.write(chunk)
-        except Exception as e:                                # noqa: BLE001
+        except _NET_ERRORS as e:
             if os.path.exists(tmp):
                 os.unlink(tmp)
             raise RuntimeError(f"failed to fetch {mol} from {url}: {e}") from e
