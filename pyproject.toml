@@ -13,22 +13,15 @@ license-files = ["LICENSE"]
 dependencies = [
     "numpy>=1.26",
     "jax>=0.6.2",
-    # The RT layer is built on exojax and the PIN IS LOAD-BEARING in two
-    # independent places: the local inverse-square gravity profile that works
-    # around exojax's own linear-1/r gravity_profile, and imports through
-    # compatibility shims slated for removal in exojax 3.x. Newer exojax adds
-    # nothing this engine needs (no ExoMolOP reader, no species overlap
-    # through 2.5.0). Note exojax 2.2.3 itself caps numpy<2. Isolating that
-    # constraint here -- rather than in the chemistry core, vulcan-jax -- is a
-    # main reason this package exists.
+    # exojax==2.2.3 pinned: the inverse-square gravity workaround and two
+    # compatibility-shim imports depend on it. It caps numpy<2, which this
+    # package keeps out of vulcan-jax.
     "exojax==2.2.3",
     # >=0.17.0: vulcan_jax.conv_normal (ConvDiag's certificate) and
     # validate_overrides (the cfg_overrides check).
     "vulcan-jax>=0.17.0",
-    # Core, not an extra: the default opacity_mode of every consumer reads
-    # ExoMolOP HDF5 k-tables. The import stays function-local in
-    # exomolop.load_tables, so the import-without-data contract is untouched;
-    # an extra would just recreate the silent-skip CI hole this closes.
+    # Core, not an extra: every consumer reads ExoMolOP HDF5 k-tables; the
+    # import stays function-local, so the package imports without data.
     "h5py>=3.9",
 ]
 classifiers = [
@@ -55,9 +48,8 @@ where = ["src"]
 [tool.setuptools.dynamic]
 version = { attr = "vulcan_forward._version.__version__" }
 
-# The classic default rule set, pinned: ruff 0.16 widened its defaults (import
-# sorting, which would reorder the load-bearing test preambles) and dropped
-# E402, which the import-order noqa comments exist for.
+# Classic rule set, pinned: import sorting would reorder the import-order test
+# preambles, and E402 must stay for the noqa comments.
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F"]
 

@@ -15,8 +15,7 @@ on:
 jobs:
   contract:
     runs-on: ubuntu-latest
-    # The chemistry tests run serially here; on a daw core their --durations
-    # sum to ~48 min, the two three-routes tests ~29 min of it.
+    # The chemistry tests run serially here (~50 min).
     timeout-minutes: 120
     strategy:
       matrix:
