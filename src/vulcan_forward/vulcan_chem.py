@@ -1100,7 +1100,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         #                                            never longdy alone)
         audit_init=audit_init,
         baseline_conv_normal=baseline_conv_normal,  # warm-up exit certified?
-        #                                             (inference refuses False;
+        #                                             (the retrieval warns on False;
         #                                             None = skip_warmup, not
         #                                             evaluated)
         conden_spec=conden_spec,   # static conden metadata (None when conden off)

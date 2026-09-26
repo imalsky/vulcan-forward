@@ -32,10 +32,11 @@ jobs:
       # need it skip via find_spec). jax + numpy + h5py ARE installed so the
       # ckd, interp_map, exomolop and params_from_vector tests run. vulcan-jax
       # comes from its speed branch with --no-deps, its own deps listed here,
-      # and exogibbs --no-deps plus pandas as VULCAN-JAX's CI installs them.
+      # and exogibbs --no-deps plus pandas as VULCAN-JAX's CI installs them;
+      # jax is pinned to the version VULCAN-JAX's tolerances are calibrated on.
       - name: Install (no exojax)
         run: |
-          pip install pytest numpy "jax>=0.6" h5py scipy pyyaml pandas
+          pip install pytest numpy "jax==0.6.2" h5py scipy pyyaml pandas
           pip install --no-deps "exogibbs==0.6.0"
           pip install --no-deps "vulcan-jax @ git+https://github.com/imalsky/jax-vulcan.git@speed"
           pip install --no-deps -e .
