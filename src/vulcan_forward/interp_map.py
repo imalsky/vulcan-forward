@@ -8,10 +8,10 @@ and therefore differentiable -- so forward-mode tangents pass cleanly across the
 ``jnp.interp`` requires ascending sample points, so we sort the VULCAN grid by log10(P)
 once (static index array). ``jnp.interp`` CLAMPS outside the sample range, so the ART
 grid must lie INSIDE the chemistry grid: both edges are refused at build time
-(vulcan_chem sets the chemistry P_t from the profile's art_ptop_bar; a clamped top
-measured 73 ppm at R=100, notes register #18).
+(vulcan_chem sets the chemistry P_t from the profile's art_ptop_bar; notes register
+#18).
 
-Interpolation caveats (documented, not silent): linear-in-log-P is not column- or
+Interpolation caveats: linear-in-log-P is not column- or
 mass-conservative and can smear photochemical transitions sharper than the ART layer
 spacing; the consumers' vertical-grid ladders (vulcan-retrieval
 validation/resolution_ladder.py) check that neither matters at the quoted precision.
@@ -88,9 +88,7 @@ def make_to_art(p_bar_vulcan: np.ndarray, p_bar_art: np.ndarray):
         raise ValueError(
             f"ART grid top ({np.min(p_bar_art):.3e} bar) lies above the VULCAN chemistry "
             f"top ({p_top_v:.3e} bar): {n_top_clamp} layers would clamp to the topmost "
-            "chemistry value, which measured 73 ppm per decade on W39b "
-            "(vulcan-retrieval validation/top_pressure_ladder). Extend the chemistry "
-            "grid (cfg P_t) to the ART top.")
+            "chemistry value. Extend the chemistry grid (cfg P_t) to the ART top.")
 
     def to_art(profile_nz):
         if getattr(profile_nz, "ndim", None) != 1 or profile_nz.shape[0] != order.size:

@@ -5,7 +5,7 @@ The engine needs two external data trees at RUN time: the ExoMolOP k-tables
 H2-He CIA tables. Together these are ~10 GB, so they are never vendored -- the
 consumer says where they live.
 
-CONTRACT (deliberately explicit -- no inference, no silent fallback):
+Contract:
 
     $VULCAN_FORWARD_DATA   the data root. Expected layout:
                              <root>/opacity_cache/       CIA tables
@@ -20,12 +20,9 @@ A consumer may also set these programmatically with ``set_data_root()`` before
 building a model, which is what an application with its own configuration
 surface should do.
 
-Why this shape. These paths must never be resolved at import time, from this
-package's ``__file__``, or against a marker directory a consumer happens to
-own: the engine has to be importable on a machine with no data installed.
-Nothing touches the filesystem until a path is actually needed, and then it
-fails loudly with the offending value and the remedy (the standing fail-fast
-rule in every sibling repo).
+Paths resolve on use, never at import or from this package's ``__file__``, so
+the engine imports with no data installed; a missing path raises with the
+offending value and the remedy.
 """
 from __future__ import annotations
 
@@ -89,14 +86,9 @@ def data_root() -> Path:
 def ensure_layout() -> Path:
     """Create the data layout under the configured root and return the root.
 
-    ``data_root`` is deliberately strict, because a missing directory during a
-    run is a configuration error. A SETUP tool is the opposite case: it knows the
-    directories should exist and its job is to make them. Use this from a fetch
-    or bootstrap command, never from a model build.
-
-    The root itself still has to be configured -- this function will not guess a
-    location -- but it is created if it does not exist, together with the two
-    subdirectories the engine reads.
+    Unlike ``data_root``, creates the configured root and its two
+    subdirectories. For fetch/bootstrap commands, never a model build; the root
+    must still be configured.
     """
     root = _configured_root()
     root.mkdir(parents=True, exist_ok=True)
@@ -120,7 +112,7 @@ def opacity_cache_dir() -> Path:
 def exomolop_dir() -> Path:
     """ExoMolOP k-table tree (<MOL>.ktable.h5 + provenance.json).
 
-    No existence check HERE, unlike ``opacity_cache_dir``: the loud
+    No existence check here, unlike ``opacity_cache_dir``: the loud
     FileNotFoundError with the exact fetch command lives in
     ``exomolop.load_tables``, and datacheck wants the path even when the
     tree is absent so it can report per-molecule MISSING items.

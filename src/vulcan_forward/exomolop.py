@@ -4,8 +4,8 @@
 integrated. ExoMolOP (Chubb et al. 2021, A&A 646, A21) publishes
 pre-computed opacities built from the ExoMol and HITEMP high-temperature line
 lists with H2/He broadening applied (why not HITRAN: notes.md §1.1). Its
-petitRADTRANS-format k-tables (~389 MB per species) land almost exactly on
-the layout ``ckd`` uses, so this is an ingestion adapter, not a second
+petitRADTRANS-format k-tables (~389 MB per species) match the layout
+``ckd`` uses, so this is an ingestion adapter, not a second
 opacity implementation.
 
 Two things differ from a textbook table:
@@ -168,14 +168,13 @@ def _grid_mismatch(a: dict, b: dict):
 
 
 def _header(f, path) -> dict:
-    """Verify the load-bearing header of an open k-table and return it.
+    """Verify the header fields that change every cross section and return
+    the header.
 
-    Load-bearing (a wrong value silently changes every cross section, so it
-    RAISES with the file and the offending value): the ``kcoeff`` unit
-    attribute, the ``p`` unit attribute, ``method`` (the split quadrature) and
-    ``ngauss`` against the number of g-samples. Informational (DOI, mol_name,
-    Date_ID) is reported verbatim -- placeholder DOIs included -- or None when
-    absent; it is never substituted.
+    Checked, raising with the file and value: the ``kcoeff`` and ``p`` unit
+    attributes, ``method`` (the split quadrature) and ``ngauss`` against the
+    number of g-samples. DOI, mol_name and Date_ID are reported verbatim
+    (placeholder DOIs included), or None when absent.
     """
     def _attr(ds, name):
         v = f[ds].attrs.get(name)
@@ -269,12 +268,8 @@ def load_tables(molecules, nu_min, nu_max, *, molecule_table=None,
     from jax import config as _jax_config
 
     if not _jax_config.jax_enable_x64:
-        # Without x64, jnp.asarray silently returns float32 tables. log k spans
-        # roughly -140 to -40, so float32 costs ~1e-5 relative on every cross
-        # section and breaks this engine's float64 contract -- and it would
-        # show up as a small unexplained spectrum shift, not as a crash. The
-        # engine enables x64 at import (vulcan_chem, exojax_rt); a caller who
-        # reached here without it has a broken import order.
+        # float32 tables would shift every cross section by ~1e-5 relative
+        # without an error.
         raise RuntimeError(
             "jax x64 is not enabled, so the k-tables would be silently "
             "downcast to float32. Import vulcan_forward.vulcan_chem (or "
@@ -341,10 +336,10 @@ def load_tables(molecules, nu_min, nu_max, *, molecule_table=None,
               f"over [{sub_edges[0]:.1f},{sub_edges[-1]:.1f}] cm^-1, ng={gg.size}, "
               f"T {t_grid[0]:.0f}-{t_grid[-1]:.0f} K, "
               f"P {p_grid[0]:.1e}-{p_grid[-1]:.1e} bar", flush=True)
-        print(f"[ckd]   NOTE: the table's pressure floor is "
+        print(f"[ckd]   the table's pressure floor is "
               f"{p_grid[0]:.1e} bar; RT layers above it reuse that entry "
-              "(k is Doppler-dominated and pressure-independent there). "
-              "Same treatment as petitRADTRANS.", flush=True)
+              "(k is Doppler-dominated and pressure-independent there).",
+              flush=True)
 
     return SimpleNamespace(
         logk=out, band_edges=sub_edges,

@@ -13,7 +13,7 @@ planner (jwst-transit-authority); neither depends on the other.
     interp_map   chemistry grid -> RT grid log-pressure interpolation
     exojax_rt    opacities + CIA + ArtTransPure/ArtEmisPure -> depth or flux
 
-IMPORT ORDER IS LOAD-BEARING. ``vulcan_chem`` must be imported before anything
+Import order: ``vulcan_chem`` must be imported before anything
 from exojax: it sets the VULCAN_JAX_* import-frozen env vars and enables jax
 x64, both of which are read once at first import. It raises if exojax (or a
 conflicting vulcan_jax) got there first rather than producing a subtly wrong

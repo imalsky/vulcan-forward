@@ -15,11 +15,9 @@ deep and the filenames do not follow one pattern (H2O is
     /data/data-types/opacity/<MOL>/<ISO>/        -> dataset pages
     /data/data-types/opacity/<MOL>/<ISO>/<SET>/  -> the /db/... file links
 
-Three selection rules, all deliberate:
+Selection rules:
   * the ISOTOPOLOGUE must be the PRINCIPAL one (most abundant isotope of every
     element), and an unrecognised naming form RAISES rather than guessing.
-    Taking the first sorted entry instead picked N2O's ~0.4%-abundance
-    ``14N-15N-16O``, understating its opacity ~1e2.
   * the dataset ExoMol marks "recommended" wins when there is one;
   * within it, the NATURAL-ABUNDANCE file ("<MOL>-all__", "*-NatAbund__")
     wins over the principal isotopologue, because VULCAN tracks a total
@@ -27,8 +25,7 @@ Three selection rules, all deliberate:
     isotopologues that VMR stands for.
 
 exomol.com returns 403 to a default urllib User-Agent, so a browser one is
-sent. Downloads run one at a time on purpose: they are I/O bound, and this
-machine has been killed by memory exhaustion from parallel jobs before.
+sent. Downloads run sequentially (I/O bound).
 """
 from __future__ import annotations
 
@@ -57,12 +54,9 @@ PAGE_TIMEOUT_S = 90        # one HTML page
 DOWNLOAD_TIMEOUT_S = 600   # socket timeout while streaming a ~389 MB table
 CHUNK_BYTES = 1 << 20      # 1 MiB read size for the table stream
 
-# Line-list DOIs for the datasets whose shipped k-table header carries a
-# PLACEHOLDER instead of a DOI (`x.xxxx/yyyyy`, `xxxxxxx/xxxxxxxxx/xxxxxx`).
-# Recorded here so provenance.json can supply what the file cannot; consumers
-# prefer this over the header. Correct headers are NOT duplicated -- they keep
-# flowing from the file, and exomolop.table_info() still reports every header
-# field verbatim. Keyed by ExoMol dataset name, the stable identity.
+# Line-list DOIs for datasets whose k-table header carries a placeholder DOI
+# (`x.xxxx/yyyyy`, `xxxxxxx/xxxxxxxxx/xxxxxx`); provenance.json supplies them.
+# Other datasets keep their header DOI. Keyed by ExoMol dataset name.
 _DATASET_DOI = {
     "MM": "10.1093/mnras/stae148",       # CH4  Yurchenko+ 2024, MNRAS 528, 3719
     "Dozen": "10.1093/mnras/staf2135",   # CO2  Yurchenko+ 2025, MNRAS 545
@@ -83,10 +77,8 @@ def _record(url, ds, iso, nat):
 
 
 def _get(url, retries=HTTP_RETRIES):
-    """Fetch a page or RAISE. Swallowing a network failure into "" made an
-    offline run print "ExoMolOP publishes no k-table for this species" --
-    indistinguishable from genuinely-unpublished (standing loud-errors rule).
-    A SKIP must mean a real page with no k-table link, nothing else."""
+    """Fetch a page or raise after ``retries`` attempts, so a network failure
+    is never reported as SKIP (a page with no k-table link)."""
     last = None
     for k in range(retries):
         try:
@@ -104,8 +96,7 @@ def _get(url, retries=HTTP_RETRIES):
 
 
 # Most abundant isotope of each element, by mass number. Used to identify the
-# PRINCIPAL isotopologue among ExoMol's listings; see the module docstring for
-# the N2O case that made this necessary.
+# PRINCIPAL isotopologue among ExoMol's listings.
 _PRINCIPAL_ISOTOPE = {
     "H": 1, "He": 4, "Li": 7, "C": 12, "N": 14, "O": 16, "F": 19, "Na": 23,
     "Mg": 24, "Al": 27, "Si": 28, "P": 31, "S": 32, "Cl": 35, "K": 39,
@@ -193,9 +184,8 @@ def _assert_grid_matches(mol, part, dest, dest_dir):
     """Verify the DOWNLOADED file (``part``, not yet installed) shares the grid
     of the tables already here.
 
-    ``resolve``'s filename filter is a convention check, which is exactly what
-    a wrong guess also passes; this opens the file and runs the layout checks
-    and the grid comparison ``load_tables`` runs. Deletes the download before
+    ``resolve`` only checks the filename; this opens the file and runs
+    ``load_tables``' layout checks and grid comparison. Deletes the download before
     raising on a grid mismatch; ``dest`` (a table ``--force`` would replace)
     is left untouched.
     """

@@ -1,21 +1,13 @@
 """Correlated-k core: (T, P) interpolation and overlap.
 
-WHY THIS EXISTS
----------------
-exojax computes a cross section directly ON the output wavenumber grid; there
-is no internal high-resolution grid, and its own ``wavenumber_grid`` warns for
-any grid below R = 700,000. A JWST-band model sampled at R ~ 1,500 is therefore
-a strided sample of a spectrum that was never resolved, and the sampling error
-does not average out -- it biases both observables (measurements: notes.md
-§1.1). Correlated-k does the expensive integration once, offline, and
-compresses each band to a few g-ordinates.
+exojax computes cross sections directly on the output grid and warns below
+R = 700,000, so a JWST-band model sampled at R ~ 1,500 is biased (notes.md
+§1.1). Correlated-k integrates once, offline, into a few g-ordinates per band.
 
 The k-tables themselves come from ExoMolOP (``vulcan_forward.exomolop``); this
 module holds the source-independent machinery that consumes them.
 
-MIXTURES
---------
-exojax 2.2.3 ships no overlap treatment: ``opacity_profile_xs_ckd`` takes one
+Mixtures: exojax 2.2.3 ships no overlap treatment: ``opacity_profile_xs_ckd`` takes one
 species. Tables are per species, because the composition changes every run, so
 they are combined here by random-overlap resort-rebin, the standard approach
 (petitRADTRANS, PICASO, HELIOS). It is written in JAX and is differentiable,
@@ -83,8 +75,7 @@ def fold(dts, gg, gw):
     order: the op sequence of a Python loop over the molecules, so the primal,
     jvp and vjp are bitwise the loop's on the CPU (other backends round inside
     their fusions differently). Under ONE ``lax.scan`` a reverse-mode gradient
-    keeps a third of the loop's memory and runs faster (notes §1.1; a
-    checkpointed body was rejected, register #28).
+    keeps a third of the loop's memory and runs faster (notes §1.1).
     """
     tot, _ = jax.lax.scan(lambda t, dt: (overlap(t, dt, gg, gw), None),
                           dts[0], dts[1:])
@@ -98,8 +89,8 @@ def _fold_wo(dts, zero_of, gg, gw, wo_idx, finish=None):
     the wo list in ascending-i order.
 
     Bit-identity contract: every wo result is the EXACT op sequence of a naive
-    left fold over ``[dts[0], .., zero_of(i), .., dts[-1]]`` — the fold order is
-    load-bearing (``overlap`` is a resort-rebin, neither associative nor an
+    left fold over ``[dts[0], .., zero_of(i), .., dts[-1]]`` — the fold order
+    matters (``overlap`` is a resort-rebin, neither associative nor an
     exact identity on a zero operand), and a dropped absorber is still folded,
     as the zero tensor its zeroed VMR produces. Only the shared prefix
     ``dts[0..i-1]`` is computed once instead of per wo (~2x fewer folds).

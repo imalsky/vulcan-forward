@@ -13,11 +13,8 @@ Everything inside the run functions is pure JAX, so forward-mode tangents from
 the chemistry pass straight through to the spectrum. Opacities are float64 (x64
 is globally enabled), matching the chemistry side -- no dtype break.
 
-Correlated-k over the published ExoMolOP tables is the ONLY opacity path. The
-sampled line-by-line mode and the Mie condensate deck were removed: sampling
-below exojax's critical R = 700,000 is measurably biased and the Mie deck was
-the only thing that still needed it. A profile that asks for either is
-refused, never silently mapped onto this path.
+Correlated-k over the published ExoMolOP tables is the only opacity path; a
+profile asking for any other ``opacity_mode`` is refused.
 """
 from __future__ import annotations
 
@@ -49,29 +46,24 @@ _HE_MOLMASS = constants.ATOMIC_MASSES[constants.ATOM_COLS["He"]]
 EMISSION_NSTREAM = 8
 
 def _check_profile(profile: dict) -> None:
-    """Unknown keys raise (``constants.check_profile_keys``), and so does any
-    opacity mode but correlated-k: the line-by-line mode and the Mie deck were
-    removed, and a profile asking for them must not be mapped onto this path."""
+    """Refuse unknown keys (``constants.check_profile_keys``) and any
+    ``opacity_mode`` other than "exomolop"."""
     constants.check_profile_keys(profile)
     mode = str(profile.get("opacity_mode", "exomolop"))
     if mode != "exomolop":
         raise ValueError(
-            f"opacity_mode={mode!r} is not available: the sampled line-by-line "
-            "mode ('lbl') and the Mie condensate deck were removed. "
-            "Correlated-k over the published ExoMolOP tables ('exomolop', the "
-            "default -- drop the key) is the only opacity path.")
+            f"opacity_mode={mode!r} is not available: correlated-k over the "
+            "ExoMolOP tables ('exomolop', the default) is the only opacity "
+            "path; drop the key.")
 
 
 def _gravity_profile_invsq(art, T_art, mmw_art, radius_btm, gravity_btm):
     """Mid-layer inverse-square gravity profile, g(r) = g_btm * (R_btm/r)^2.
 
-    ExoJax's own ``ArtCommon.gravity_profile`` (<=2.2.3) returns
-    ``g_btm / rn`` -- LINEAR in 1/r -- while its height integrator uses the
-    physical inverse-square ``g_btm / rn**2``. Using ``gravity_profile`` for
-    the opacity columns leaves heights and columns on DIFFERENT gravities and
-    removes only about half of the constant-g bias (notes register #9). Same
-    (nlayer, 1) shape contract as
-    ``gravity_profile`` so it broadcasts through the dtau kernels.
+    ExoJax's ``ArtCommon.gravity_profile`` (<=2.2.3) is linear in 1/r while
+    its height integrator is inverse-square; this keeps opacity columns and
+    heights on one gravity (notes register #9). Same (nlayer, 1) shape as
+    ``gravity_profile``, so it broadcasts through the dtau kernels.
     """
     normalized_height, normalized_radius_lower = art.atmosphere_height(
         T_art, mmw_art, radius_btm, gravity_btm)
@@ -122,12 +114,9 @@ def _boundary_temperature(T_art):
     in log pressure, so a boundary is the midpoint of the two centres around
     it, and the two ends extrapolate with the local gradient.
 
-    Extrapolated, not clamped, at the DEEP end on purpose: that last entry is
-    the interior source term the solver multiplies by exp(-tau_total/mu), the
-    one level standing in for everything below the grid. Clamping it to the
-    deepest centre would systematically cool it. With an optically thick bottom
-    the term is negligible either way, which is the point -- it should be
-    negligible because the column is opaque, not because it was set too low.
+    The deep end is extrapolated, not clamped: it is the interior source term
+    that exp(-tau_total/mu) multiplies, standing in for everything below the
+    grid, and clamping would cool it.
     """
     mid = 0.5 * (T_art[1:] + T_art[:-1])
     return jnp.concatenate([
@@ -190,7 +179,7 @@ def _accumulate_dtau_ckd(art, pack, mols, molmass, opacia, opacia_he,
     band.
 
     Shared by the transmission and emission models. Rayleigh is
-    transmission-only BY DESIGN: it is scattering, not absorption, and the
+    transmission-only: it is scattering, not absorption, and the
     pure-absorption emission solver must not count it as thermal extinction
     (it is also negligible at the >1 um thermal bands).
     """
@@ -327,21 +316,19 @@ def _run_emis_ckd_linsap(art, dtau_g, T_boundary, nu_bands, gw, weight_g=None):
 
     exojax's ``ArtEmisPure.run_ckd`` hard-codes ``rtrun_emis_pureabs_ibased``,
     which has no bottom-boundary term, so every photon entering the grid from
-    below is lost (measured flux deficits: notes.md register #7, #8).
+    below is lost (notes register #7, #8).
     This is upstream's own flatten-solve-reweight structure with
     ``ibased_linsap`` in its place, so CKD emission keeps the interior source
     term the solver carries.
 
     The flatten is g-major / band-minor, matching ``jnp.tile``'s last-axis
-    tiling of the source, exactly as upstream's version does it: element
+    tiling of the source, as upstream does: element
     ``(g, b)`` of the (ng, nband) block lands at flat index ``g * nband + b``
     on both sides.
 
-    Weighting the FLUX by the g-weights (rather than some intermediate) is what
-    makes this correct: the k-distribution is a reordering of wavenumber within
-    the band, the solver is linear in nothing but acts wavenumber-by-
-    wavenumber, and the band-integrated flux is the g-average of the flux
-    computed at each k. Same identity the transmission path uses.
+    The g-weights multiply the flux: the k-distribution reorders wavenumber
+    within the band, so the band-integrated flux is the g-average of the
+    per-k flux (as in the transmission path).
     """
     nlayer, ng, nband = dtau_g.shape
     # piBarr -> (nlayer + 1, nband); tile the last axis to (nlayer + 1, ng*nband)
@@ -362,12 +349,8 @@ _GEOMETRY_KEYS = {
 
 
 def _require_geometry(profile: dict, *keys: str) -> None:
-    """Refuse a profile missing planet geometry.
-
-    These keys set the transit-depth normalization and the hydrostatic
-    scale, so there is no safe default (standing fail-loud rule). A missing
-    one must never fall back to another planet's constants.
-    """
+    """Refuse a profile missing planet geometry: these keys set the depth
+    normalization and the hydrostatic scale, and have no default."""
     missing = [k for k in keys if k not in profile]
     if missing:
         raise ValueError(
@@ -414,10 +397,8 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
     t0 = time.time()
     _check_profile(profile)
     mols = list(profile["molecules"])
-    # Published ExoMol/HITEMP opacities with H2/He broadening already applied.
-    # See vulcan_forward.exomolop for the three measured defects this closes
-    # over building tables from HITRAN; the band grid and the split quadrature
-    # come from the files.
+    # ExoMolOP k-tables (vulcan_forward.exomolop); the band grid and the split
+    # quadrature come from the files.
     from vulcan_forward import exomolop as _exo
     ckd_pack = _exo.load_tables(
         mols, float(profile["nu_min"]), float(profile["nu_max"]),
@@ -474,7 +455,7 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
     if not cia_h2h2.exists():
         # exojax auto-fetches it (~24 MB from hitran.org), but its downloader
         # swallows failures -- say up front what is about to happen so an
-        # offline failure is attributable (fail-loud rule).
+        # offline failure is attributable.
         print(f"[rt] H2-H2 CIA absent at {cia_h2h2}; exojax will "
               "download ~24 MB from https://hitran.org/data/CIA/main/"
               "H2-H2_2011.cia now (network required)", flush=True)
@@ -485,10 +466,8 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
     if not cia_h2he.exists():
         raise FileNotFoundError(
             f"H2-He CIA table missing ({cia_h2he}). Download "
-            "https://hitran.org/data/CIA/main/H2-He_2011.cia (~147 MB; note the "
-            "/main/ path -- the bare /data/CIA/ URL 404s) to that exact path. "
-            "Refusing to build the RT without it (silently skipping the He "
-            "continuum would bias the spectrum).")
+            "https://hitran.org/data/CIA/main/H2-He_2011.cia (~147 MB; the "
+            "/main/ segment is required) to that path.")
     opacia_he = _cia(cia_h2he, "H2-He")
     print(f"[rt] CIA + RT built; total {time.time()-t0:.1f}s", flush=True)
 
@@ -530,11 +509,8 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
         # the grid bottom where exojax wants them -- convert first.
         Rp_btm, g_btm = _anchor_to_grid_bottom(
             lnp_art, T_art, mmw_art, Rp_ref, g_ref, p_ref_bar)
-        # g(r) self-consistency: use the SAME inverse-square gravity ExoJax
-        # uses for the chord heights in the pressure->column-mass conversion.
-        # Constant g_btm makes upper-layer tau too small; art.gravity_profile
-        # is 1/r-linear and is NOT this profile (see _gravity_profile_invsq).
-        # Emission is plane-parallel and keeps one gravity, anchored at
+        # Inverse-square g(r), the gravity ExoJax uses for the chord heights
+        # (see _gravity_profile_invsq). Emission keeps one gravity at
         # p_ref_emission_bar.
         g_prof = _gravity_profile_invsq(art, T_art, mmw_art, Rp_btm, g_btm)  # (nlayer,1)
         dtau_g = _accumulate_dtau_ckd(
@@ -564,10 +540,8 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
         Rp_btm, g_btm = _anchor_to_grid_bottom(
             lnp_art, T_art, mmw_art, Rp_ref, g_ref, p_ref_bar)
         Rp_r = Rp_btm * jnp.exp(lnR0)
-        # g(r) at the lnR0-scaled reference radius (gravity g_btm held fixed, per
-        # the xR_p normalization; the height grid and thus g(r) shift with Rp_r) --
-        # inverse-square, matching the g(r) art.run uses for the heights (see
-        # transmission_depth; art.gravity_profile is 1/r-linear and is NOT used).
+        # g(r) at the lnR0-scaled radius (g_btm held fixed); see
+        # transmission_depth.
         g_prof = _gravity_profile_invsq(art, T_art, mmw_art, Rp_r, g_btm)  # (nlayer,1)
 
         def _depth_of(Rp2):
@@ -600,19 +574,12 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
         wl_um=constants.UM_PER_CM / np.asarray(nu_grid),
         p_art_bar=p_art_bar,
         molecules=mols,
-        # echo of the profile-overridable RT knobs, so downstream consumers
-        # (jwst-transit-authority) can VERIFY the engine honored them -- an older
-        # engine that ignores an unknown profile key must fail loudly there,
-        # never silently compute a different model than the cache key claims
+        # Echoes of the profile-overridable knobs (and the opacity path), so a
+        # consumer can verify the engine honored them.
         art_ptop_bar=ptop,
         art_pbtm_bar=pbtm,
-        # the pressure rp_cm/gs_cgs were taken to apply at; consumers verify this
-        # echo, because a tool that silently reverted to bottom-of-grid anchoring
-        # would inflate every transit depth (see _anchor_to_grid_bottom)
         p_ref_bar=p_ref_bar,
         rt_integration=integration,
-        # which opacity path ran; there is only one, and consumers still
-        # verify the echo so an engine/tool version mismatch is loud
         opacity_mode="exomolop",
         # internals reused by build_emis_model (so opacities aren't rebuilt)
         _nu_grid=nu_grid, _molmass=molmass, _opacia=opacia,
@@ -629,39 +596,26 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
     eclipse depth / planet-star contrast -- do not compare it to an observed
     secondary-eclipse spectrum without dividing by the stellar flux and applying
     (Rp/Rstar)^2. Opacity terms match transmission (lines + H2-H2 + H2-He CIA,
-    optional cloud); Rayleigh scattering is deliberately excluded here (see
-    _accumulate_dtau_ckd -- a pure-absorption solver must not count scattering
-    as thermal absorption, and it is negligible in the thermal bands).
+    optional cloud); Rayleigh scattering is excluded (see _accumulate_dtau_ckd).
     """
     constants.check_profile_keys(profile)
-    # CKD emission runs through _run_emis_ckd_linsap, NOT ArtEmisPure.run_ckd:
-    # upstream's version hard-codes the "ibased" solver, which has no interior
-    # source term.
     ckd_pack = trt._ckd_pack
     nu_grid = trt._nu_grid
     molmass, opacia, mols = trt._molmass, trt._opacia, trt.molecules
     opacia_he = trt._opacia_he
     _require_geometry(profile, "gs_cgs", "rp_cm")
-    # Emission is plane-parallel, so ArtEmisPure needs ONE gravity for the whole
-    # column (it converts pressure to column mass as dP/g). gs_cgs is quoted at
-    # p_ref_bar, while the column is dominated by the emission photosphere near
-    # 0.1 bar, so gravity AND radius are re-anchored at p_ref_emission_bar as
-    # one consistent pair (the transit radius with the emission gravity misstates
-    # GM, notes register #12). ``emission_radius`` returns that radius. The
-    # eclipse prefactor proper is the photospheric radius at vertical tau = 2/3
-    # per k-ordinate (Fortney et al. 2019, ApJL 880, L16), which
-    # ``eclipse_flux_tau`` folds into the flux (a single radius is a feature
-    # error, notes register #24). ``emission_flux`` stays the plain emergent
-    # flux.
+    # Plane-parallel emission uses one gravity. Radius and gravity are
+    # re-anchored together at p_ref_emission_bar (notes register #12);
+    # ``emission_radius`` returns that radius. ``eclipse_flux_tau`` applies the
+    # per-k-ordinate tau = 2/3 radius (Fortney et al. 2019; register #24);
+    # ``emission_flux`` is the plain emergent flux.
     g_ref_em = float(profile["gs_cgs"])
     r_ref_em = float(profile["rp_cm"])
     p_ref_em = float(profile.get("p_ref_emission_bar",
                                  constants.P_REF_EMISSION_BAR))
     if not (trt.art_ptop_bar <= p_ref_em <= trt.art_pbtm_bar):
-        # jnp.interp CLAMPS at the grid ends, so without this an out-of-grid
-        # emission anchor silently returns the grid-edge gravity and radius.
-        # Same refusal the transmission p_ref_bar gets; standing loud-errors
-        # rule, and art_pbtm_bar is profile-overridable so this is reachable.
+        # jnp.interp clamps at the grid ends, so an out-of-grid anchor would
+        # silently use the edge radius and gravity.
         raise ValueError(
             f"p_ref_emission_bar={p_ref_em:g} lies outside the RT grid "
             f"[{trt.art_ptop_bar:g}, {trt.art_pbtm_bar:g}] bar. It is the "
@@ -678,13 +632,10 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
             "observables share one column anchor (build both from one "
             "profile).")
 
-    # Pressure bounds and nlayer follow the transmission model's grid: the two
-    # share opacities and must share the column.
-    #
-    # rtsolver "ibased_linsap", not "ibased": "ibased" drops the bottom-boundary
-    # (interior) source term, so every photon entering the grid from below is
-    # lost (notes register #8), and linsap's linear-source scheme is also the
-    # more accurate one at production layer counts. It costs one source row.
+    # The grid follows the transmission model's (shared opacities, shared
+    # column). ibased_linsap keeps the interior source term that "ibased" (and
+    # ArtEmisPure.run_ckd) drops (notes register #8); CKD emission runs
+    # _run_emis_ckd_linsap.
     art_nlayer = int(np.asarray(trt.p_art_bar).size)
     if "art_nlayer" in profile and int(profile["art_nlayer"]) != art_nlayer:
         raise ValueError(
@@ -721,14 +672,10 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
         return _radius_at(lnp_em, T_art, mmw_art, r_ref_em, g_ref_em,
                           p_ref_used, p_ref_em)
 
-    # lnR0 CONVENTION for consumers. The eclipse prefactor multiplies this
-    # radius by exp(2*lnR0), matching transmission. That is an approximation
-    # here: this geometry shifts radii ADDITIVELY at fixed g_btm, which makes
-    # the consistent exponent 2*Rp_btm/r_em (1.888 on WASP-39 b), and it also
-    # drops the g_em response to lnR0. Both are below the eclipse-depth error
-    # budget, so the exponent is left at 2. If it is ever tightened, tighten
-    # the gravity response with it -- correcting one alone moves the answer
-    # the wrong way.
+    # lnR0 convention: the eclipse prefactor scales this radius by
+    # exp(2*lnR0), as transmission does. Approximate: the consistent exponent
+    # is 2*Rp_btm/r_em and g_em's lnR0 response is dropped; both are below the
+    # eclipse-depth error budget and must be corrected together.
     def emission_radius(T_art, mmw_art):
         """Planet radius (cm) at p_ref_emission_bar, for the eclipse-depth
         (R_p/R_star)^2 prefactor.
@@ -736,26 +683,19 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
         The catalogue radius is the TRANSIT radius at p_ref_bar (~1 mbar); the
         emitting surface sits ~2 decades deeper, so the two differ by several
         percent and pairing the transit radius with the emission gravity
-        misstates GM. Differentiable, and traced through T/mmw exactly like the
+        misstates GM. Differentiable, and traced through T/mmw like the
         gravity the same column uses.
         """
         return _emission_anchor(T_art, mmw_art)[0]
 
     def tau_bottom(vmr, vmr_h2, T_art, mmw_art, vmr_he, cloud=None):
-        """Total vertical optical depth at the BOTTOM of the RT column, per band
-        (n_nu,), reduced over the g-ordinates by the MINIMUM.
+        """Minimum over g-ordinates of the total vertical optical depth at the
+        column bottom, per band (n_nu,).
 
-        The linsap solver DOES carry an interior source term, so a transparent
-        column returns the deep boundary blackbody rather than nothing. That
-        makes this a statement about assumption sensitivity, not about lost
-        flux: where tau_bottom is small the emergent flux is set by an
-        extrapolated boundary temperature standing in for everything below the
-        grid, so a caller should check min(tau_bottom) and flag windows that
-        see through it. Not on the hot AD path (diagnostic).
-
-        The minimum over g is the conservative reduction: a caller takes min
-        over wavenumber, and within a band the smallest g is the least opaque
-        wavenumber, so the gate stays conservative in the same sense.
+        Where it is small the emergent flux is set by the extrapolated boundary
+        temperature, so callers check min(tau_bottom) and flag see-through
+        windows. The min over g is the conservative reduction. Diagnostic, not
+        on the AD path.
         """
         _require_he(vmr_he)
         _, g_em = _emission_anchor(T_art, mmw_art)

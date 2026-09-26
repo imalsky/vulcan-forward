@@ -19,12 +19,8 @@ DEFAULT_ATOM_LIST = "H,O,C,N,S"
 # ``profile["vulcan_cfg_name"]`` instead; this is only the fallback.
 DEFAULT_CFG_NAME = "W39b"
 
-# Composition tables (hardcoded mirrors of vulcan_jax.composition)
-# This module stays import-light (no vulcan_jax), so both positional tables are
-# mirrors of the package's composition metadata. ``vulcan_chem`` verifies them
-# against ``vulcan_jax.composition`` at build time and raises on any drift --
-# that check is the guard against these two distributions diverging, so never
-# weaken it.
+# Composition tables: mirrors of vulcan_jax.composition (this module stays
+# import-light); vulcan_chem checks them at build time and raises on drift.
 #
 # Index of each element column we touch when building the Z / C/O knobs.
 ATOM_COLS = {"H": 0, "O": 1, "C": 2, "He": 3, "N": 4, "S": 5}
@@ -42,29 +38,22 @@ ATOMIC_MASSES = [
 # Reference wavenumber (cm^-1) for the ExoJAX powerlaw_clouds retrieval cloud:
 # kappa(nu) = kappac0 * (nu/CLOUD_NUC0)^alphac, kappac0 in cm^2 per gram of
 # atmosphere (pRT convention; alphac = 0 is a gray cloud). 2857 cm^-1 = 3.5 um.
-# NOTE this is a uniformly mixed power-law opacity ("haze slope + gray deck"
+# This is a uniformly mixed power-law opacity ("haze slope + gray deck"
 # nuisance), NOT a physical cloud: no cloud-top pressure, condensation,
 # sedimentation, or patchiness.
 CLOUD_NUC0 = 2857.0
 
-# ART pressure bounds (bar). Chemistry and RT share the model top: vulcan_chem
-# sets the chemistry P_t from the profile's art_ptop_bar (default ART_PTOP_BAR)
-# and interp_map refuses an ART grid the chemistry does not cover. Above 1e-8
-# bar the strong CO2 4.3 / CO 4.7 um bands stop saturating into a flat
-# model-top "wall" (saturated fraction 4.8% at 1e-6 bar, 0.1% at 1e-8; measured
-# on WASP-39 b); 1e-9 bar is where the column is CONVERGED in its top -- one
-# decade higher moves the R=100 depth by 1.14 ppm, against 14.65 ppm for a 1e-8
-# bar top (vulcan-retrieval validation/top_pressure_ladder).
+# ART pressure bounds (bar). Chemistry and RT share the model top (vulcan_chem
+# sets P_t from art_ptop_bar; interp_map refuses an uncovered ART grid). At
+# 1e-9 bar the top is converged: one decade higher moves the R=100 depth by
+# ~1 ppm (notes §1.2; vulcan-retrieval validation/top_pressure_ladder).
 ART_PTOP_BAR = 1.0e-9   # model top
 ART_PBTM_BAR = 7.0      # grid bottom
 
-# Pressure at which a consumer's rp_cm / gs_cgs are taken to be defined. A
-# published planet radius is the TRANSIT radius, so it belongs at roughly the
-# transmission photosphere, not at the bottom of the RT grid where exojax
-# defines radius_btm. 1 mbar is the value validated against the JWST ERS
-# WASP-39 b spectrum: re-anchoring there reproduced the published 3.0-5.5 um
-# median depth to 0.4% (21,299 vs 21,381 ppm), where the un-converted literature
-# radius gave 26,853. Override per planet with profile["p_ref_bar"].
+# Pressure (bar) at which rp_cm / gs_cgs apply: a published transit radius
+# belongs near the transmission photosphere, not the RT grid bottom where
+# exojax defines radius_btm. Validated on WASP-39 b (notes §1.2). Override with
+# profile["p_ref_bar"].
 P_REF_BAR = 1.0e-3
 
 # The emission column probes MUCH deeper than the limb: the slant path is ~35-90x
@@ -73,7 +62,7 @@ P_REF_BAR = 1.0e-3
 # biases planet-to-star flux ratios by ~5% typically and 10-25% for low-gravity
 # hot Jupiters (Fortney, Lupu, Morley, Freedman & Hood 2019, ApJL 880, L16).
 # 0.1 bar is HyDRA's stated convention, "the mean pressure of the tau=1 surface"
-# (Gandhi & Madhusudhan 2018). NOTE this only re-anchors the column GRAVITY; the
+# (Gandhi & Madhusudhan 2018). This only re-anchors the column GRAVITY; the
 # fully correct treatment computes a wavelength-dependent radius at vertical
 # tau = 2/3, as POSEIDON and PLATON II do: exojax_rt's eclipse_flux_tau.
 P_REF_EMISSION_BAR = 1.0e-1
@@ -101,24 +90,14 @@ T_OPA_MAX_K = 3000.0
 WIDE_BAND_NU_MIN = 667.0     # 15 um
 WIDE_BAND_NU_MAX = 10000.0   # 1 um
 
-# Molecule table
-# Each molecule: VULCAN species name and molar mass (g/mol). The opacity itself
-# is the published ExoMolOP k-table <MOL>.ktable.h5 (fetch_exomolop selects the
-# principal isotopologue and prefers the natural-abundance file; the dataset,
-# isotopologue and URL behind each table are recorded in the tree's
-# provenance.json, exposed by ``exomolop.provenance()``). molmass is explicit
-# and is the ONLY mass the engine uses: the k-tables are cm^2 per MOLECULE and
-# their own mol_mass header is not read (ExoMolOP's NO file carries 46, an
-# upstream metadata error; NO is 30). Do not "fix" molmass to match a file --
-# every entry is recomputed from its own formula with the IUPAC natural-
-# abundance atomic weights, and tests/test_contract.py enforces that.
-#
-# Every table is the principal isotopologue except CO and CO2 (natural
-# abundance), paired with the TOTAL molecular VMR -- a <= ~2% opacity deficit
-# on the multi-carbon species, below the tables' own accuracy.
-#
-# Callers may pass their own table to build_rt_model via
-# profile["molecule_table"]; this is the default, not a hardcoded lookup.
+# Molecule table: VULCAN species name and molar mass (g/mol). The opacity is
+# the ExoMolOP k-table <MOL>.ktable.h5 (provenance: exomolop.provenance()).
+# molmass is the only mass the engine uses (the tables' mol_mass header is not
+# read; ExoMolOP's NO file carries 46) and each entry equals its formula mass
+# (tests/test_contract.py). Tables are the principal isotopologue except CO and
+# CO2 (natural abundance); paired with the total VMR that is a <= ~2% opacity
+# deficit on the multi-carbon species, below the tables' accuracy. Callers may
+# pass their own table via profile["molecule_table"].
 MOLECULES = {
     "CO":  {"vulcan": "CO",  "molmass": 28.010},
     "H2O": {"vulcan": "H2O", "molmass": 18.015},
@@ -144,30 +123,16 @@ MOLECULES = {
     "C2H6": {"vulcan": "C2H6", "molmass": 30.070},
     # Simple hydrocarbon: photochemical CH4-destruction product.
     "C2H4": {"vulcan": "C2H4", "molmass": 28.054},
-    # RADICALS. All four are species in VULCAN's SNCHO network, and the
-    # published Tsai et al. 2023 WASP-39 b output carries SH and SO, so they are
-    # part of an apples-to-apples comparison with that model -- species coverage
-    # was one of the three measured reasons this engine's spectra had too much
-    # contrast.
+    # Radicals in VULCAN's SNCHO network; the published Tsai et al. 2023
+    # WASP-39 b output carries SH and SO.
     "OH": {"vulcan": "OH", "molmass": 17.007},
     "SH": {"vulcan": "SH", "molmass": 33.068},
     "SO": {"vulcan": "SO", "molmass": 48.059},
-    # ExoMolOP's recommended NO opacity is built from HITEMP
-    # (14N-16O__HITEMP.R1000_0.3-50mu). Identity confirmed from the data: peak
-    # at 1924 cm^-1 (5.20 um) with an overtone at 2.66 um is the NO
-    # fundamental, not NO2 or NS. NO peaks at 2.0e-08 (W39b).
+    # ExoMolOP's NO table is built from HITEMP (14N-16O__HITEMP.R1000_0.3-50mu).
     "NO": {"vulcan": "NO", "molmass": 30.006},
-    # SECOND-TIER SPECIES, from sweeping every IR-active SNCHO species against
-    # ExoMolOP. Present so the menu is COMPLETE, not because each is expected
-    # to matter; which ones default ON is decided by measured ppm, in
-    # jwst-transit-authority forward.EXTRA_MOLECULES_DEFAULT.
-    #
-    # CANNOT be added, do not re-sweep: O2 (published only at R15000_0.2-30mu
-    # -- different band grid), CH3OH / CH3CN / HC3N / NO2 / C6H6 / CH3CHO / HO2
-    # (page, no petitRADTRANS file), and ~19 radicals and nitriles absent
-    # entirely. The painful two are HSO (1.2e-4) and S2 (9.7e-5), both MORE
-    # abundant than SO2 on W39b: S2 is homonuclear so it has no IR dipole, HSO
-    # has no published list. Full record: notes.md.
+    # Second-tier species: listed so the menu is complete;
+    # jwst-transit-authority's EXTRA_MOLECULES_DEFAULT picks the defaults.
+    # Species ExoMolOP cannot supply (O2, CH3OH, HSO, S2, ...): notes §1.1.
     "NS":   {"vulcan": "NS",   "molmass": 46.067},
     "CH3":  {"vulcan": "CH3",  "molmass": 15.035},
     "NH":   {"vulcan": "NH",   "molmass": 15.015},

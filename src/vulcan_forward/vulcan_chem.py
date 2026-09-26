@@ -18,7 +18,7 @@ per proposal, and unsupported conden configs refuse at build. The cold-trap
 index and active-layer set are discrete, so a jvp through a condensing state
 is valid only away from those switches.
 
-KNOWN LIMITATION -- conden-on does NOT reduce to conden-off when nothing
+Known limitation: conden-on does NOT reduce to conden-off when nothing
 condenses: the fix_species pin freezes the reservoirs at their
 stop_conden_time state. Enable condensation only where the species
 genuinely condenses.
@@ -57,9 +57,7 @@ _WANT_ENV = {"VULCAN_JAX_NETWORK": constants.DEFAULT_NETWORK,
 if "vulcan_jax" in sys.modules:
     _conflict = {k: (os.environ.get(k), v) for k, v in _WANT_ENV.items()
                  if os.environ.get(k) not in (None, v)}
-    # With the env vars UNSET -- the default -- comparing them proves nothing:
-    # vulcan_jax has already frozen whatever ITS config named. Read the frozen
-    # state itself, which is what the env vars were only ever describing.
+    # With the env vars unset, read the network vulcan_jax actually froze.
     if not _conflict:
         _frozen = getattr(sys.modules["vulcan_jax"], "chem_funs", None)
         _frozen = getattr(getattr(_frozen, "_NETWORK", None), "network_path", None)
@@ -158,11 +156,8 @@ class ChemParams(NamedTuple):
     ``tp_eval`` hook it is that hook's parameter block; without one it is a
     single uniform temperature offset in K, added to the structural profile.
 
-    Prefer this over a bare vector in new code, because the field names carry
-    the meaning. The positional vector form is still accepted everywhere (see
-    ``params_from_vector``) and remains the right shape for a sampler or for
-    forward-mode AD, where the parameters ARE a vector and the tangent has to
-    match it. This type is a NamedTuple, so it is also a JAX pytree.
+    The positional vector form (``params_from_vector``) is also accepted; a
+    sampler or forward-mode AD needs the vector. A NamedTuple, so a JAX pytree.
     """
     lnZ: float = 0.0
     c_o: float = 0.0
@@ -250,15 +245,9 @@ _SCRATCH_ROOT: str | None = None
 
 
 def _redirect_output_dirs(cfg) -> None:
-    """Point VULCAN-JAX's output directory away from the caller's CWD.
-
-    ``op.Output``'s constructor creates ``cfg.output_dir``, and the shipped
-    VULCAN-JAX configs make it RELATIVE -- so building a model would create
-    ./output wherever the caller happens to be standing. A library has no
-    business writing into a caller's working directory. This engine never
-    writes .vul output (the Output object exists only to satisfy
-    ``OuterLoop``'s signature), so it is redirected to one per-process temp
-    directory. An absolute path a caller set deliberately is left alone.
+    """Redirect a relative ``cfg.output_dir`` to a per-process temp directory:
+    ``op.Output`` creates it, and this engine never writes .vul output. An
+    absolute path is left alone.
     """
     global _SCRATCH_ROOT
     val = getattr(cfg, "output_dir", None)
@@ -354,8 +343,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     if warm_count_max > int(cfg.count_max):
         raise ValueError(
             f"warm_count_max={warm_count_max} exceeds count_max={int(cfg.count_max)}: "
-            "the warm mutation cap must be at most the cold cap (it exists to REJECT "
-            "doomed proposals earlier, not to extend them)")
+            "the warm mutation cap must be at most the cold cap")
     # The chemistry grid must reach the RT top (interp_map refuses a clamped
     # top). An explicit cfg_overrides P_t wins: the model-top ladder and the
     # condensation pin bring their own grids.
@@ -439,27 +427,18 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
           + ("runner closure only (skip_warmup)" if skip_warmup
              else "warming up runner ..."), flush=True)
     if skip_warmup:
-        # The warm-up's converged column is never consumed by this module
-        # (state0 packs from the pre-loop ``rs`` below), so a forward-only
-        # consumer can skip the full solve and keep just the runner-closure
-        # half of the warm-up. Host-side construction only, no solve; the
-        # XLA compile then happens on the first real solve, which the
-        # persistent compile cache already covers. baseline_conv_normal is
-        # None (= not evaluated, distinct from failed); the inference path
-        # must not set this flag.
+        # Forward-only consumers skip the solve and build only the runner
+        # closure; the XLA compile happens on the first real solve.
+        # baseline_conv_normal None = not evaluated. Not for inference.
         integ._ensure_runner(var, atm)
         baseline_conv_normal = None
     else:
         tw = time.time()
         rs_warmup = integ(rs)
-        # Check the warm-up exit: the runner's own end classification, so
-        # end_case 1 is a run that stopped certified (past the ready gate,
-        # both branches' terms, the flux gate, C21 and C23) on a finite
-        # column. A diagnostic only (notes §2): nothing consumes the warm-up
-        # column (state0 packs from the pre-loop ``rs``) and every solve
-        # certifies itself, so False flags a configuration that may not
-        # converge. Exported as ``baseline_conv_normal``; vulcan-retrieval
-        # warns on it.
+        # Diagnostic only (notes §2): end_case 1 is a certified exit on a
+        # finite column. Nothing consumes the warm-up column, so False only
+        # flags a configuration that may not converge (exported as
+        # baseline_conv_normal).
         _w_end = int(rs_warmup.params.end_case)
         baseline_conv_normal = _w_end == 1
         if not baseline_conv_normal:
@@ -472,15 +451,11 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
               f"(certified: {baseline_conv_normal})", flush=True)
 
     # --- runner-carry budget/scheme seeding --------------------------------
-    # The termination budget and diffusion-scheme blend live on the CARRY, not
-    # the statics, and state0 is packed ONCE under the COLD statics -- so every
-    # per-proposal solve must re-seed them for the runner that consumes it.
-    # Otherwise a warm-capped solve runs to the cold count_max, and under the hybrid
-    # default every warm continuation restarts in upwind phase 0 and exhausts
-    # the warm cap before the phase flip can certify. Warm continuations start
-    # from a column already converged on the central operator (a completed
-    # hybrid run ends in phase 1), so they continue on it; pure-upwind configs
-    # keep upwind (their steady state IS the upwind fixed point).
+    # The termination budget and diffusion blend live on the carry, and state0
+    # is packed once under the cold statics, so each solve re-seeds them. Under
+    # the hybrid scheme a warm continuation starts from a column converged on
+    # the central operator, so it continues on it (pure-upwind configs keep
+    # upwind).
     cold_count_max = int(cfg.count_max)
     count_min_v = int(cfg.count_min)
     runtime_v = float(cfg.runtime)
@@ -510,10 +485,9 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         photo-flux gate, the geometry and element-budget terms; not the ready
         gate, hybrid-phase or non-finite exit) AND the supplied tangent
         certificate. True only for a certified exit; False when the exit
-        exhausted a count/runtime budget without certifying. The
-        controlling cell is the argmax
-        of the masked per-cell ratio the runner maximised for longdy
-        (``where_varies_most`` rides the carry). ``tangent_ok`` is the
+        exhausted a count/runtime budget without certifying. The controlling
+        cell is the argmax of the masked per-cell ratio the runner maximised
+        for longdy (``where_varies_most`` rides the carry). ``tangent_ok`` is the
         solver's sensitivity certificate on the ``converged_y_jvp`` path
         (``OuterLoop.run_jvp``); the primal path passes the default. It
         enters ``conv_normal`` only: ``conv_branch`` stays the COLUMN's own
@@ -552,7 +526,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
 
     # --- on-graph atmosphere rebuild inputs -------------------------------
     # refresh_static packs the runner's own hydrostatic-refresh kernel inputs (pico,
-    # gs, Rp, pref anchor, species masses); update_mu_dz_jax(ymix, st) is exactly what
+    # gs, Rp, pref anchor, species masses); update_mu_dz_jax(ymix, st) is what
     # the runner fires in-loop every update_frq accepted steps, so seeding the initial
     # carry with it makes step 1 consistent with what the loop maintains thereafter.
     # phys0/spec_atm feed atm_jax._mol_diff, the committed on-graph Dzz(T, M) builder
@@ -736,8 +710,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         else:
             T = tp_eval(_p.tp, p_bar_j)
         M = pco / (kb * T)
-        # Honor cfg.use_lowT_limit_rates: build_rate_array defaults it off, and
-        # silently ignoring a set config flag violates the loud-errors rule.
+        # Pass cfg.use_lowT_limit_rates through; build_rate_array defaults it off.
         k_arr = rates_jax.build_rate_array(
             network, T, M, nasa9, remove_list,
             use_lowT_caps=bool(cfg.use_lowT_limit_rates))
@@ -776,21 +749,15 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
             vs_new = settling_velocity_jax(_na, _a, _b, T, g_i, spec_atm.settle_coeff)
         else:
             vs_new = jnp.zeros((nz - 1, ni), dtype=jnp.float64)
-        # y_ini is kept for the end-of-run print; the element-budget
-        # certificate's reference is `budget_ref`, seeded on the init below
-        # from THIS theta's starting column on ITS own grid, with the per-step
-        # accumulator zeroed -- as atom_ini is re-anchored above. The baseline
-        # column would charge the proposal's own composition change to the
-        # solver's conservation.
+        # y_ini is kept for the end-of-run print. The element-budget reference
+        # is `budget_ref`, seeded below from this theta's own starting column
+        # (as atom_ini is re-anchored above), so the proposal's composition
+        # change is not charged to the solver's conservation.
         pv_T = pv_T._replace(r_Dzz_top=Dzz_new[-1], y_ini=y0p)
 
         # --- condensation at the proposed T ---------------------------------
-        # Rebuild every T/structure-dependent condensation array from the SAME
-        # live temperature and structure the chemistry uses (saturation number
-        # densities, Dg growth terms from the live Dzz, relax inputs, NH3
-        # cold-trap argmin, fix-species sat-mix rows) and splice them into the
-        # ProfileVars carry the runner reads each step. No baseline-frozen
-        # condensation table survives into a live-T solve.
+        # Rebuild every T/structure-dependent condensation array from the live
+        # T and structure and splice it into the ProfileVars carry.
         if conden_spec is not None:
             cprof = conden_mod.build_conden_profile(conden_spec, T, pco, M, Dzz_new)
             pv_T = pv_T._replace(
@@ -936,11 +903,8 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         a refilled theta enters at the tick its lane was freed at, which moves
         the photolysis / geometry cadence the way the batch already moves it
         against the solo solve. With ``n_lanes >= N`` nothing is refilled and
-        every theta runs the plain batch's ticks (same accept_count, same
-        certificate), but the answer is still not BITWISE the batch's: the
-        seed is built inside ``run_queue``'s jitted loop and outside it in
-        ``converged_y_batch``, and those two compilations of ``_prep`` differ
-        by a ulp in y_ini, which the trajectory amplifies. Returns
+        every theta runs the plain batch's ticks, but the result is not bitwise
+        the batch's (the seed is compiled inside run_queue's loop). Returns
         ``(y (N, nz, ni), ConvDiag stacked over N)``; the ConvDiag is not
         optional here (it rides the per-job write-out).
 
@@ -1032,11 +996,11 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     def audit_init(theta, warm_y=None, lnZ_ref=0.0, c_o_ref=0.0):
         """Host-side audit of the initial column built for ``theta`` (not on any AD path).
 
-        Returns a dict with the quantities the science review asked to see verified at
-        every retrieval point: relative density-closure error max_z |sum_i n_i - M|/M,
-        the achieved-vs-target column elemental ratios, the achieved dln(C/O) vs
-        theta, the smallest elemental-repair factor (must be > 0), and the atom_ini
-        consistency |atoms(y_init) - atom_ini|/atom_ini in the runner's atom basis.
+        Returns a dict of initial-column residuals: relative density-closure
+        error max_z |sum_i n_i - M|/M, the achieved-vs-target column elemental
+        ratios, the achieved dln(C/O) vs theta, the smallest elemental-repair
+        factor (must be > 0), and the atom_ini consistency
+        |atoms(y_init) - atom_ini|/atom_ini in the runner's atom basis.
         """
         th = _as_params(theta).to_vector()
         init, _atm_T = _prep(theta, warm_y=warm_y, lnZ_ref=lnZ_ref, c_o_ref=c_o_ref)
