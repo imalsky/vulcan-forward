@@ -215,13 +215,13 @@ class ConvDiag(NamedTuple):
     integer-valued (no tangent); ``longdy``/``longdydt`` are floats and DO carry a
     tangent -- callers on an AD path must ``stop_gradient`` them.
 
-    ``accept_count`` alone is NOT a convergence test: the stall fallback (and the
-    hybrid vm_mol phase flip) can terminate the runner with accept_count well under
-    the cap on a state whose tangent has not settled. ``conv_normal`` is the
-    runner's canonical two-branch certification (tight yconv_cri/slope_cri OR
-    loose yconv_min/slope_min, AND the photo-flux gate, the geometry term and
-    the column element budget) recomputed at the exit state: False on an exit
-    that only certified via the stall fallback or that exhausted a budget.
+    ``accept_count`` alone is NOT a convergence test: the runtime budget, a
+    hybrid run's post-flip step budget or a non-finite state can end the runner
+    with accept_count well under the cap on a state whose tangent has not
+    settled. ``conv_normal`` is the runner's canonical two-branch certification
+    (tight yconv_cri/slope_cri OR loose yconv_min/slope_min, AND the photo-flux
+    gate, the geometry term and the column element budget) recomputed at the
+    exit state: False on an exit that did not certify, such as a budget exit.
     """
 
     accept_count: jnp.ndarray         # () int32   accepted steps taken
@@ -527,8 +527,8 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         vulcan-jax's ``conv_normal`` certificate (tight OR loose branch, the
         photo-flux gate, the geometry and element-budget terms; not the ready
         gate, hybrid-phase or non-finite exit) AND the supplied tangent
-        certificate. True only for a certified exit; False when the exit came
-        from the stall fallback or exhausted a count/runtime budget. The
+        certificate. True only for a certified exit; False when the exit
+        exhausted a count/runtime budget without certifying. The
         controlling cell is the argmax
         of the masked per-cell ratio the runner maximised for longdy
         (``where_varies_most`` rides the carry). ``tangent_ok`` is the
@@ -886,7 +886,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         ``warm_cap=True`` caps the solve at ``warm_count_max`` (the SMC mutation
         path; the cap rides the carry). ``return_conv_diag=True`` returns ``(y, ConvDiag)`` -- free
         reads off the primal carry; ``conv_normal`` is the canonical
-        certification recomputed at the exit, so a stall or budget exit reads
+        certification recomputed at the exit, so a budget exit reads
         False even when ``longdy < yconv_min``. ConvDiag's integer fields
         carry no tangent -- AD callers stop_gradient them."""
         init, atm_T = _prep(theta, warm_y=warm_y,
