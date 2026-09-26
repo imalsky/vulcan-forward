@@ -317,16 +317,10 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     # `is not None`, never truthiness: 0 is a legitimate value for several of
     # these (count_min=0 no floor, yconv_min=0 closes the OR-branch) and must
     # not silently fall back to cfg.
-    if profile.get("nz") is not None:
-        cfg.nz = int(profile["nz"])
-    if profile.get("count_min") is not None:
-        cfg.count_min = int(profile["count_min"])
-    if profile.get("count_max") is not None:
-        cfg.count_max = int(profile["count_max"])
-    if profile.get("dt_max") is not None:   # physical step-size cap (prevents the dt-balloon
-        cfg.dt_max = float(profile["dt_max"])  # non-convergence at high Kzz; see config_schema)
-    if profile.get("yconv_min") is not None:  # close the loose convergence OR-branch (default 0.1)
-        cfg.yconv_min = float(profile["yconv_min"])
+    for key, cast in (("nz", int), ("count_min", int), ("count_max", int),
+                      ("dt_max", float), ("yconv_min", float)):
+        if profile.get(key) is not None:
+            setattr(cfg, key, cast(profile[key]))
     # Generic cfg overrides, applied BEFORE the pre-loop build so they reach
     # make_atm_static / OuterLoop exactly like use_photo does. setattr checks
     # nothing, so a removed or misspelled key is refused first.
@@ -387,29 +381,16 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
 
     _assert_composition_tables(composition)
 
-    # Condensation with a live T(P) needs configuration that can actually
-    # condense; refuse the silently-inert combinations upfront (standing rule:
-    # loud errors, no silent fallbacks). The dynamic rebuild itself happens in
-    # _prep below via conden.build_conden_profile.
-    use_condense = bool(getattr(cfg, "use_condense", False))
-    if use_condense:
-        if not bool(getattr(cfg, "use_moldiff", True)):
-            raise ValueError(
-                "use_condense=True requires use_moldiff=True: the condensation "
-                "growth term Dg IS the species' molecular-diffusion coefficient "
-                "(op.conden's continuum-regime rate), so with molecular diffusion "
-                "off every condensation rate would silently be zero.")
-        if bool(getattr(cfg, "use_sat_surfaceH2O", False)):
-            raise NotImplementedError(
-                "use_condense with use_sat_surfaceH2O=True is unsupported in the "
-                "T-varying model: it rewrites the fixed-bottom H2O boundary "
-                "condition from the STRUCTURAL temperature at ini time, which a "
-                "live T(P) does not rebuild. Disable use_sat_surfaceH2O.")
-        if not list(getattr(cfg, "condense_sp", []) or []):
-            raise ValueError(
-                "use_condense=True with an empty condense_sp: nothing would "
-                "condense. List the condensable gas species (network "
-                "condensation reactions and/or use_relax species).")
+    # Condensation with a live T(P): vulcan-jax's runtime validation (inside
+    # with_pre_loop_setup) refuses the inert configurations; this is the one
+    # it cannot see. _prep rebuilds the conden arrays per proposal.
+    use_condense = bool(cfg.use_condense)
+    if use_condense and bool(cfg.use_sat_surfaceH2O):
+        raise NotImplementedError(
+            "use_condense with use_sat_surfaceH2O=True is unsupported in the "
+            "T-varying model: it rewrites the fixed-bottom H2O boundary "
+            "condition from the STRUCTURAL temperature at ini time, which a "
+            "live T(P) does not rebuild. Disable use_sat_surfaceH2O.")
 
     rs = RunState.with_pre_loop_setup(cfg)
     var, atm, para = legacy_view(rs)
@@ -423,7 +404,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     conden_spec = None
     if use_condense:
         conden_spec = conden_mod.make_conden_spec(cfg, var, atm, sidx)
-        relax_set = set(getattr(cfg, "use_relax", []) or [])
+        relax_set = set(cfg.use_relax or [])
         inert = [sp for sp in cfg.condense_sp
                  if sp not in conden_spec.gas_names and sp not in relax_set]
         if inert:
@@ -444,7 +425,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     if not (thermo_dir / "NASA9").exists():
         thermo_dir = Path(vulcan_jax.__file__).resolve().parent / "thermo"
     nasa9, _ = load_nasa9(network.species, thermo_dir)
-    remove_list = getattr(cfg, "remove_list", None)
+    remove_list = cfg.remove_list
 
     # --- one warm-up run: compiles/caches integ._runner and confirms the primal converges
     solver = op_jax.Ros2JAX()
@@ -504,7 +485,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     count_min_v = int(cfg.count_min)
     runtime_v = float(cfg.runtime)
     use_vm_mol_v = bool(cfg.use_vm_mol)
-    hybrid_v = use_vm_mol_v and bool(getattr(cfg, "use_hybrid_vm_mol", False))
+    hybrid_v = use_vm_mol_v and bool(cfg.use_hybrid_vm_mol)
     _warm_note = ("; warm continuation pinned to central difference (the "
                   "converged phase-1 operator)" if hybrid_v else "")
     print(f"[chem] diffusion scheme: use_vm_mol={use_vm_mol_v} "
