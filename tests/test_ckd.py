@@ -27,6 +27,8 @@ if HAVE_EXOJAX and importlib.util.find_spec("vulcan_jax") is not None:
 
 from vulcan_forward import ckd  # noqa: E402
 
+ROUND_TOL = 1e-12   # float64 rounding bar
+
 
 def gauss_legendre(ng):
     """g-ordinates and weights on [0, 1]: a synthetic quadrature for these
@@ -80,7 +82,7 @@ def test_overlap_returns_a_monotone_g_ordering():
     b = np.sort(rng.lognormal(0.0, 2.0, size=(2, ng, 3)), axis=1)
     out = np.asarray(ckd.overlap(jnp.asarray(a), jnp.asarray(b),
                                  jnp.asarray(g), jnp.asarray(w)))
-    assert np.all(np.diff(out, axis=1) >= -1e-12)
+    assert np.all(np.diff(out, axis=1) >= -ROUND_TOL)
 
 
 def test_overlap_is_differentiable():
@@ -175,7 +177,7 @@ def test_fold_is_bit_identical_to_the_python_loop_fold():
         v = jax.jit(lambda d: jax.vjp(f, d)[1](cot)[0])(dts)
         return p, t, v
 
-    rtol = 0.0 if jax.default_backend() == "cpu" else 1e-12
+    rtol = 0.0 if jax.default_backend() == "cpu" else ROUND_TOL
     for got, want in zip(jvp_vjp(scan), jvp_vjp(naive)):
         np.testing.assert_allclose(np.asarray(got), np.asarray(want),
                                    rtol=rtol, atol=0.0, equal_nan=False)
@@ -222,4 +224,4 @@ def test_interp_logk_matches_exojax_interpolate_log_k_2d():
     ref = np.stack([np.asarray(interpolate_log_k_2d(logk, t, p, T[i], P[i]))
                     for i in range(6)])
     assert ours.dtype == np.float64
-    assert np.allclose(ours, ref, rtol=0.0, atol=1e-12)
+    assert np.allclose(ours, ref, rtol=0.0, atol=ROUND_TOL)

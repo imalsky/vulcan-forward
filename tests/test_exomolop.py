@@ -32,6 +32,10 @@ pytestmark = pytest.mark.skipif(not HAVE_H5PY, reason="h5py not installed")
 
 DATA = Path(__file__).parent / "data"
 NT, NP, NB, NG = 4, 3, 20, 8
+ROUND_TOL = 1e-12   # float64 rounding bar
+SPLIT_TOL = 1e-6    # the split quadrature's 0.9 / 0.1 weight sums
+# exo_k fixture: band edges (cm^-1, absolute) and interpolated k (relative)
+EXOK_TOL = 1e-9
 
 
 def _write(path, *, nb=NB, ng=NG, nu0=100.0, r=1000.0, kscale=1.0,
@@ -107,7 +111,7 @@ def test_layout_is_transposed_to_the_engine_order(data_root):
     got = np.asarray(pack.logk["H2O"])
     assert got.shape == (NT, NP, NG, NB)
     want = np.log(k.transpose(1, 0, 3, 2))
-    assert np.allclose(got, want, rtol=1e-12, atol=0.0)
+    assert np.allclose(got, want, rtol=ROUND_TOL, atol=0.0)
     assert np.allclose(np.asarray(pack.t_grid), t)
     assert np.allclose(np.asarray(pack.p_grid), p)
     assert np.allclose(np.asarray(pack.gg), g)
@@ -249,9 +253,9 @@ def test_real_table_uses_the_petitradtrans_split_quadrature():
     w = np.asarray(pack.gw)
     g = np.asarray(pack.gg)
     assert pack.ng == 16
-    assert w.sum() == pytest.approx(1.0, abs=1e-12)
-    assert w[:8].sum() == pytest.approx(0.9, abs=1e-6)
-    assert w[8:].sum() == pytest.approx(0.1, abs=1e-6)
+    assert w.sum() == pytest.approx(1.0, abs=ROUND_TOL)
+    assert w[:8].sum() == pytest.approx(0.9, abs=SPLIT_TOL)
+    assert w[8:].sum() == pytest.approx(0.1, abs=SPLIT_TOL)
     assert np.all((g > 0.0) & (g < 1.0))
     assert np.all(np.diff(g) > 0.0)
 
@@ -305,7 +309,7 @@ def test_real_tables_reproduce_the_exo_k_reference():
     pack = exomolop.load_tables(mols, lo, hi, verbose=False)
     edges = np.asarray(pack.band_edges)
     ib = np.searchsorted(edges, z["wn_edges_lo"])
-    assert np.allclose(edges[ib], z["wn_edges_lo"], rtol=0.0, atol=1e-9)
+    assert np.allclose(edges[ib], z["wn_edges_lo"], rtol=0.0, atol=EXOK_TOL)
     for ours, theirs in ((pack.gg, z["ggrid"]), (pack.gw, z["weights"]),
                          (pack.t_grid, z["tgrid"]), (pack.p_grid, z["pgrid"])):
         assert np.allclose(np.asarray(ours), theirs, rtol=1e-15, atol=0.0)
@@ -321,7 +325,7 @@ def test_real_tables_reproduce_the_exo_k_reference():
     for j, m in enumerate(mols):
         got = np.exp(np.asarray(ckd._interp_logk(
             pack.logk[m], pack.t_grid, pack.p_grid, T, P)))[:, :, ib]
-        assert np.allclose(got, z["k_off"][j], rtol=1e-9, atol=0.0), m
+        assert np.allclose(got, z["k_off"][j], rtol=EXOK_TOL, atol=0.0), m
     # random overlap: the fixture's left fold, on the same 58 bands (band-local)
     x = meta["vmr"]
     tot = None

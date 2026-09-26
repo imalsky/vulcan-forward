@@ -22,6 +22,8 @@ import jax  # noqa: E402
 
 jax.config.update("jax_enable_x64", True)
 
+ROUND_TOL = 1e-12   # float64 rounding bar
+
 
 def _to_art(p_vulcan, p_art):
     from vulcan_forward.interp_map import make_to_art
@@ -33,7 +35,7 @@ def test_to_art_is_exact_on_the_source_grid():
     p = np.logspace(-6, 1, 40)               # bar, ascending
     prof = jnp.asarray(np.linspace(-3.0, -8.0, 40))
     out = np.asarray(_to_art(p, p)(prof))
-    assert np.allclose(out, np.asarray(prof), rtol=0, atol=1e-12)
+    assert np.allclose(out, np.asarray(prof), rtol=0, atol=ROUND_TOL)
 
 
 def test_to_art_interpolates_linearly_in_log_pressure():
@@ -47,7 +49,7 @@ def test_to_art_interpolates_linearly_in_log_pressure():
     prof = jnp.asarray(2.0 * np.log10(p_v) + 5.0)
     p_art = np.logspace(-5.5, 0.5, 17)
     out = np.asarray(_to_art(p_v, p_art)(prof))
-    assert np.allclose(out, 2.0 * np.log10(p_art) + 5.0, rtol=1e-12, atol=1e-10)
+    assert np.allclose(out, 2.0 * np.log10(p_art) + 5.0, rtol=ROUND_TOL, atol=1e-10)
 
 
 def test_to_art_accepts_a_descending_source_grid():
@@ -64,7 +66,7 @@ def test_to_art_accepts_a_descending_source_grid():
     # same physical profile, handed over in the opposite order
     out_down = np.asarray(
         _to_art(p_up[::-1], p_art)(jnp.asarray(prof_up[::-1])))
-    assert np.allclose(out_up, out_down, rtol=0, atol=1e-12)
+    assert np.allclose(out_up, out_down, rtol=0, atol=ROUND_TOL)
 
 
 @pytest.mark.parametrize("p_v,p_art", [

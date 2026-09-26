@@ -41,6 +41,7 @@ from vulcan_forward.exojax_rt import (                       # noqa: E402
 
 R_JUP_CM = 7.1492e9
 P_TOP, P_BTM, NLAYER = 1.0e-8, 7.0, 100
+ROUND_TOL = 1e-12   # float64 rounding bar
 
 
 def _grid(n=NLAYER):
@@ -96,13 +97,13 @@ def test_matches_the_isothermal_closed_form_at_every_level(n):
                   0.0,                          # 1 bar
                   np.log(_p_boundary(n))):      # bottom boundary
         r, g = _radius_at(lnp, Ti, mi, r_ref, g_ref, p_ref, np.exp(lnp_t))
-        assert float(r) == pytest.approx(exact(lnp_t), rel=1e-12), lnp_t
+        assert float(r) == pytest.approx(exact(lnp_t), rel=ROUND_TOL), lnp_t
         assert float(g) == pytest.approx(g_ref * (r_ref / exact(lnp_t)) ** 2,
-                                         rel=1e-12)
+                                         rel=ROUND_TOL)
     r_btm, g_btm = _anchor_to_grid_bottom(lnp, Ti, mi, r_ref, g_ref, p_ref)
-    assert float(r_btm) == pytest.approx(exact(np.log(_p_boundary(n))), rel=1e-12)
+    assert float(r_btm) == pytest.approx(exact(np.log(_p_boundary(n))), rel=ROUND_TOL)
     assert float(g_btm) == pytest.approx(g_ref * (r_ref / float(r_btm)) ** 2,
-                                         rel=1e-12)
+                                         rel=ROUND_TOL)
 
 
 def test_a_hotter_deep_atmosphere_pushes_the_bottom_radius_down():

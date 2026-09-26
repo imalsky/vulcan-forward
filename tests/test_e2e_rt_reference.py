@@ -65,6 +65,10 @@ from vulcan_forward import constants, exojax_rt  # noqa: E402
 
 DATA = Path(__file__).parent / "data"
 RSTAR_W39 = 0.932 * 6.957e10
+ROUND_TOL = 1e-12      # float64 rounding bar
+# Eclipse flux against the gray closed form: _photosphere_lnp interpolates
+# ln P linearly in tau between layer boundaries (80 layers).
+ECLIPSE_RTOL = 2e-4
 
 
 def _load(name):
@@ -198,11 +202,11 @@ def test_emission_isothermal_atmosphere_radiates_pi_planck():
             for vmr in (1.0e-3, 1.0e-5)}
     for vmr, f in flux.items():
         dev = np.max(np.abs(f / want - 1.0))
-        assert dev < 1e-12, (
+        assert dev < ROUND_TOL, (
             f"isothermal column at VMR {vmr:.0e} deviates from pi*B(T) by "
             f"{dev:.3e}; the emission path has a normalization, unit, or "
             "boundary-source error")
-    assert np.max(np.abs(flux[1.0e-3] / flux[1.0e-5] - 1.0)) < 1e-12, (
+    assert np.max(np.abs(flux[1.0e-3] / flux[1.0e-5] - 1.0)) < ROUND_TOL, (
         "isothermal flux depends on opacity; k must cancel exactly")
 
 
@@ -315,7 +319,7 @@ def test_eclipse_flux_carries_the_tau_two_thirds_photospheric_radius():
     def r_iso(p):
         return 1.0 / (1.0 / prof["rp_cm"] + C * np.log(p / emod.p_ref_bar))
 
-    assert float(r_em) == pytest.approx(r_iso(emod.p_ref_emission_bar), rel=1e-12)
+    assert float(r_em) == pytest.approx(r_iso(emod.p_ref_emission_bar), rel=ROUND_TOL)
     # tau is zero at the grid's TOP BOUNDARY (half a layer above the first
     # centre; exojax's dParr[0] spans p0 k^0.5 .. p0 k^-0.5), so the gray
     # photosphere sits at P_top + (2/3) g / kappa. Third point: inside the top
@@ -333,11 +337,11 @@ def test_eclipse_flux_carries_the_tau_two_thirds_photospheric_radius():
                 * (float(r_phot) / float(r_em)) ** 2)
         flux, _ = emod.eclipse_flux_tau({"H2O": zeros}, zeros, Tcol, mcol,
                                         vmr_he=zeros, cloud=cloud)
-        assert np.max(np.abs(np.asarray(flux) / want - 1.0)) < 2e-4, log_kappa
+        assert np.max(np.abs(np.asarray(flux) / want - 1.0)) < ECLIPSE_RTOL, log_kappa
         plain, _ = emod.emission_flux_tau({"H2O": zeros}, zeros, Tcol, mcol,
                                           vmr_he=zeros, cloud=cloud)
         assert np.max(np.abs(np.asarray(plain) / want * (float(r_phot) / float(r_em)) ** 2
-                             - 1.0)) < 1e-12
+                             - 1.0)) < ROUND_TOL
     assert (float(r_iso(0.3)) / float(r_em)) ** 2 < 0.99   # a deeper photosphere is smaller
     # and the radius keeps its derivative there: the eclipse flux responds to kappa
     def f(lk):
