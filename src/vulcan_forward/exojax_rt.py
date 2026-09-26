@@ -62,7 +62,8 @@ def _gravity_profile_invsq(art, T_art, mmw_art, radius_btm, gravity_btm):
 
     ExoJax's ``ArtCommon.gravity_profile`` (<=2.2.3) is linear in 1/r while
     its height integrator is inverse-square; this keeps opacity columns and
-    heights on one gravity (notes register #9). Same (nlayer, 1) shape as
+    heights on one gravity (vs a chord quadrature: 1/r-linear -51 ppm,
+    inverse-square +1.5 ppm in depth). Same (nlayer, 1) shape as
     ``gravity_profile``, so it broadcasts through the dtau kernels.
     """
     normalized_height, normalized_radius_lower = art.atmosphere_height(
@@ -78,7 +79,7 @@ def _anchor_to_grid_bottom(lnp_art, T_art, mmw_art, r_ref, g_ref, p_ref_bar):
     bottom layer. A published planet radius is instead the transit radius, i.e.
     the radius at roughly the photosphere (~mbar). Handing exojax the literature
     pair stacks the whole p_ref -> p_btm column ON TOP OF a radius that already
-    is the photospheric one (notes register #10).
+    is the photospheric one.
 
     Integrating hydrostatic equilibrium with GM held fixed, so that
     ``g(r) = g_ref (r_ref/r)^2``::
@@ -97,7 +98,7 @@ def _anchor_to_grid_bottom(lnp_art, T_art, mmw_art, r_ref, g_ref, p_ref_bar):
     ``pressure_layer_logspace``, whose entries are layer CENTRES, and defines
     ``radius_btm`` at ``pressure_lower_logspace(...) = p[-1] * k**-0.5``
     (atmprof.py) -- half a log-layer deeper. Anchoring to ``p[-1]`` makes the
-    absolute transit depth depend on ``art_nlayer`` (notes register #11).
+    absolute transit depth depend on ``art_nlayer``.
 
     lnp_art must be ascending (exojax orders its grid top-to-bottom).
     Returns (r_btm, g_btm) in cgs.
@@ -316,7 +317,7 @@ def _run_emis_ckd_linsap(art, dtau_g, T_boundary, nu_bands, gw, weight_g=None):
 
     exojax's ``ArtEmisPure.run_ckd`` hard-codes ``rtrun_emis_pureabs_ibased``,
     which has no bottom-boundary term, so every photon entering the grid from
-    below is lost (notes register #7, #8).
+    below is lost.
     This is upstream's own flatten-solve-reweight structure with
     ``ibased_linsap`` in its place, so CKD emission keeps the interior source
     term the solver carries.
@@ -605,10 +606,10 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
     opacia_he = trt._opacia_he
     _require_geometry(profile, "gs_cgs", "rp_cm")
     # Plane-parallel emission uses one gravity. Radius and gravity are
-    # re-anchored together at p_ref_emission_bar (notes register #12);
-    # ``emission_radius`` returns that radius. ``eclipse_flux_tau`` applies the
-    # per-k-ordinate tau = 2/3 radius (Fortney et al. 2019; register #24);
-    # ``emission_flux`` is the plain emergent flux.
+    # re-anchored together at p_ref_emission_bar (the transit radius with this
+    # gravity is 8.9% off in GM); ``emission_radius`` returns that radius.
+    # ``eclipse_flux_tau`` applies the per-k-ordinate tau = 2/3 radius
+    # (Fortney et al. 2019); ``emission_flux`` is the plain emergent flux.
     g_ref_em = float(profile["gs_cgs"])
     r_ref_em = float(profile["rp_cm"])
     p_ref_em = float(profile.get("p_ref_emission_bar",
@@ -634,7 +635,7 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
 
     # The grid follows the transmission model's (shared opacities, shared
     # column). ibased_linsap keeps the interior source term that "ibased" (and
-    # ArtEmisPure.run_ckd) drops (notes register #8); CKD emission runs
+    # ArtEmisPure.run_ckd) drops; CKD emission runs
     # _run_emis_ckd_linsap.
     art_nlayer = int(np.asarray(trt.p_art_bar).size)
     if "art_nlayer" in profile and int(profile["art_nlayer"]) != art_nlayer:

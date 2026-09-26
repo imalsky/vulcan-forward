@@ -236,7 +236,7 @@ class ConvDiag(NamedTuple):
     tangent_longdy: jnp.ndarray       # () float64 converged_y_jvp only: the tangent's
     #                                               longdy at exit (NaN on the primal path)
     budget_drift_max: jnp.ndarray     # () float64 max |X/H drift| of the column budget at
-    #                                               exit (C23)
+    #                                               exit
     budget_drift_atom: jnp.ndarray    # () int32   index into the runner's atom order
     #                                               (``atom_order``) of that maximum
 
@@ -435,7 +435,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     else:
         tw = time.time()
         rs_warmup = integ(rs)
-        # Diagnostic only (notes §2): end_case 1 is a certified exit on a
+        # Diagnostic only: end_case 1 is a certified exit on a
         # finite column. Nothing consumes the warm-up column, so False only
         # flags a configuration that may not converge (exported as
         # baseline_conv_normal).
@@ -774,7 +774,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
                                     vm=vm_new, vs=vs_new, g=g_i, dzi=dzi_i, Hpi=Hpi_i)
 
         # y_prev is the runner's revert target on a rejected step AND the state
-        # the C23 per-step accumulation differences against; state0 carries the
+        # the element-budget per-step accumulation differences against; state0 carries the
         # BASELINE column there, so it must be re-seeded with this theta's own.
         init = state0._replace(y=y0p, y_prev=y0p, ymix=ymix0, k_arr=k_arr, pv=pv_T,
                                mu=mu_i, g=g_i, Hp=Hp_i, dz=dz_i, zco=zco_i,

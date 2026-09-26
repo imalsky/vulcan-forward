@@ -3,7 +3,8 @@
 ``ckd.py`` holds HOW the opacity is integrated; this module supplies WHAT is
 integrated. ExoMolOP (Chubb et al. 2021, A&A 646, A21) publishes
 pre-computed opacities built from the ExoMol and HITEMP high-temperature line
-lists with H2/He broadening applied (why not HITRAN: notes.md §1.1). Its
+lists with H2/He broadening applied (not HITRAN: its 296 K tabulation and air
+broadening read window opacity low in a hot hydrogen atmosphere). Its
 petitRADTRANS-format k-tables (~389 MB per species) match the layout
 ``ckd`` uses, so this is an ingestion adapter, not a second
 opacity implementation.

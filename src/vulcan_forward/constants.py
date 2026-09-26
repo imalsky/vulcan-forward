@@ -46,14 +46,14 @@ CLOUD_NUC0 = 2857.0
 # ART pressure bounds (bar). Chemistry and RT share the model top (vulcan_chem
 # sets P_t from art_ptop_bar; interp_map refuses an uncovered ART grid). At
 # 1e-9 bar the top is converged: one decade higher moves the R=100 depth by
-# ~1 ppm (notes §1.2; vulcan-retrieval validation/top_pressure_ladder).
+# ~1 ppm (vulcan-retrieval validation/top_pressure_ladder).
 ART_PTOP_BAR = 1.0e-9   # model top
 ART_PBTM_BAR = 7.0      # grid bottom
 
 # Pressure (bar) at which rp_cm / gs_cgs apply: a published transit radius
 # belongs near the transmission photosphere, not the RT grid bottom where
-# exojax defines radius_btm. Validated on WASP-39 b (notes §1.2). Override with
-# profile["p_ref_bar"].
+# exojax defines radius_btm. On WASP-39 b, re-anchoring at 1 mbar reproduces the
+# JWST ERS 3.0-5.5 um median depth to 0.4%. Override with profile["p_ref_bar"].
 P_REF_BAR = 1.0e-3
 
 # The emission column probes MUCH deeper than the limb: the slant path is ~35-90x
@@ -132,7 +132,8 @@ MOLECULES = {
     "NO": {"vulcan": "NO", "molmass": 30.006},
     # Second-tier species: listed so the menu is complete;
     # jwst-transit-authority's EXTRA_MOLECULES_DEFAULT picks the defaults.
-    # Species ExoMolOP cannot supply (O2, CH3OH, HSO, S2, ...): notes §1.1.
+    # Absent because ExoMolOP cannot supply them: O2 (another band grid), CH3OH
+    # (no petitRADTRANS file), HSO (no published list), S2 (no IR dipole), ...
     "NS":   {"vulcan": "NS",   "molmass": 46.067},
     "CH3":  {"vulcan": "CH3",  "molmass": 15.035},
     "NH":   {"vulcan": "NH",   "molmass": 15.015},

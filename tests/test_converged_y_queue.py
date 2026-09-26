@@ -55,7 +55,8 @@ MIX_FLOOR = 1.0e-10   # cells below this carry no observable and no certificate
 REL_MAX = 5.0e-2
 # The queued tangent vs the batched one: a refilled lane's refresh cadence
 # differs. Theta 2 (loose-branch exit, bottom-layer sulfur still relaxing) has
-# no determined queue tangent (notes §0), so it keeps a wiring bound only.
+# no determined queue tangent (a 1e-12 lnZ nudge moves it by 6.8e-2), so it
+# keeps a wiring bound only.
 QUEUE_DY_MAX = 1.0e-2
 QUEUE_DY_MAX_UNSETTLED = 1.0
 UNSETTLED_THETAS = (2,)

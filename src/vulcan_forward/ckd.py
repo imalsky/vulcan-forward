@@ -1,8 +1,8 @@
 """Correlated-k core: (T, P) interpolation and overlap.
 
 exojax computes cross sections directly on the output grid and warns below
-R = 700,000, so a JWST-band model sampled at R ~ 1,500 is biased (notes.md
-§1.1). Correlated-k integrates once, offline, into a few g-ordinates per band.
+R = 700,000, so a JWST-band model sampled at R ~ 1,500 is biased. Correlated-k
+integrates once, offline, into a few g-ordinates per band.
 
 The k-tables themselves come from ExoMolOP (``vulcan_forward.exomolop``); this
 module holds the source-independent machinery that consumes them.
@@ -75,7 +75,7 @@ def fold(dts, gg, gw):
     order: the op sequence of a Python loop over the molecules, so the primal,
     jvp and vjp are bitwise the loop's on the CPU (other backends round inside
     their fusions differently). Under ONE ``lax.scan`` a reverse-mode gradient
-    keeps a third of the loop's memory and runs faster (notes §1.1).
+    keeps a third of the loop's memory and runs faster.
     """
     tot, _ = jax.lax.scan(lambda t, dt: (overlap(t, dt, gg, gw), None),
                           dts[0], dts[1:])

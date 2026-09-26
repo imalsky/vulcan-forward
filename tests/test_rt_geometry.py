@@ -4,8 +4,7 @@ Handing exojax the consumer's ``rp_cm``/``gs_cgs`` directly as
 ``radius_btm``/``gravity_btm`` places them at the LOWER boundary of the bottom
 layer. A catalogue planet radius is instead the transit radius, near the
 terminator photosphere at roughly a millibar, so that stacks the whole
-column on top of a radius that already was the photospheric one (notes
-register #10).
+column on top of a radius that already was the photospheric one.
 
 The tests are cheap: the real ``_radius_at`` / ``_anchor_to_grid_bottom``
 against an independent closed form and two physical invariants, with no line

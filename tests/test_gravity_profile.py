@@ -10,7 +10,8 @@ collapse onto, and neither raises:
   Using it leaves heights and opacity columns on different gravities.
 
 Against an independent chord quadrature the three differ by tens of ppm in
-transit depth (notes register #9): a real bias, not a rounding choice.
+transit depth (constant g -102 ppm, 1/r-linear -51 ppm, inverse-square
++1.5 ppm): a real bias, not a rounding choice.
 
 The test drives the helper with a tiny FAKE ART whose `atmosphere_height`
 returns known arrays, so it pins the algebra without building an opacity grid,
