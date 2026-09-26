@@ -620,7 +620,6 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
           f"{A0[1 + _names.index('C')] / A0[1 + _names.index('O')]:.4f}",
           flush=True)
 
-    _nC = np.asarray(compo[:, constants.ATOM_COLS["C"]], dtype=np.float64)
     _nO = np.asarray(compo[:, constants.ATOM_COLS["O"]], dtype=np.float64)
     _mC = np.asarray(carbon_mask)
     _mOo = np.asarray(o_only_mask)
@@ -650,19 +649,6 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         return bz_margin(y, _nO, _mC, _mOo)
 
     co_bz_bound = co_bz_margin(_y0_np)   # the build's initial column
-    if co_fixed_o:
-        # Build-time diagnostics for the fixed-O C/O knob: baseline C/O, how much of the
-        # column's O sits in C-carriers (sets the b_z compensation), and the worst-layer
-        # O-only share (b_z blows up where O-only carriers vanish).
-        _y0n = _y0_np
-        _C_tot = float((_y0n * _nC[None, :]).sum())
-        _O_tot = float((_y0n * _nO[None, :]).sum())
-        _OC_z = (_y0n * (_nO * _mC)[None, :]).sum(axis=1)
-        _OO_z = (_y0n * (_nO * _mOo)[None, :]).sum(axis=1)
-        print(f"[chem] fixed-O C/O knob: baseline C/O = {_C_tot/_O_tot:.4f} "
-              f"(ln = {np.log(_C_tot/_O_tot):+.4f}); O-in-C-carriers share "
-              f"median {np.median(_OC_z/(_OC_z+_OO_z)):.3f}, max {np.max(_OC_z/(_OC_z+_OO_z)):.3f} "
-              f"(b_z stays positive for c_o < {co_bz_bound:.2f})", flush=True)
 
     rep_cols_j = jnp.asarray(rep_cols)
 
@@ -703,7 +689,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
             # C-bearing species by e^c; compensate the O they drag along by
             # scaling O-only carriers by b_z = 1 + (1 - e^c)*O_Ccarriers/O_Oonly,
             # keeping each layer's O total invariant. Smooth in c_o -> AD-safe;
-            # b_z > 0 within the range printed at build.
+            # b_z > 0 while c_o_inc < co_bz_margin(base).
             OC_z = (base * (nO_per_species * carbon_mask)[None, :]).sum(axis=1)
             OO_z = (base * (nO_per_species * o_only_mask)[None, :]).sum(axis=1)
             b_z = 1.0 + (1.0 - jnp.exp(c_o_inc)) * OC_z / OO_z                # (nz,)
