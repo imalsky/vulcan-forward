@@ -55,8 +55,8 @@ CLOUD_NUC0 = 2857.0
 # on WASP-39 b); 1e-9 bar is where the column is CONVERGED in its top -- one
 # decade higher moves the R=100 depth by 1.14 ppm, against 14.65 ppm for a 1e-8
 # bar top (vulcan-retrieval validation/top_pressure_ladder).
-ART_PTOP_BAR = 1.0e-9
-ART_PBTM_BAR = 7.0
+ART_PTOP_BAR = 1.0e-9   # model top
+ART_PBTM_BAR = 7.0      # grid bottom
 
 # Pressure at which a consumer's rp_cm / gs_cgs are taken to be defined. A
 # published planet radius is the TRANSIT radius, so it belongs at roughly the
@@ -78,10 +78,15 @@ P_REF_BAR = 1.0e-3
 # tau = 2/3, as POSEIDON and PLATON II do: exojax_rt's eclipse_flux_tau.
 P_REF_EMISSION_BAR = 1.0e-1
 
-# Physical constants, cgs (CODATA 2018). Local so this module stays stdlib-only;
-# vulcan_jax.phy_const carries the same values for the chemistry side.
+# Physical constants and unit factors, cgs, local so this module stays
+# stdlib-only. K_B_CGS is CODATA 2018 (1.380649e-16). The chemistry uses
+# vulcan_jax.phy_const.kb = 1.38064852e-16 (CODATA 2014), upstream VULCAN's
+# value, so its rates match the reference code; the two differ by 3.5e-7
+# relative.
 K_B_CGS = 1.380649e-16      # Boltzmann constant, erg/K
 M_U_CGS = 1.66053906660e-24  # atomic mass unit, g (mmw is in amu)
+BAR_CGS = 1.0e6              # dyn/cm^2 per bar
+UM_PER_CM = 1.0e4            # micron per cm: wavelength (um) = UM_PER_CM / wavenumber (cm^-1)
 
 # Temperature window the consumers treat as the valid RT range: the retrieval
 # derives its T-P prior window from these (draws outside are rejected, never

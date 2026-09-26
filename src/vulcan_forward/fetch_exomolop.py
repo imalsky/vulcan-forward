@@ -51,6 +51,12 @@ ROOT = f"{BASE}/data/data-types/opacity"
 # resolution or span is not a substitute -- see resolve().
 GRID_TOKEN = "R1000_0.3-50mu"
 
+HTTP_RETRIES = 3           # attempts per page fetch
+RETRY_WAIT_S = 2.0         # pause between attempts
+PAGE_TIMEOUT_S = 90        # one HTML page
+DOWNLOAD_TIMEOUT_S = 600   # socket timeout while streaming a ~389 MB table
+CHUNK_BYTES = 1 << 20      # 1 MiB read size for the table stream
+
 # Line-list DOIs for the datasets whose shipped k-table header carries a
 # PLACEHOLDER instead of a DOI (`x.xxxx/yyyyy`, `xxxxxxx/xxxxxxxxx/xxxxxx`).
 # Recorded here so provenance.json can supply what the file cannot; consumers
@@ -76,7 +82,7 @@ def _record(url, ds, iso, nat):
     return rec
 
 
-def _get(url, retries=3):
+def _get(url, retries=HTTP_RETRIES):
     """Fetch a page or RAISE. Swallowing a network failure into "" made an
     offline run print "ExoMolOP publishes no k-table for this species" --
     indistinguishable from genuinely-unpublished (standing loud-errors rule).
@@ -85,12 +91,12 @@ def _get(url, retries=3):
     for k in range(retries):
         try:
             req = urllib.request.Request(url, headers={"User-Agent": UA})
-            with urllib.request.urlopen(req, timeout=90) as r:
+            with urllib.request.urlopen(req, timeout=PAGE_TIMEOUT_S) as r:
                 return r.read().decode("utf-8", "replace")
         except Exception as e:                                # noqa: BLE001
             last = e
             if k < retries - 1:
-                time.sleep(2.0)
+                time.sleep(RETRY_WAIT_S)
     raise RuntimeError(
         f"failed to fetch {url} after {retries} attempts: {last}. "
         "Cannot tell whether ExoMolOP publishes this species; fix the "
@@ -261,10 +267,10 @@ def fetch(molecules, force=False):
         t0 = time.time()
         try:
             req = urllib.request.Request(url, headers={"User-Agent": UA})
-            with urllib.request.urlopen(req, timeout=600) as r, \
+            with urllib.request.urlopen(req, timeout=DOWNLOAD_TIMEOUT_S) as r, \
                     open(tmp, "wb") as fh:
                 while True:
-                    chunk = r.read(1 << 20)
+                    chunk = r.read(CHUNK_BYTES)
                     if not chunk:
                         break
                     fh.write(chunk)

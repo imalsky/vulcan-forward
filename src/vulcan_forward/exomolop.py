@@ -31,6 +31,7 @@ stay importable stdlib-only.
 from __future__ import annotations
 
 import hashlib
+import math
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -54,6 +55,10 @@ METHOD = "petit_samples"
 # rounding of one published grid); table_info rounds its grid hash so tables
 # that agree to it share one key.
 _GRID_RTOL = 1.0e-12
+# Decimals table_info rounds to before hashing: the g-samples and weights at
+# _GRID_RTOL, the log10 of the t / p / band-edge grids at 1e-10.
+_HASH_DECIMALS = round(-math.log10(_GRID_RTOL))
+_HASH_LOG_DECIMALS = 10
 # The quadrature weights must sum to 1 to this tolerance (float64 rounding).
 _WEIGHT_SUM_RTOL, _WEIGHT_SUM_ATOL = 1.0e-10, 1.0e-12
 
@@ -228,8 +233,9 @@ def table_info(molecule: str) -> dict:
         digest = hashlib.sha256()
         for key in ("t", "p", "bin_edges", "samples", "weights"):
             values = arrays[key]
-            rounded = (np.round(np.log10(values), 10) if key in ("t", "p", "bin_edges")
-                       else np.round(values, 12))
+            rounded = (np.round(np.log10(values), _HASH_LOG_DECIMALS)
+                       if key in ("t", "p", "bin_edges")
+                       else np.round(values, _HASH_DECIMALS))
             rounded = np.ascontiguousarray(rounded, dtype="<f8")
             digest.update(np.asarray(rounded.shape, dtype="<i8").tobytes())
             digest.update(rounded.tobytes())
@@ -238,7 +244,8 @@ def table_info(molecule: str) -> dict:
     rec.update(molecule=molecule, file=path.name, n_bands=int(e.size - 1),
                t_range_k=[float(t[0]), float(t[-1])],
                p_range_bar=[float(p[0]), float(p[-1])],
-               wl_range_um=[float(1e4 / e[-1]), float(1e4 / e[0])],
+               wl_range_um=[float(constants.UM_PER_CM / e[-1]),
+                            float(constants.UM_PER_CM / e[0])],
                grid_sha256=digest.hexdigest(),
                band_resolution=float(np.median(resolving_power)))
     return rec

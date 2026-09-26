@@ -367,7 +367,8 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     # condensation pin bring their own grids.
     if "P_t" not in (profile.get("cfg_overrides") or {}):
         _ptop = profile.get("art_ptop_bar")
-        cfg.P_t = float(_ptop if _ptop is not None else constants.ART_PTOP_BAR) * 1.0e6
+        cfg.P_t = (float(_ptop if _ptop is not None else constants.ART_PTOP_BAR)
+                   * constants.BAR_CGS)
 
     from vulcan_jax.state import RunState, legacy_view
     from vulcan_jax import network as net_mod, composition, rates_jax
@@ -436,7 +437,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
               "on-graph at each proposed T", flush=True)
 
     pco = jnp.asarray(np.asarray(atm.pco, dtype=np.float64))
-    p_bar = np.asarray(atm.pco, dtype=np.float64) / 1.0e6
+    p_bar = np.asarray(atm.pco, dtype=np.float64) / constants.BAR_CGS
     p_bar_j = jnp.asarray(p_bar)   # bar-indexed grid for the optional tp_eval hook
 
     thermo_dir = resolve_data_path(cfg.network).parent
@@ -650,7 +651,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     # carries the custom_jvp); lnZ / c_o tangents enter through the exact
     # elemental projection below. Only cold solves (warm_y=None) use it.
     _ratio_idx = ratio_indices([e for e, _ in elem_pairs])
-    _p_bar_seed = jnp.asarray(np.asarray(pco, dtype=np.float64) / 1.0e6)
+    _p_bar_seed = jnp.asarray(np.asarray(pco, dtype=np.float64) / constants.BAR_CGS)
 
     def _eq_seed(T, ratios, M):
         """The equilibrium column as ABSOLUTE densities (nz, ni): eq_seed
@@ -957,7 +958,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     # VALUES never enter a closure and never cost a compile.
     _queue_fns = {}
 
-    def converged_y_queue(thetas, n_lanes, *, chunk=8, warm_y=None,
+    def converged_y_queue(thetas, n_lanes, *, chunk=None, warm_y=None,
                           lnZ_ref=0.0, c_o_ref=0.0, warm_cap=False):
         """``converged_y_batch`` on ``n_lanes`` lanes with refill from the job
         queue (vulcan-jax ``OuterLoop.run_queue``): a lane that certifies is
@@ -979,7 +980,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         ``lnZ_ref`` / ``c_o_ref`` (scalar or ``(N,)``) and ``warm_cap`` mean
         what they mean on ``converged_y_batch``: the references ride the jobs
         pytree, so each job is prepped at its own, and the cap rides the
-        carry."""
+        carry. ``chunk=None`` keeps vulcan-jax's own refill chunk."""
         key = (warm_y is not None, bool(warm_cap))
         fns = _queue_fns.get(key)
         if fns is None:
@@ -1006,9 +1007,10 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         # warm_y=None is an empty pytree node, so the same jobs pytree covers
         # the cold seed.
         lnZ_r, c_o_r = _ref_leaves(int(jnp.shape(thetas)[0]), lnZ_ref, c_o_ref)
+        chunk_kw = {} if chunk is None else {"chunk": int(chunk)}
         (y, cd), _n_iter = integ.run_queue(
             init_fn, (thetas, warm_y, lnZ_r, c_o_r), int(n_lanes), out_fn,
-            chunk=int(chunk))
+            **chunk_kw)
         return y, cd
 
     def converged_y_jvp(theta, tangent, warm_y=None, lnZ_ref=0.0, c_o_ref=0.0):

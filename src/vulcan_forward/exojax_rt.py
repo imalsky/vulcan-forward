@@ -41,12 +41,12 @@ from exojax.database.contdb import CdbCIA
 from exojax.rt.planck import piBarr
 from exojax.rt.rtransfer import rtrun_emis_pureabs_ibased_linsap
 
-_H2_MOLMASS, _HE_MOLMASS = 2.016, 4.0026   # g/mol, for the Rayleigh mmr conversion
+# g/mol, for the Rayleigh mmr conversion
+_H2_MOLMASS = 2.0 * constants.ATOMIC_MASSES[constants.ATOM_COLS["H"]]
+_HE_MOLMASS = constants.ATOMIC_MASSES[constants.ATOM_COLS["He"]]
 
-# bar -> dyn/cm^2, for per-MASS (cm^2/g of atmosphere) opacities: dtau = kappa*dP_cgs/g.
-# (exojax's layer_optical_depth folds bar_cgs/m_u into its opacity_factor because its
-# xs are per-molecule cross sections; a per-gram kappa must NOT pick up the 1/m_u.)
-_BAR_CGS = 1.0e6
+# exojax ArtEmisPure's default stream count.
+EMISSION_NSTREAM = 8
 
 def _check_profile(profile: dict) -> None:
     """Unknown keys raise (``constants.check_profile_keys``), and so does any
@@ -252,8 +252,10 @@ def _ckd_continuum(art, pack, opacia, opacia_he, vmr_h2, vmr_he,
         # ExoJax's shipped retrieval cloud (pRT convention, per gram of atmosphere).
         kappa_c = powerlaw_clouds(pack.nu_bands_j, kappac0=10.0 ** cloud[0],
                                   nuc0=constants.CLOUD_NUC0, alphac=cloud[1])
+        # kappa is per gram of atmosphere, so dtau = kappa * dP_cgs / g with no
+        # 1/m_u (exojax folds bar_cgs/m_u into its per-molecule opacity_factor).
         dP = jnp.asarray(art.dParr)
-        cont = cont + kappa_c[None, :] * (dP[:, None] * _BAR_CGS / g_btm)
+        cont = cont + kappa_c[None, :] * (dP[:, None] * constants.BAR_CGS / g_btm)
     return cont
 
 
@@ -609,7 +611,7 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
         transmission_depth=transmission_depth,
         transmission_depth_r=transmission_depth_r,
         nu_grid=np.asarray(nu_grid),
-        wl_um=1e4 / np.asarray(nu_grid),
+        wl_um=constants.UM_PER_CM / np.asarray(nu_grid),
         p_art_bar=p_art_bar,
         molecules=mols,
         # echo of the profile-overridable RT knobs, so downstream consumers
@@ -706,7 +708,7 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
             "share opacities and must share the column.")
     art = ArtEmisPure(nu_grid=nu_grid, pressure_top=trt.art_ptop_bar,
                       pressure_btm=trt.art_pbtm_bar, nlayer=art_nlayer,
-                      rtsolver="ibased_linsap", nstream=8)
+                      rtsolver="ibased_linsap", nstream=EMISSION_NSTREAM)
     lnp_em = jnp.asarray(np.log(np.asarray(art.pressure)))
     print(f"[rt] ArtEmisPure {art_nlayer} layers (shares opacities)", flush=True)
 
