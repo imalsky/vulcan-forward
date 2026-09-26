@@ -333,6 +333,21 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     vulcan_jax.validate_overrides(profile.get("cfg_overrides") or {})
     for _k, _v in (profile.get("cfg_overrides") or {}).items():
         setattr(cfg, _k, _v)
+    # `_prep` re-seeds the per-proposal ProfileVars fields but not these two,
+    # which would stay at the baseline column / temperature on every proposal.
+    if bool(cfg.use_fix_all_bot):
+        raise ValueError(
+            "use_fix_all_bot=True is not supported here: the per-proposal "
+            "rebuild (_prep) does not re-seed the bottom pin pv.bottom_n, so every "
+            "proposal would be pinned to the baseline bottom column. Set "
+            "use_fix_all_bot=False in the config or cfg_overrides.")
+    if list(cfg.T_cross_sp or []):
+        raise ValueError(
+            f"T_cross_sp={list(cfg.T_cross_sp)} is not supported here: the "
+            "per-proposal rebuild (_prep) does not rebuild the T-dependent cross "
+            "sections (pv.p_absp_T_cross, pv.p_cross_J_T), so photolysis would use "
+            "the baseline temperature. Set T_cross_sp=[] in the config or "
+            "cfg_overrides.")
     # Warm-continuation step cap for the MUTATION path only: a proposal still
     # unconverged at warm_count_max is headed for rejection, so cut the loop
     # there instead of dragging the lockstep batch to the cold cap. The cap
