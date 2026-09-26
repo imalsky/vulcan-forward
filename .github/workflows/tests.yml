@@ -4,9 +4,9 @@ name: tests
 # with no data installed, that the $VULCAN_FORWARD_DATA contract fails loudly
 # instead of guessing, that the molecule table is injectable, and that planet
 # geometry is required -- the properties the two consumer repos build on.
-# vulcan_jax IS installed (its speed branch), so the chemistry tests (batch,
-# queue, jvp) run too; the RT physics runs locally, where exojax and the data
-# are installed.
+# vulcan_jax IS installed (its speed branch), so the normal-tier chemistry
+# tests (batch, queue) run too; the RT physics runs locally, where exojax and
+# the data are installed.
 on:
   push:
     branches: [main, speed]
@@ -44,10 +44,9 @@ jobs:
           pip install --no-deps "exogibbs==0.6.0"
           pip install --no-deps "vulcan-jax @ git+https://github.com/imalsky/jax-vulcan.git@speed"
           pip install --no-deps -e .
-      # The two three-route gradient tests peak near 37 GB, above a hosted
-      # runner's 16 GB; they run in the local suite.
+      # The normal tier. The full tier (VULCAN_FORWARD_RUN_FULL=1) runs
+      # locally: its gradient tests peak near 21 GB, above a hosted runner's
+      # 16 GB, and three convergence-scale comparisons calibrated on daw
+      # failed on the runner's CPU (run 36254404095).
       - name: Run contract tests
-        run: >-
-          python -m pytest tests -q -ra
-          --deselect tests/test_converged_y_queue.py::test_two_stage_cold_gradient_three_routes
-          --deselect tests/test_converged_y_queue.py::test_warm_capped_gradient_three_routes
+        run: python -m pytest tests -q -ra

@@ -14,7 +14,7 @@ generating script verbatim.
 Gating (repo rule: never ``pytest.importorskip("exojax")`` at module scope):
 skips cleanly without exojax/h5py/the data root/the H2O k-table, so light CI
 is green and a local run with data executes everything. The 8-species case
-additionally wants VULCAN_FORWARD_RUN_E2E=1 (it loads eight k-tables).
+is in the full tier, VULCAN_FORWARD_RUN_FULL=1 (it loads eight k-tables).
 """
 from __future__ import annotations
 
@@ -128,8 +128,8 @@ def test_transmission_isothermal_h2o_matches_prt():
     _assert_stats(r, meta, "isothermal H2O radius vs pRT")
 
 
-@pytest.mark.skipif(os.environ.get("VULCAN_FORWARD_RUN_E2E") != "1",
-                    reason="8-species case: set VULCAN_FORWARD_RUN_E2E=1")
+@pytest.mark.skipif(os.environ.get("VULCAN_FORWARD_RUN_FULL") != "1",
+                    reason="8-species case, full tier: set VULCAN_FORWARD_RUN_FULL=1")
 def test_transmission_w39b_8species_matches_prt():
     z, meta = _load("prt_ref_w39b_8species_trans.npz")
     mols = ["H2O", "CH4", "CO", "CO2", "H2S", "SH", "SO", "SO2"]

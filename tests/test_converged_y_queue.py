@@ -17,17 +17,22 @@ Three properties:
   vulcan-retrieval's cold path runs -- keeps every theta certified and leaves
   the species the spectrum reads alone.
 
-The two acceptance tests at the bottom pin a consumer's batched GRADIENT
-against the per-theta solve: the cold two-stage map, and the WARM-capped
-mutation map with a per-lane reference composition.
+The acceptance tests at the bottom pin a consumer's batched GRADIENT against
+the per-theta solve: the cold two-stage map (batch and queue, one test each),
+and the WARM-capped mutation map with a per-lane reference composition.
 
 The measured differences are printed (``pytest -s``).
 
 Cheap profile: nz=20, photochemistry off, no build-time warm-up solve.
+
+Full tier (``VULCAN_FORWARD_RUN_FULL=1``): the gradient tests (minutes of
+compile and ~16 GB per route) and the two convergence-scale comparisons
+calibrated on daw that failed on the GitHub runner's CPU.
 """
 from __future__ import annotations
 
 import importlib.util
+import os
 
 import numpy as np
 import pytest
@@ -41,6 +46,9 @@ from vulcan_forward import vulcan_chem                       # noqa: E402
 
 import jax                                                   # noqa: E402
 import jax.numpy as jnp                                      # noqa: E402
+
+FULL = pytest.mark.skipif(os.environ.get("VULCAN_FORWARD_RUN_FULL") != "1",
+                          reason="full tier: set VULCAN_FORWARD_RUN_FULL=1")
 
 # dt_max: the production step cap (vulcan-retrieval's case sets 1e11 s).
 PROFILE = {"use_photo": False, "yconv_cri": 1.0e-2, "nz": 20,
@@ -104,6 +112,7 @@ def _report(tag, y_q, cd_q, y_b, cd_b):
         assert rel[obs].max() < REL_MAX
 
 
+@FULL
 def test_queue_agrees_with_the_batch_with_and_without_refill(chem, ref):
     """Four lanes for four thetas: nothing refills, so every job runs the
     plain batch's ticks. Started from one identical column (the model's y0,
@@ -207,6 +216,7 @@ def _dy_rel(dy, dy_ref, mix):
     return float(np.abs(dy - dy_ref)[obs].max() / np.abs(dy_ref[obs]).max())
 
 
+@FULL
 def test_queue_is_differentiable(chem, ref):
     """A plain ``jax.jvp`` runs through the queue, and through the batch.
 
@@ -264,7 +274,7 @@ def test_queue_is_differentiable(chem, ref):
         assert rel < REL_MAX
 
 
-# Three-route acceptance test (solo, batch, queue; plus the queue reversed) for
+# Gradient acceptance tests (solo, batch, queue; plus the queue reversed) for
 # the two-stage cold gradient with photochemistry on, which exercises the
 # tick-keyed photolysis and refresh cadences. warm_count_max is the production
 # mutation cap (1500) against a cold cap of 30000.
@@ -279,7 +289,9 @@ COL_MED = 1.0e-3
 DY_STACK_MAX = 2.0e-4
 
 
-@pytest.fixture(scope="module")
+# Function scope: a model keeps every program compiled on it (~16 GB per
+# route), so each test builds its own and frees them when it ends.
+@pytest.fixture
 def chem_photo():
     return vulcan_chem.build_chem_model(PHOTO_PROFILE)
 
@@ -291,9 +303,9 @@ def _stack_thetas(outs):
     return jax.tree_util.tree_map(lambda *xs: jnp.stack(xs), *outs)
 
 
-def _two_stage_routes(chem, th):
-    """(solo, batch, queue, queue-reversed) results of the two-stage cold map,
-    each ``(y (N, nz, ni), ConvDiag over N, dy (N, D, nz, ni))``."""
+def _two_stage_routes(chem, th, routes):
+    """The two-stage cold map on each named route ("solo", "batch", "queue",
+    "queue-rev"), each ``(y (N, nz, ni), ConvDiag over N, dy (N, D, nz, ni))``."""
     n_dir = th.shape[1]
     eye = jnp.eye(n_dir, dtype=jnp.float64)
 
@@ -340,10 +352,39 @@ def _two_stage_routes(chem, th):
                                                  lnZ_ref=0.0, c_o_ref=0.0),
             TH)
 
-    rev = queue(th[::-1])
-    rev = (rev[0][::-1], jax.tree_util.tree_map(lambda x: x[::-1], rev[1]),
-           rev[2][::-1])
-    return solo(th), batch(th), queue(th), rev
+    def rev(TH):
+        r = queue(TH[::-1])
+        return (r[0][::-1], jax.tree_util.tree_map(lambda x: x[::-1], r[1]),
+                r[2][::-1])
+
+    run = {"solo": solo, "batch": batch, "queue": queue, "queue-rev": rev}
+    return {name: run[name](th) for name in routes}
+
+
+def _check_routes(prefix, out):
+    """Every theta certifies on every route; its tangent is finite and nonzero.
+    Accept counts are printed only: the routes' photo / refresh cadences
+    differ, so they certify at different depths."""
+    for tag, r in out.items():
+        y, cd, dy = np.asarray(r[0]), r[1], np.asarray(r[2])
+        print(f"[{prefix}{tag}] conv_normal "
+              f"{np.asarray(cd.conv_normal).astype(int).tolist()} branch "
+              f"{np.asarray(cd.conv_branch).astype(int).tolist()} accept "
+              f"{np.asarray(cd.accept_count).astype(int).tolist()}", flush=True)
+        assert bool(np.all(np.asarray(cd.conv_normal))), tag
+        assert np.all(np.isfinite(y)) and np.all(np.isfinite(dy)), tag
+        assert float(np.abs(dy).max()) > 0.0, tag
+
+
+def _assert_spread(solo):
+    """Not vacuous: the four thetas are heterogeneous, so their columns differ
+    by far more than any route-to-route difference the tests allow."""
+    y0 = np.asarray(solo[0])
+    mix = y0[0] / y0[0].sum(axis=1, keepdims=True)
+    spread = float((np.abs(y0[1] - y0[0])
+                    / np.maximum(np.abs(y0[0]), 1e-300))[mix > MIX_FLOOR].max())
+    print(f"[spread] job1-vs-job0 column max rel {spread:.2e}", flush=True)
+    assert spread > COL_MAX
 
 
 def _cmp(tag, a, b, n_dir):
@@ -379,39 +420,41 @@ def _cmp(tag, a, b, n_dir):
         assert stack < DY_STACK_MAX
 
 
-def test_two_stage_cold_gradient_three_routes(chem_photo):
-    """The batched and queued cold GRADIENT agree with the per-theta one.
+# The cold map is split by route: each compiled route holds ~16 GB, and one
+# test running all four peaked at 35 GB. queue-vs-batch is not asserted: both
+# are bounded against the solo route, solved once per worker as arrays (its
+# model and programs are freed when the fixture returns).
+@pytest.fixture(scope="module")
+def cold_solo():
+    chem = vulcan_chem.build_chem_model(PHOTO_PROFILE)
+    solo = _two_stage_routes(chem, jnp.asarray(THETAS), ("solo",))["solo"]
+    return jax.tree_util.tree_map(np.asarray, solo)
 
-    Tangents finite, every theta certified on every route, columns and the
-    direction stack at the convergence scale. Accept counts are printed only:
-    the routes' photo / refresh cadences differ, so they certify at different
-    depths.
-    """
-    th = jnp.asarray(THETAS)
-    n_dir = int(th.shape[1])
-    solo, batch, queue, rev = _two_stage_routes(chem_photo, th)
-    for tag, r in (("solo", solo), ("batch", batch), ("queue", queue),
-                   ("queue-rev", rev)):
-        y, cd, dy = np.asarray(r[0]), r[1], np.asarray(r[2])
-        print(f"[{tag}] conv_normal {np.asarray(cd.conv_normal).astype(int).tolist()} "
-              f"branch {np.asarray(cd.conv_branch).astype(int).tolist()} "
-              f"accept {np.asarray(cd.accept_count).astype(int).tolist()}", flush=True)
-        # every theta certifies on every route, and its tangent is finite
-        assert bool(np.all(np.asarray(cd.conv_normal))), tag
-        assert np.all(np.isfinite(y)) and np.all(np.isfinite(dy)), tag
-        assert float(np.abs(dy).max()) > 0.0, tag
-    # Not vacuous: the four thetas are heterogeneous, so their columns differ by
-    # far more than any route-to-route difference below.
-    y0 = np.asarray(solo[0])
-    mix = y0[0] / y0[0].sum(axis=1, keepdims=True)
-    spread = float((np.abs(y0[1] - y0[0])
-                    / np.maximum(np.abs(y0[0]), 1e-300))[mix > MIX_FLOOR].max())
-    print(f"[spread] job1-vs-job0 column max rel {spread:.2e}", flush=True)
-    assert spread > COL_MAX
-    _cmp("batch-vs-solo", batch, solo, n_dir)
-    _cmp("queue-vs-batch", queue, batch, n_dir)
-    _cmp("queue-vs-solo", queue, solo, n_dir)
-    _cmp("queuerev-vs-queue", rev, queue, n_dir)
+
+@FULL
+def test_two_stage_cold_gradient_batch_matches_solo(chem_photo, cold_solo):
+    """The batched cold GRADIENT agrees with the per-theta one: every theta
+    certified, tangents finite, columns and the direction stack at the
+    convergence scale."""
+    out = {"solo": cold_solo,
+           **_two_stage_routes(chem_photo, jnp.asarray(THETAS), ("batch",))}
+    _check_routes("", out)
+    _assert_spread(cold_solo)
+    _cmp("batch-vs-solo", out["batch"], cold_solo, THETAS.shape[1])
+
+
+@FULL
+def test_two_stage_cold_gradient_queue_matches_solo(chem_photo, cold_solo):
+    """The queued cold GRADIENT agrees with the per-theta one, and with
+    itself with the thetas queued in reverse order (refilled lanes take other
+    jobs at other ticks)."""
+    out = {"solo": cold_solo,
+           **_two_stage_routes(chem_photo, jnp.asarray(THETAS),
+                               ("queue", "queue-rev"))}
+    _check_routes("", out)
+    _assert_spread(cold_solo)
+    _cmp("queue-vs-solo", out["queue"], cold_solo, THETAS.shape[1])
+    _cmp("queuerev-vs-queue", out["queue-rev"], out["queue"], THETAS.shape[1])
 
 
 def _warm_routes(chem, th, yw, r0, r1):
@@ -460,12 +503,12 @@ def _warm_routes(chem, th, yw, r0, r1):
     return solo(th), batch(th), queue(th), rev
 
 
+@FULL
 def test_warm_capped_gradient_three_routes(chem_photo):
     """The batched and queued WARM mutation gradient agree with the per-theta one.
 
     vulcan-retrieval's warm mutation kernel: per-lane cap, carried column and
-    reference composition; the same bars as the cold test. Accept counts are
-    printed only (the loose branch can fire at different depths).
+    reference composition; the same bars as the cold tests.
     """
     chem = chem_photo
     th0 = jnp.asarray(THETAS)
@@ -478,16 +521,8 @@ def test_warm_capped_gradient_three_routes(chem_photo):
     r0, r1 = th0[:, 0], th0[:, 1]
     assert len(set(np.asarray(THETAS)[:, 0].tolist())) > 1   # references differ
     solo, batch, queue, rev = _warm_routes(chem, th1, yw, r0, r1)
-    for tag, r in (("solo", solo), ("batch", batch), ("queue", queue),
-                   ("queue-rev", rev)):
-        y, cd, dy = np.asarray(r[0]), r[1], np.asarray(r[2])
-        print(f"[warm {tag}] conv_normal "
-              f"{np.asarray(cd.conv_normal).astype(int).tolist()} branch "
-              f"{np.asarray(cd.conv_branch).astype(int).tolist()} accept "
-              f"{np.asarray(cd.accept_count).astype(int).tolist()}", flush=True)
-        assert bool(np.all(np.asarray(cd.conv_normal))), tag
-        assert np.all(np.isfinite(y)) and np.all(np.isfinite(dy)), tag
-        assert float(np.abs(dy).max()) > 0.0, tag
+    _check_routes("warm ", {"solo": solo, "batch": batch, "queue": queue,
+                            "queue-rev": rev})
     _cmp("warm batch-vs-solo", batch, solo, n_dir)
     _cmp("warm queue-vs-batch", queue, batch, n_dir)
     _cmp("warm queue-vs-solo", queue, solo, n_dir)

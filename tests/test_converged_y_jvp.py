@@ -16,10 +16,15 @@ A second model leaves the endpoint free, so there the tangent certificate
 decides when the run stops.
 
 Cheap profile: nz=20, photochemistry off, no build-time warm-up solve.
+
+Full tier (``VULCAN_FORWARD_RUN_FULL=1``): compiling the tangent runner takes
+~2 min per tangent shape, and the free-endpoint warm jvp ran to its cap with a
+diverged tangent on the GitHub runner's CPU.
 """
 from __future__ import annotations
 
 import importlib.util
+import os
 
 import numpy as np
 import pytest
@@ -32,6 +37,9 @@ if importlib.util.find_spec("vulcan_jax") is None:           # pragma: no cover
 from vulcan_forward import vulcan_chem                       # noqa: E402
 
 import jax.numpy as jnp                                      # noqa: E402
+
+pytestmark = pytest.mark.skipif(os.environ.get("VULCAN_FORWARD_RUN_FULL") != "1",
+                                reason="full tier: set VULCAN_FORWARD_RUN_FULL=1")
 
 K = 40
 PROFILE = {"use_photo": False, "yconv_cri": 1.0e-2, "nz": 20,
