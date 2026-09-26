@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import re
 import sys
@@ -279,6 +280,7 @@ def fetch(molecules, force=False):
 
 
 def main(argv=None):
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--molecules", required=True,
                     help="comma-separated, e.g. H2O,CO2,CO,CH4,SO2")

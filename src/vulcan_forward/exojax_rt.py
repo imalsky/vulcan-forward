@@ -18,6 +18,7 @@ profile asking for any other ``opacity_mode`` is refused.
 """
 from __future__ import annotations
 
+import logging
 import time
 from types import SimpleNamespace
 
@@ -37,6 +38,8 @@ from exojax.atm.polarizability import polarizability as _POLARIZABILITY
 from exojax.database.contdb import CdbCIA
 from exojax.rt.planck import piBarr
 from exojax.rt.rtransfer import rtrun_emis_pureabs_ibased_linsap
+
+logger = logging.getLogger(__name__)
 
 # g/mol, for the Rayleigh mmr conversion
 _H2_MOLMASS = 2.0 * constants.ATOMIC_MASSES[constants.ATOM_COLS["H"]]
@@ -442,10 +445,9 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
         integration=integration)
     p_art_bar = np.asarray(art.pressure)   # ascending: exojax builds it top-to-bottom
     lnp_art = jnp.asarray(np.log(p_art_bar))
-    print(f"[rt] ArtTransPure {profile['art_nlayer']} layers, "
-          f"P=[{p_art_bar.min():.1e},{p_art_bar.max():.1e}] bar, "
-          f"chord integration {integration}",
-          flush=True)
+    logger.info(f"[rt] ArtTransPure {profile['art_nlayer']} layers, "
+                f"P=[{p_art_bar.min():.1e},{p_art_bar.max():.1e}] bar, "
+                f"chord integration {integration}")
 
     def _cia(path, label):
         cdb = CdbCIA(str(path), nurange=nu_grid)
@@ -456,10 +458,11 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
     if not cia_h2h2.exists():
         # exojax auto-fetches it (~24 MB from hitran.org), but its downloader
         # swallows failures -- say up front what is about to happen so an
-        # offline failure is attributable.
-        print(f"[rt] H2-H2 CIA absent at {cia_h2h2}; exojax will "
-              "download ~24 MB from https://hitran.org/data/CIA/main/"
-              "H2-H2_2011.cia now (network required)", flush=True)
+        # offline failure is attributable (WARNING, so it shows even when the
+        # caller has not configured logging).
+        logger.warning(f"[rt] H2-H2 CIA absent at {cia_h2h2}; exojax will "
+                       "download ~24 MB from https://hitran.org/data/CIA/main/"
+                       "H2-H2_2011.cia now (network required)")
     opacia = _cia(cia_h2h2, "H2-H2")
     # H2-He CIA is required physics (He is ~14% by number): without it the
     # spectrum would lose a real continuum term with no error.
@@ -470,7 +473,7 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
             "https://hitran.org/data/CIA/main/H2-He_2011.cia (~147 MB; the "
             "/main/ segment is required) to that path.")
     opacia_he = _cia(cia_h2he, "H2-He")
-    print(f"[rt] CIA + RT built; total {time.time()-t0:.1f}s", flush=True)
+    logger.info(f"[rt] CIA + RT built; total {time.time()-t0:.1f}s")
 
     # H2/He Rayleigh cross sections (nu-only, precomputed once; opt-in via profile)
     if profile.get("use_rayleigh", False):
@@ -478,7 +481,7 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
             xsvector_rayleigh_gas(nu_grid, _POLARIZABILITY["H2"]),
             xsvector_rayleigh_gas(nu_grid, _POLARIZABILITY["He"]),
         )
-        print("[rt] H2/He Rayleigh scattering enabled", flush=True)
+        logger.info("[rt] H2/He Rayleigh scattering enabled")
     else:
         rayleigh_xs = None
 
@@ -647,7 +650,7 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
                       pressure_btm=trt.art_pbtm_bar, nlayer=art_nlayer,
                       rtsolver="ibased_linsap", nstream=EMISSION_NSTREAM)
     lnp_em = jnp.asarray(np.log(np.asarray(art.pressure)))
-    print(f"[rt] ArtEmisPure {art_nlayer} layers (shares opacities)", flush=True)
+    logger.info(f"[rt] ArtEmisPure {art_nlayer} layers (shares opacities)")
 
     def _dtau(vmr, vmr_h2, vmr_he, T_art, mmw_art, g_em, cloud):
         return _accumulate_dtau_ckd(

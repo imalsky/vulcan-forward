@@ -29,10 +29,12 @@ end-to-end route.
 """
 from __future__ import annotations
 
+import logging
 import os
 import sys
 import tempfile
 import time
+import warnings
 from pathlib import Path
 from types import SimpleNamespace
 from typing import NamedTuple
@@ -40,6 +42,8 @@ from typing import NamedTuple
 import numpy as np
 
 from vulcan_forward import constants
+
+logger = logging.getLogger(__name__)
 
 # This module must own the first jax import: it fixes the VULCAN_JAX_* import-frozen
 # env vars and jax x64. If exojax got in first those knobs are already baked wrong.
@@ -400,10 +404,10 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
                 f"condense_sp entries {inert} have no condensation reaction in "
                 f"network {cfg.network!r} and are not in use_relax -- they would "
                 "silently not condense. Remove them or add the reaction/relax.")
-        print(f"[chem] condensation ON: kinetics rows {list(conden_spec.gas_names)}, "
-              f"relax H2O={conden_spec.h2o_active} NH3={conden_spec.nh3_active}, "
-              f"fix_species={list(conden_spec.fix_names)}; conden arrays rebuilt "
-              "on-graph at each proposed T", flush=True)
+        logger.info(f"[chem] condensation ON: kinetics rows {list(conden_spec.gas_names)}, "
+                    f"relax H2O={conden_spec.h2o_active} NH3={conden_spec.nh3_active}, "
+                    f"fix_species={list(conden_spec.fix_names)}; conden arrays rebuilt "
+                    "on-graph at each proposed T")
 
     pco = jnp.asarray(np.asarray(atm.pco, dtype=np.float64))
     p_bar = np.asarray(atm.pco, dtype=np.float64) / constants.BAR_CGS
@@ -423,9 +427,9 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     integ = outer_loop.OuterLoop(solver, op.Output(cfg=cfg), cfg=cfg)
     solver.naming_solver(para)
     skip_warmup = bool(profile.get("skip_warmup", False))
-    print(f"[chem] setup {time.time() - t0:.1f}s; nz={nz} ni={ni} photo={cfg.use_photo}; "
-          + ("runner closure only (skip_warmup)" if skip_warmup
-             else "warming up runner ..."), flush=True)
+    logger.info(f"[chem] setup {time.time() - t0:.1f}s; nz={nz} ni={ni} photo={cfg.use_photo}; "
+                + ("runner closure only (skip_warmup)" if skip_warmup
+                   else "warming up runner ..."))
     if skip_warmup:
         # Forward-only consumers skip the solve and build only the runner
         # closure; the XLA compile happens on the first real solve.
@@ -442,13 +446,14 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         _w_end = int(rs_warmup.params.end_case)
         baseline_conv_normal = _w_end == 1
         if not baseline_conv_normal:
-            print(f"[chem] WARNING: the warm-up solve did not end certified "
-                  f"(end_case={_w_end}, termination_reason="
-                  f"{int(rs_warmup.params.termination_reason)}, longdy="
-                  f"{float(rs_warmup.step.longdy):.3e}). Its column is not "
-                  f"used, but this configuration may not converge.", flush=True)
-        print(f"[chem] warm-up converge {time.time() - tw:.1f}s "
-              f"(certified: {baseline_conv_normal})", flush=True)
+            warnings.warn(f"[chem] the warm-up solve did not end certified "
+                          f"(end_case={_w_end}, termination_reason="
+                          f"{int(rs_warmup.params.termination_reason)}, longdy="
+                          f"{float(rs_warmup.step.longdy):.3e}). Its column is not "
+                          f"used, but this configuration may not converge.",
+                          stacklevel=2)
+        logger.info(f"[chem] warm-up converge {time.time() - tw:.1f}s "
+                    f"(certified: {baseline_conv_normal})")
 
     # --- runner-carry budget/scheme seeding --------------------------------
     # The termination budget and diffusion blend live on the carry, and state0
@@ -463,8 +468,8 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     hybrid_v = use_vm_mol_v and bool(cfg.use_hybrid_vm_mol)
     _warm_note = ("; warm continuation pinned to central difference (the "
                   "converged phase-1 operator)" if hybrid_v else "")
-    print(f"[chem] diffusion scheme: use_vm_mol={use_vm_mol_v} "
-          f"hybrid={hybrid_v}{_warm_note}", flush=True)
+    logger.info(f"[chem] diffusion scheme: use_vm_mol={use_vm_mol_v} "
+                f"hybrid={hybrid_v}{_warm_note}")
 
     def _runner_carry_seed(init, *, warm_continuation, warm_cap):
         """Re-seed the carry's live termination budget + diffusion blend for the
@@ -587,12 +592,11 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     cscale_kind = jnp.asarray(_ck)
     R0_j = jnp.asarray(R0_ratios)
     _names = [e for e, _ in elem_pairs]
-    print("[chem] elemental mode: exact column ratios to H via repair species "
-          f"{[sp for _, sp in elem_pairs]}"
-          + (f" (absent: {missing})" if missing else "")
-          + "; baseline C/O = "
-          f"{A0[1 + _names.index('C')] / A0[1 + _names.index('O')]:.4f}",
-          flush=True)
+    logger.info("[chem] elemental mode: exact column ratios to H via repair species "
+                f"{[sp for _, sp in elem_pairs]}"
+                + (f" (absent: {missing})" if missing else "")
+                + "; baseline C/O = "
+                f"{A0[1 + _names.index('C')] / A0[1 + _names.index('O')]:.4f}")
 
     _nO = np.asarray(compo[:, constants.ATOM_COLS["O"]], dtype=np.float64)
     _mC = np.asarray(carbon_mask)

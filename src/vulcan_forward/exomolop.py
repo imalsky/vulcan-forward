@@ -17,7 +17,7 @@ Two things differ from a textbook table:
 * The PRESSURE grid stops at 1e-5 bar while the RT column runs to 1e-9 bar.
   ``ckd._interp_logk`` clamps, so the layers above use the 1e-5 bar entry
   (lines are Doppler-dominated there; petitRADTRANS does the same).
-  ``load_tables`` prints this assumption.
+  ``load_tables`` logs this assumption.
 
 UNITS: ``kcoeff`` is cm^2 per MOLECULE, the convention
 ``opacity_profile_xs_ckd`` consumes. ``_header`` refuses a file whose
@@ -32,6 +32,7 @@ stay importable stdlib-only.
 from __future__ import annotations
 
 import hashlib
+import logging
 import math
 from pathlib import Path
 from types import SimpleNamespace
@@ -39,6 +40,8 @@ from types import SimpleNamespace
 import numpy as np
 
 from vulcan_forward import constants, paths
+
+logger = logging.getLogger(__name__)
 
 # log k floor. Their tables contain exact zeros where a species has no lines
 # in a band; log(0) would poison the interpolation with -inf, and a zero cross
@@ -333,14 +336,13 @@ def load_tables(molecules, nu_min, nu_max, *, molecule_table=None,
     sub_edges, t_grid, p_grid, gg, gw = (
         ref[k] for k in ("bin_edges", "t", "p", "samples", "weights"))
     if verbose:
-        print(f"[ckd] ExoMolOP: {len(mols)} species, {sub_edges.size - 1} bands "
-              f"over [{sub_edges[0]:.1f},{sub_edges[-1]:.1f}] cm^-1, ng={gg.size}, "
-              f"T {t_grid[0]:.0f}-{t_grid[-1]:.0f} K, "
-              f"P {p_grid[0]:.1e}-{p_grid[-1]:.1e} bar", flush=True)
-        print(f"[ckd]   the table's pressure floor is "
-              f"{p_grid[0]:.1e} bar; RT layers above it reuse that entry "
-              "(k is Doppler-dominated and pressure-independent there).",
-              flush=True)
+        logger.info(f"[ckd] ExoMolOP: {len(mols)} species, {sub_edges.size - 1} bands "
+                    f"over [{sub_edges[0]:.1f},{sub_edges[-1]:.1f}] cm^-1, ng={gg.size}, "
+                    f"T {t_grid[0]:.0f}-{t_grid[-1]:.0f} K, "
+                    f"P {p_grid[0]:.1e}-{p_grid[-1]:.1e} bar")
+        logger.info(f"[ckd]   the table's pressure floor is "
+                    f"{p_grid[0]:.1e} bar; RT layers above it reuse that entry "
+                    "(k is Doppler-dominated and pressure-independent there).")
 
     return SimpleNamespace(
         logk=out, band_edges=sub_edges,
