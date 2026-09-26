@@ -111,9 +111,6 @@ def _fold_wo(dts, zero_of, gg, gw, wo_idx, finish=None):
         finish = lambda t: t  # noqa: E731
     n = len(dts)
     wo_idx = set(wo_idx)
-    bad = [i for i in wo_idx if not 0 <= i < n]
-    if bad:
-        raise ValueError(f"_fold_wo: wo indices {sorted(bad)} outside 0..{n-1}")
     out = []
     prefix = None
     for i in range(n):

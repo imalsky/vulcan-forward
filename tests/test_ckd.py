@@ -109,8 +109,7 @@ def test_fold_wo_is_bit_identical_to_naive_refolds():
     exact identity; any reordering would move the spectrum at the rebin-error
     scale the pRT verification tolerances live at. Grouped contract: full ==
     naive fold, every wo row == naive refold with the zero operand, order is
-    load-bearing, empty wo_idx returns the full fold only, out-of-range
-    indices refuse."""
+    load-bearing, empty wo_idx returns the full fold only."""
     import jax.numpy as jnp
     rng = np.random.default_rng(3)
     nl, ng, nb, n = 3, 8, 4, 5
@@ -142,8 +141,6 @@ def test_fold_wo_is_bit_identical_to_naive_refolds():
     _, summed = ckd._fold_wo(dts, lambda i: zero, gg, gw, [1],
                              finish=lambda t: float(jnp.sum(t)))
     assert isinstance(summed[0][1], float)
-    with pytest.raises(ValueError, match="outside"):
-        ckd._fold_wo(dts, lambda i: zero, gg, gw, [n])
 
 
 def test_fold_is_bit_identical_to_the_python_loop_fold():

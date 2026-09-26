@@ -285,7 +285,10 @@ def load_tables(molecules, nu_min, nu_max, *, molecule_table=None,
     mols = list(molecules)
     unknown = [m for m in mols if m not in tbl]
     if unknown:
-        raise KeyError(f"no molecule spec for {unknown} in the molecule table")
+        raise KeyError(
+            f"no molecule spec for {unknown} in the molecule table "
+            f"(have: {sorted(tbl)}). Pass profile['molecule_table'] with one "
+            "entry per molecule: vulcan, molmass.")
     if len(set(mols)) != len(mols):
         # the fold adds one opacity per list entry, so a repeat counts twice
         raise ValueError(f"molecules {mols} name a species more than once; "

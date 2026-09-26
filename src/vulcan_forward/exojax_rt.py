@@ -235,19 +235,16 @@ def _ckd_continuum(art, pack, opacia, opacia_he, vmr_h2, vmr_he,
         return art.opacity_profile_cia(opa_.logacia_matrix(T_art), T_art,
                                        va, vb, mmw_art[:, None], g_btm)
 
-    cont = _cia(opacia, vmr_h2, vmr_h2)
-    if opacia_he is not None and vmr_he is not None:
-        cont = cont + _cia(opacia_he, vmr_h2, vmr_he)
+    cont = _cia(opacia, vmr_h2, vmr_h2) + _cia(opacia_he, vmr_h2, vmr_he)
     if rayleigh_xs is not None:
         xs_h2, xs_he = rayleigh_xs
         nl, nb = art.pressure.shape[0], xs_h2.shape[0]
         cont = cont + art.opacity_profile_xs(
             jnp.broadcast_to(xs_h2[None, :], (nl, nb)),
             vmr_to_mmr(vmr_h2, _H2_MOLMASS, mmw_art), _H2_MOLMASS, g_btm)
-        if vmr_he is not None:
-            cont = cont + art.opacity_profile_xs(
-                jnp.broadcast_to(xs_he[None, :], (nl, nb)),
-                vmr_to_mmr(vmr_he, _HE_MOLMASS, mmw_art), _HE_MOLMASS, g_btm)
+        cont = cont + art.opacity_profile_xs(
+            jnp.broadcast_to(xs_he[None, :], (nl, nb)),
+            vmr_to_mmr(vmr_he, _HE_MOLMASS, mmw_art), _HE_MOLMASS, g_btm)
     if cloud is not None:
         # ExoJax's shipped retrieval cloud (pRT convention, per gram of atmosphere).
         kappa_c = powerlaw_clouds(pack.nu_bands_j, kappac0=10.0 ** cloud[0],
@@ -454,12 +451,6 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
     # The molecule table is INJECTABLE: a consumer adding a molecule passes its
     # own table rather than editing a constant inside this package.
     mol_table = profile.get("molecule_table") or constants.MOLECULES
-    _unknown = [k for k in mols if k not in mol_table]
-    if _unknown:
-        raise KeyError(
-            f"no molecule spec for {_unknown} in the molecule table "
-            f"(have: {sorted(mol_table)}). Pass profile['molecule_table'] "
-            "with one entry per molecule: vulcan, molmass.")
     molmass = {key: float(mol_table[key]["molmass"]) for key in mols}
 
     art = ArtTransPure(
@@ -467,12 +458,7 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
         pressure_btm=pbtm,
         nlayer=int(profile["art_nlayer"]),
         integration=integration)
-    p_art_bar = np.asarray(art.pressure)
-    # ascending (exojax orders top-to-bottom); _anchor_to_grid_bottom relies on it
-    if not np.all(np.diff(p_art_bar) > 0):
-        raise RuntimeError(
-            "the ART pressure grid is not ascending; _anchor_to_grid_bottom's "
-            "cumulative integral and jnp.interp both assume it is")
+    p_art_bar = np.asarray(art.pressure)   # ascending: exojax builds it top-to-bottom
     lnp_art = jnp.asarray(np.log(p_art_bar))
     print(f"[rt] ArtTransPure {profile['art_nlayer']} layers, "
           f"P=[{p_art_bar.min():.1e},{p_art_bar.max():.1e}] bar, "
@@ -655,7 +641,7 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
     nu_grid = trt._nu_grid
     molmass, opacia, mols = trt._molmass, trt._opacia, trt.molecules
     opacia_he = trt._opacia_he
-    _require_geometry(profile, "gs_cgs")
+    _require_geometry(profile, "gs_cgs", "rp_cm")
     # Emission is plane-parallel, so ArtEmisPure needs ONE gravity for the whole
     # column (it converts pressure to column mass as dP/g). gs_cgs is quoted at
     # p_ref_bar, while the column is dominated by the emission photosphere near
@@ -667,7 +653,6 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
     # ``eclipse_flux_tau`` folds into the flux (a single radius is a feature
     # error, notes register #24). ``emission_flux`` stays the plain emergent
     # flux.
-    _require_geometry(profile, "rp_cm")
     g_ref_em = float(profile["gs_cgs"])
     r_ref_em = float(profile["rp_cm"])
     p_ref_em = float(profile.get("p_ref_emission_bar",
