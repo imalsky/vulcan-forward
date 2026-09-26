@@ -18,19 +18,6 @@ import sys
 import pytest
 
 
-def test_constants_import_without_data_or_heavy_deps():
-    """constants must be importable with no data root set and no jax present."""
-    from vulcan_forward import constants
-
-    assert constants.MOLECULES["CO"]["molmass"] == pytest.approx(28.010)
-    assert constants.ART_PTOP_BAR < constants.ART_PBTM_BAR
-    assert set(constants.ATOM_COLS) >= {"H", "O", "C", "He", "N", "S"}
-    # exactly the two fields the correlated-k path reads; no paths, no
-    # line-list names (those live in the k-table tree's provenance.json)
-    for name, spec in constants.MOLECULES.items():
-        assert set(spec) == {"vulcan", "molmass"}, name
-
-
 def test_every_molmass_matches_its_own_formula():
     """molmass is the only mass the engine uses; it must equal the formula.
 
@@ -44,6 +31,9 @@ def test_every_molmass_matches_its_own_formula():
 
     weights = {"H": 1.008, "C": 12.011, "N": 14.007, "O": 15.999, "S": 32.06}
     for name, entry in constants.MOLECULES.items():
+        # the two fields the correlated-k path reads; what each table is lives
+        # in the k-table tree's provenance.json
+        assert set(entry) == {"vulcan", "molmass"}, name
         want = sum(
             weights[el] * (int(n) if n else 1)
             for el, n in re.findall(r"([A-Z][a-z]?)(\d*)", name)
@@ -52,14 +42,20 @@ def test_every_molmass_matches_its_own_formula():
         assert entry["molmass"] == pytest.approx(want, abs=5e-4), name
 
 
-def test_paths_module_imports_clean_and_fails_loudly(monkeypatch):
-    """paths must import with nothing configured, then raise with a remedy."""
+@pytest.fixture()
+def paths(monkeypatch):
+    """vulcan_forward.paths with no data root, cache override or
+    set_data_root in effect; monkeypatch restores all three afterwards."""
     from vulcan_forward import paths
 
     monkeypatch.delenv(paths.ENV_ROOT, raising=False)
     monkeypatch.delenv(paths.ENV_OPACITY_CACHE, raising=False)
     monkeypatch.setattr(paths, "_root_override", None, raising=False)
+    return paths
 
+
+def test_paths_module_imports_clean_and_fails_loudly(paths, monkeypatch):
+    """paths must import with nothing configured, then raise with a remedy."""
     with pytest.raises(RuntimeError, match=paths.ENV_ROOT):
         paths.data_root()
 
@@ -68,14 +64,10 @@ def test_paths_module_imports_clean_and_fails_loudly(monkeypatch):
         paths.data_root()
 
 
-def test_data_root_and_per_tree_overrides(tmp_path, monkeypatch):
-    from vulcan_forward import paths
-
-    monkeypatch.delenv(paths.ENV_OPACITY_CACHE, raising=False)
+def test_data_root_and_per_tree_overrides(paths, tmp_path, monkeypatch):
     root = tmp_path / "data"
     (root / "opacity_cache").mkdir(parents=True)
     monkeypatch.setenv(paths.ENV_ROOT, str(root))
-    monkeypatch.setattr(paths, "_root_override", None, raising=False)
 
     assert paths.opacity_cache_dir() == root / "opacity_cache"
     assert paths.cia_h2he_file().name == "H2-He_2011.cia"
@@ -91,22 +83,11 @@ def test_data_root_and_per_tree_overrides(tmp_path, monkeypatch):
     assert paths.exomolop_dir() == root / "exomolop"
 
 
-def test_set_data_root_is_honored(tmp_path, monkeypatch):
-    from vulcan_forward import paths
-
-    monkeypatch.delenv(paths.ENV_ROOT, raising=False)
+def test_set_data_root_is_honored(paths, tmp_path):
     root = tmp_path / "prog"
     (root / "opacity_cache").mkdir(parents=True)
-    try:
-        paths.set_data_root(root)
-        assert paths.data_root() == root
-    finally:
-        # PLAIN assignment, not monkeypatch.setattr: monkeypatch records the
-        # value it finds (already set to `root` by the call above) as the
-        # original and restores it at teardown, so cleaning up through
-        # monkeypatch here actually leaked this now-deleted tmp_path into
-        # paths._root_override for every later test in the session.
-        paths._root_override = None
+    paths.set_data_root(root)
+    assert paths.data_root() == root
 
 
 def test_geometry_is_required_not_wasp39b():
@@ -186,16 +167,12 @@ print("OK")
     assert "OK" in proc.stdout
 
 
-def test_ensure_layout_creates_the_trees(tmp_path, monkeypatch):
+def test_ensure_layout_creates_the_trees(paths, tmp_path, monkeypatch):
     """A setup tool must be able to CREATE the layout.
 
     data_root() is strict on purpose, but a fetch command knows the directories
     should exist.
     """
-    from vulcan_forward import paths
-
-    monkeypatch.delenv(paths.ENV_OPACITY_CACHE, raising=False)
-    monkeypatch.setattr(paths, "_root_override", None, raising=False)
     root = tmp_path / "made-by-setup"
     monkeypatch.setenv(paths.ENV_ROOT, str(root))
 

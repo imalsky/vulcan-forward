@@ -38,7 +38,6 @@ import pytest
 if importlib.util.find_spec("vulcan_jax") is None:           # pragma: no cover
     pytest.skip("vulcan_jax not installed (light-CI environment)",
                 allow_module_level=True)
-pytest.importorskip("jax", reason="the batched runner is JAX code")
 
 from vulcan_forward import vulcan_chem                       # noqa: E402
 
@@ -77,10 +76,7 @@ SPECIES_MAX = 1.0e-3
 
 @pytest.fixture(scope="module")
 def chem():
-    try:
-        return vulcan_chem.build_chem_model(PROFILE)
-    except (FileNotFoundError, OSError) as e:                # pragma: no cover
-        pytest.skip(f"chem model data unavailable: {e}")
+    return vulcan_chem.build_chem_model(PROFILE)
 
 
 @pytest.fixture(scope="module")
@@ -308,10 +304,7 @@ DY_STACK_MAX = 2.0e-4
 
 @pytest.fixture(scope="module")
 def chem_photo():
-    try:
-        return vulcan_chem.build_chem_model(PHOTO_PROFILE)
-    except (FileNotFoundError, OSError) as e:                # pragma: no cover
-        pytest.skip(f"chem model data unavailable: {e}")
+    return vulcan_chem.build_chem_model(PHOTO_PROFILE)
 
 
 def _stack_thetas(outs):

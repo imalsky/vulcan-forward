@@ -36,7 +36,6 @@ import pytest
 if importlib.util.find_spec("vulcan_jax") is None:           # pragma: no cover
     pytest.skip("vulcan_jax not installed (light-CI environment)",
                 allow_module_level=True)
-pytest.importorskip("jax", reason="the tangent-certified runner is JAX code")
 
 from vulcan_forward import vulcan_chem                       # noqa: E402
 
@@ -57,10 +56,7 @@ TL_REL_MAX = REL_MAX  # empirical: 2.9e-10 and 4.3e-9 measured, see the docstrin
 @pytest.fixture(scope="module")
 def runs():
     """One stacked call and one call per direction, same theta, same endpoint."""
-    try:
-        chem = vulcan_chem.build_chem_model(PROFILE)
-    except (FileNotFoundError, OSError) as e:                # pragma: no cover
-        pytest.skip(f"chem model data unavailable: {e}")
+    chem = vulcan_chem.build_chem_model(PROFILE)
     th = jnp.asarray(THETA)
     y_s, dy_s, cd_s = chem.converged_y_jvp(th, jnp.asarray(DIRS))
     singles = [chem.converged_y_jvp(th, jnp.asarray(DIRS[d]))
@@ -103,10 +99,7 @@ THETA_WARM = np.array([0.3, 0.1, 0.5, 40.0], dtype=np.float64)
 
 @pytest.fixture(scope="module")
 def chem_eq():
-    try:
-        return vulcan_chem.build_chem_model(SETTLE_PROFILE)
-    except (FileNotFoundError, OSError) as e:                # pragma: no cover
-        pytest.skip(f"chem model data unavailable: {e}")
+    return vulcan_chem.build_chem_model(SETTLE_PROFILE)
 
 
 def test_eq_seed_certifies_and_the_tangent_certificate_ends_the_run(chem_eq):

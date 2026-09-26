@@ -35,7 +35,6 @@ import pytest
 if importlib.util.find_spec("vulcan_jax") is None:           # pragma: no cover
     pytest.skip("vulcan_jax not installed (light-CI environment)",
                 allow_module_level=True)
-pytest.importorskip("jax", reason="the batched runner is JAX code")
 
 from vulcan_forward import vulcan_chem                       # noqa: E402
 
@@ -54,10 +53,7 @@ REL_MAX = 5.0e-2
 @pytest.fixture(scope="module")
 def runs():
     """The three routes, solved once: batched, per-lane vmap, batch-of-one."""
-    try:
-        chem = vulcan_chem.build_chem_model(PROFILE)
-    except (FileNotFoundError, OSError) as e:                # pragma: no cover
-        pytest.skip(f"chem model data unavailable: {e}")
+    chem = vulcan_chem.build_chem_model(PROFILE)
     th = jnp.asarray(THETAS)
     y_b, cd_b = chem.converged_y_batch(th, return_conv_diag=True)
     y_v, cd_v = jax.vmap(
@@ -94,11 +90,8 @@ COLD_CMAX = 50    # well above WARM_CMAX, so the cap that binds is identifiable
 def chem_capped():
     """A model whose warm cap (5) is far below its cold cap (50), the shape the
     retrieval's mutation path runs (1500 against 5000)."""
-    try:
-        return vulcan_chem.build_chem_model(
-            {**PROFILE, "warm_count_max": WARM_CMAX, "count_max": COLD_CMAX})
-    except (FileNotFoundError, OSError) as e:                # pragma: no cover
-        pytest.skip(f"chem model data unavailable: {e}")
+    return vulcan_chem.build_chem_model(
+        {**PROFILE, "warm_count_max": WARM_CMAX, "count_max": COLD_CMAX})
 
 
 def test_warm_cap_binds_per_lane_batched_and_queued(chem_capped):
