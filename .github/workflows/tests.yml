@@ -15,8 +15,12 @@ on:
 jobs:
   contract:
     runs-on: ubuntu-latest
-    # The chemistry tests run serially here (~50 min).
     timeout-minutes: 120
+    # Single-threaded XLA CPU, as the local suite runs: the lane-independence
+    # checks are bitwise, and multi-threaded Eigen reductions are not.
+    env:
+      XLA_FLAGS: "--xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1"
+      OMP_NUM_THREADS: "1"
     strategy:
       matrix:
         # requires-python = ">=3.10"; keep the floor claim verified.
@@ -33,11 +37,17 @@ jobs:
       # comes from its speed branch with --no-deps, its own deps listed here,
       # and exogibbs --no-deps plus pandas as VULCAN-JAX's CI installs them;
       # jax is pinned to the version VULCAN-JAX's tolerances are calibrated on.
+      # numpy<2 as in every real install (exojax==2.2.3 caps it).
       - name: Install (no exojax)
         run: |
-          pip install pytest numpy "jax==0.6.2" h5py scipy pyyaml pandas
+          pip install pytest "numpy<2" "jax==0.6.2" h5py scipy pyyaml pandas
           pip install --no-deps "exogibbs==0.6.0"
           pip install --no-deps "vulcan-jax @ git+https://github.com/imalsky/jax-vulcan.git@speed"
           pip install --no-deps -e .
+      # The two three-route gradient tests peak near 37 GB, above a hosted
+      # runner's 16 GB; they run in the local suite.
       - name: Run contract tests
-        run: python -m pytest tests -q -ra
+        run: >-
+          python -m pytest tests -q -ra
+          --deselect tests/test_converged_y_queue.py::test_two_stage_cold_gradient_three_routes
+          --deselect tests/test_converged_y_queue.py::test_warm_capped_gradient_three_routes

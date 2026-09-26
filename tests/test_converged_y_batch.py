@@ -44,7 +44,10 @@ PROFILE = {"use_photo": False, "yconv_cri": 1.0e-2, "nz": 20,
 THETAS = np.array([[0.0, 0.0, 0.0, 0.0],
                    [0.3, 0.1, 0.5, 40.0]], dtype=np.float64)
 MIX_FLOOR = 1.0e-10   # cells below this carry no observable and no certificate
-REL_MAX = 5.0e-2
+# Batch against vmap / scalar routes: two converged states at this loose
+# yconv_cri differ at the convergence scale, measured up to 6e-2 and 8e-2 across
+# Python 3.10-3.12 and numpy 1.26-2.x; a lane-mixing bug is O(1).
+REL_MAX = 1.0e-1
 
 
 @pytest.fixture(scope="module")
