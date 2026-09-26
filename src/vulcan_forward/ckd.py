@@ -89,7 +89,7 @@ def _fold_wo(dts, zero_of, gg, gw, wo_idx, finish=None):
     the wo list in ascending-i order.
 
     Bit-identity contract: every wo result is the EXACT op sequence of a naive
-    left fold over ``[dts[0], .., zero_of(i), .., dts[-1]]`` — the fold order
+    left fold over ``[dts[0], .., zero_of(i), .., dts[-1]]``; the fold order
     matters (``overlap`` is a resort-rebin, neither associative nor an
     exact identity on a zero operand), and a dropped absorber is still folded,
     as the zero tensor its zeroed VMR produces. Only the shared prefix
@@ -99,7 +99,8 @@ def _fold_wo(dts, zero_of, gg, gw, wo_idx, finish=None):
     so at most one (nlayer, ng, nband) wo total is alive at a time.
     """
     if finish is None:
-        finish = lambda t: t  # noqa: E731
+        def finish(t):
+            return t
     n = len(dts)
     wo_idx = set(wo_idx)
     out = []
