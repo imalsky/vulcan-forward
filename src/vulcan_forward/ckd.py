@@ -93,7 +93,8 @@ def _fold_wo(dts, zero_of, gg, gw, wo_idx, finish=None):
     matters (``overlap`` is a resort-rebin, neither associative nor an
     exact identity on a zero operand), and a dropped absorber is still folded,
     as the zero tensor its zeroed VMR produces. Only the shared prefix
-    ``dts[0..i-1]`` is computed once instead of per wo (~2x fewer folds).
+    ``dts[0..i-1]`` is computed once instead of per wo (all n species as wo:
+    (n-1)(n/2+2) folds instead of (n+1)(n-1), 1.3x fewer at n=5).
 
     ``finish`` maps each wo total to its observable before the next fold starts,
     so at most one (nlayer, ng, nband) wo total is alive at a time.

@@ -12,7 +12,7 @@ from __future__ import annotations
 # VULCAN-JAX network selection
 # These must be in the environment BEFORE the first ``import vulcan_jax``
 # (VULCAN-JAX freezes network/atom_list at first import). ``vulcan_chem``
-# applies them; see its module docstring for the import-order contract.
+# applies them; the package docstring states the import-order contract.
 DEFAULT_NETWORK = "thermo/SNCHO_photo_network.txt"
 DEFAULT_ATOM_LIST = "H,O,C,N,S"
 # Default ``vulcan_jax.load_config`` name. A caller normally passes
@@ -63,9 +63,10 @@ P_REF_BAR = 1.0e-3
 # biases planet-to-star flux ratios by ~5% typically and 10-25% for low-gravity
 # hot Jupiters (Fortney, Lupu, Morley, Freedman & Hood 2019, ApJL 880, L16).
 # 0.1 bar is HyDRA's stated convention, "the mean pressure of the tau=1 surface"
-# (Gandhi & Madhusudhan 2018). This only re-anchors the column GRAVITY; the
-# fully correct treatment computes a wavelength-dependent radius at vertical
-# tau = 2/3, as POSEIDON and PLATON II do: exojax_rt's eclipse_flux_tau.
+# (Gandhi & Madhusudhan 2018). This re-anchors both the column's radius and
+# gravity (exojax_rt's emission_radius); the fully correct treatment computes a
+# wavelength-dependent radius at vertical tau = 2/3, as POSEIDON and PLATON II
+# do: exojax_rt's eclipse_flux_tau.
 P_REF_EMISSION_BAR = 1.0e-1
 
 # Physical constants and unit factors, cgs, local so this module stays
@@ -96,8 +97,9 @@ WIDE_BAND_NU_MAX = 10000.0   # 1 um
 # molmass is the only mass the engine uses (the tables' mol_mass header is not
 # read; ExoMolOP's NO file carries 46) and each entry equals its formula mass
 # (tests/test_contract.py). Tables are the principal isotopologue except CO and
-# CO2 (natural abundance); paired with the total VMR that is a <= ~2% opacity
-# deficit on the multi-carbon species, below the tables' accuracy. Callers may
+# CO2 (natural abundance); paired with the total VMR that is an opacity
+# deficit of ~2% on the multi-carbon species and ~5-6% on the sulfur species
+# (32S is 95% of sulfur). Callers may
 # pass their own table via profile["molecule_table"].
 MOLECULES = {
     "CO":  {"vulcan": "CO",  "molmass": 28.010},

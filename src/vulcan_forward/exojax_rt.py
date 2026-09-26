@@ -87,7 +87,7 @@ def _anchor_to_grid_bottom(lnp_art, T_art, mmw_art, r_ref, g_ref, p_ref_bar):
     Integrating hydrostatic equilibrium with GM held fixed, so that
     ``g(r) = g_ref (r_ref/r)^2``::
 
-        dr/dlnP = -kT/(mu m_H g(r)) = -C(P) r^2,   C = kT/(mu m_H g_ref r_ref^2)
+        dr/dlnP = -kT/(mu m_u g(r)) = -C(P) r^2,   C = kT/(mu m_u g_ref r_ref^2)
 
     the substitution u = 1/r linearises it exactly::
 
@@ -539,7 +539,8 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
         A list of molecule names returns ``(depth, depth_wo)`` with one row per
         entry, each the depth with that molecule's VMR zeroed -- bit-identical
         (on the CPU) to a separate call on the zeroed profile, but reusing the
-        shared correlated-k fold prefix (~2x fewer overlap folds for a full set)."""
+        shared correlated-k fold prefix (a full set of n takes (n-1)(n/2+2)
+        overlap folds instead of (n+1)(n-1): 1.3x fewer at n=5)."""
         _require_he(vmr_he)
         Rp_btm, g_btm = _anchor_to_grid_bottom(
             lnp_art, T_art, mmw_art, Rp_ref, g_ref, p_ref_bar)

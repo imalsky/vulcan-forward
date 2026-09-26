@@ -9,7 +9,9 @@ dataset every file came from. Resumable: an existing file is left alone.
 The download URLs are RESOLVED, not guessed. ExoMolOP's pages are three levels
 deep and the filenames do not follow one pattern (H2O is
 ``1H2-16O__POKAZATEL__R1000_...`` with a double underscore, everything else is
-``<iso>__<dataset>.R1000_...`` with a dot), so guessing 404s. The walk is:
+``<prefix>__<dataset>.R1000_...`` with a dot, the prefix being ``<iso>`` or a
+natural-abundance tag such as ``CO2-all`` or
+``C-O-NatAbund``), so guessing 404s. The walk is:
 
     /data/data-types/opacity/<MOL>/              -> isotopologue pages
     /data/data-types/opacity/<MOL>/<ISO>/        -> dataset pages
@@ -189,8 +191,9 @@ def _assert_grid_matches(mol, part, dest, dest_dir):
     """Verify the DOWNLOADED file (``part``, not yet installed) shares the grid
     of the tables already here.
 
-    ``resolve`` only checks the filename; this opens the file and runs
-    ``load_tables``' layout checks and grid comparison. Deletes the download before
+    ``resolve`` only checks the filename; when another table is installed,
+    this opens the file and runs ``load_tables``' layout checks and grid
+    comparison. Deletes the download before
     raising on a grid mismatch; ``dest`` (a table ``--force`` would replace)
     is left untouched.
     """

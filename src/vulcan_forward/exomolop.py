@@ -27,7 +27,7 @@ this reader assumes.
 Tables are never downloaded at run time: a missing table raises with the
 fetch command. h5py and jax are imported inside the functions that need
 them, so the path helpers (``table_path``, ``available``) and ``provenance``
-stay importable stdlib-only.
+stay importable without jax or h5py.
 """
 from __future__ import annotations
 
@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 # log k floor. Their tables contain exact zeros where a species has no lines
 # in a band; log(0) would poison the interpolation with -inf, and a zero cross
 # section is physically "no absorption", so it floors to a value far below any
-# optical depth that matters (1e-60 cm^2 over a full column is ~1e-40 in tau).
+# optical depth that matters (1e-60 cm^2 over a full column is ~1e-32 in tau).
 K_FLOOR = 1.0e-60
 
 # The header values this reader is built for. Anything else is a different
@@ -56,8 +56,8 @@ P_UNITS = "bar"
 METHOD = "petit_samples"
 
 # Two tables mix only if their grids agree to this relative tolerance (float64
-# rounding of one published grid); table_info rounds its grid hash so tables
-# that agree to it share one key.
+# rounding of one published grid); table_info rounds its grid before hashing,
+# so grids that differ only by float64 noise usually share one key.
 _GRID_RTOL = 1.0e-12
 # Decimals table_info rounds to before hashing: the g-samples and weights at
 # _GRID_RTOL, the log10 of the t / p / band-edge grids at 1e-10.
@@ -91,9 +91,10 @@ def available() -> list:
 def provenance() -> dict:
     """What each installed table is, as recorded by ``fetch_exomolop``.
 
-    ``{molecule: {dataset, iso, file, natural_abundance, url}}`` from the
-    tree's ``provenance.json``. stdlib only, so a data-status check can read it
-    without jax or h5py. Raises with the fetch command when the record is
+    ``{molecule: {dataset, iso, file, natural_abundance, url}}``, plus ``doi``
+    for datasets whose header DOI is a placeholder, from the
+    tree's ``provenance.json``. It needs no jax or h5py, so a data-status
+    check can read it. Raises with the fetch command when the record is
     absent (the fetcher writes it, and backfills tables already on disk
     without downloading them again).
     """
@@ -215,9 +216,11 @@ def table_info(molecule: str) -> dict:
     """Header of one installed k-table as plain JSON-serializable values.
 
     Keys: molecule, file, doi, mol_name, date_id, method, ngauss,
-    kcoeff_units, p_units, n_bands, t_range_k, p_range_bar, wl_range_um.
-    Runs the same header check as ``load_tables``, so it raises on the same
-    files. Placeholder DOIs are reported verbatim; absent DOI / mol_name /
+    kcoeff_units, p_units, n_bands, t_range_k, p_range_bar, wl_range_um,
+    grid_sha256, band_resolution.
+    Runs the same layout and header checks as ``load_tables``, but not its
+    kcoeff value checks, so ``load_tables`` can still refuse a file this
+    accepts. Placeholder DOIs are reported verbatim; absent DOI / mol_name /
     Date_ID are None.
     """
     import h5py                       # function-local, as in load_tables
@@ -231,8 +234,9 @@ def table_info(molecule: str) -> dict:
         rec = _header(f, path)
         t, p, e = (arrays[k] for k in ("t", "p", "bin_edges"))
         # Signature of the grid as the loader's _GRID_RTOL rule sees it:
-        # round before hashing so tables that load_tables accepts together
-        # share one key; each array is prefixed by its shape.
+        # round before hashing to absorb float noise; values within _GRID_RTOL
+        # can still round apart, and the band grid is hashed whole, not the
+        # slice load_tables compares. Each array is prefixed by its shape.
         digest = hashlib.sha256()
         for key in ("t", "p", "bin_edges", "samples", "weights"):
             values = arrays[key]
@@ -264,8 +268,8 @@ def load_tables(molecules, nu_min, nu_max, *, molecule_table=None,
     Raises rather than downloading, raises on a header this reader is not
     built for (``_header``), and raises rather than mixing tables that do not
     share a band grid or a quadrature -- ``ckd.overlap`` combines species
-    ordinate by ordinate, so two tables on different g-nodes would be silently
-    added as if they were the same distribution.
+    on one shared set of g-nodes and weights, so two tables on different
+    g-nodes would be silently combined as if they shared one quadrature.
     """
     import h5py                       # only needed for ingestion
     import jax.numpy as jnp           # keeps the module importable bare

@@ -8,8 +8,8 @@
 Abundance knobs: the initial column is renormalized to sum_i n_i = M per layer
 and repaired (fixed Newton-style iterations on He/H2O/CO/N2/H2S) so the column
 elemental ratios hit the theta targets exactly (He/H fixed; O/N/S x Z; C x Z
-e^{c_o}). ``pv.atom_ini`` is rebuilt from the repaired column. Residuals ~1e-8
-relative; measure with ``audit_init``.
+e^{c_o}). ``pv.atom_ini`` is rebuilt from the repaired column. Residuals ~1e-15
+relative (machine precision); measure with ``audit_init``.
 
 Rate constants and the T/composition-dependent structure (Dzz + vm/vs, pv.Kzz,
 the initial carry geometry) are rebuilt on-graph per proposal. Condensation
@@ -23,7 +23,8 @@ condenses: the fix_species pin freezes the reservoirs at their
 stop_conden_time state. Enable condensation only where the species
 genuinely condenses.
 
-The photolysis cross-section T-interpolation stays frozen by design. The
+T-dependent photolysis cross sections (``T_cross_sp``) are refused at build:
+``_prep`` does not rebuild them. The
 runner's lax.while_loop supports jvp/jacfwd but NOT vjp; forward mode is the
 end-to-end route.
 """
@@ -96,8 +97,8 @@ jax.config.update("jax_enable_x64", True)
 # gas, so the linear repair stays tiny and well-conditioned). H is the reference
 # element; He preserves the baseline He/H.
 _ELEMENTAL_REPAIR = (("He", "He"), ("O", "H2O"), ("C", "CO"), ("N", "N2"), ("S", "H2S"))
-# Renorm+repair iterations: the residual contracts geometrically
-# (~1e-2 -> ~1e-8 by three passes; see audit_init).
+# Renorm+repair iterations: one pass takes a warm guess's ~1e-1 residual to
+# ~1e-10, two reach machine precision (~1e-15); see audit_init.
 _ELEMENTAL_REPAIR_ITERS = 3
 
 # Tolerance (g/mol) for checking constants.ATOMIC_MASSES against the package's
@@ -419,7 +420,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     nasa9, _ = load_nasa9(network.species, thermo_dir)
     remove_list = cfg.remove_list
 
-    # --- one warm-up run: compiles/caches integ._runner and confirms the primal converges
+    # --- one warm-up run: compiles integ._runner and reports whether the primal certifies
     solver = op_jax.Ros2JAX()
     if rs.photo_static is not None:
         solver._photo_static = rs.photo_static
@@ -569,7 +570,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     compo_run = jnp.asarray(np.asarray(integ._compo_arr, dtype=np.float64))
 
     # --- exact-elemental targets + repair tables ----------------------------
-    # Baseline column-integrated elemental totals from the pristine y0 (which sums to
+    # Baseline elemental totals (layer sums, no dz weight) from the pristine y0 (which sums to
     # M_base per layer by construction: equilibrium mixing ratios x layer density).
     # Targets are RATIOS to elemental H; absolute densities follow from sum_i n_i = M.
     elem_pairs = [(e, sp) for e, sp in _ELEMENTAL_REPAIR
@@ -635,7 +636,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
 
         y_in : (nz, ni) guessed absolute densities. Returns (y_out, min_adj) where
         y_out rows sum to M and the column ratios-to-H equal the theta targets to the
-        fixed-iteration residual (~1e-8 rel; audit_init measures it), and min_adj is
+        fixed-iteration residual (~1e-15 rel; audit_init measures it), and min_adj is
         the smallest per-species repair factor (must stay > 0 for a physical column;
         it is ~1 +/- the mask-leakage scale everywhere in the shipped prior boxes).
         """
@@ -753,7 +754,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
             vs_new = settling_velocity_jax(_na, _a, _b, T, g_i, spec_atm.settle_coeff)
         else:
             vs_new = jnp.zeros((nz - 1, ni), dtype=jnp.float64)
-        # y_ini is kept for the end-of-run print. The element-budget reference
+        # The runner does not read pv.y_ini. The element-budget reference
         # is `budget_ref`, seeded below from this theta's own starting column
         # (as atom_ini is re-anchored above), so the proposal's composition
         # change is not charged to the solver's conservation.
@@ -819,15 +820,15 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         differentiable w.r.t. theta.
 
         The carry's termination budget + diffusion blend are re-seeded per
-        solve; under the hybrid vm_mol default a warm continuation runs on the
+        solve; under the hybrid vm_mol scheme a warm continuation runs on the
         central operator instead of re-entering upwind phase 0.
 
         ``warm_cap=True`` caps the solve at ``warm_count_max`` (the SMC mutation
         path; the cap rides the carry). ``return_conv_diag=True`` returns ``(y, ConvDiag)`` -- free
         reads off the primal carry; ``conv_normal`` is the canonical
         certification recomputed at the exit, so a budget exit reads
-        False even when ``longdy < yconv_min``. ConvDiag's integer fields
-        carry no tangent -- AD callers stop_gradient them."""
+        False even when ``longdy < yconv_min``. ConvDiag's float fields
+        carry a tangent -- AD callers stop_gradient them."""
         init, atm_T = _prep(theta, warm_y=warm_y,
                             lnZ_ref=lnZ_ref, c_o_ref=c_o_ref)
         init = _runner_carry_seed(init, warm_continuation=warm_y is not None,
@@ -1071,7 +1072,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         sidx=sidx,
         species_masses=species_masses,
         nz=nz, ni=ni,
-        count_max=int(cfg.count_max),   # the resolved (profile-overridden or module-default) cap
+        count_max=int(cfg.count_max),   # the resolved (profile-overridden or YAML-config) cap
         warm_count_max=warm_count_max,  # mutation-path cap (warm_cap=True; == count_max when unset)
         yconv_min=float(cfg.yconv_min), # loose convergence gate: a converged solve has longdy<this
     )
