@@ -58,27 +58,21 @@ class _FakeArt:
 # A 5-layer column with genuinely non-zero altitude: r/R_btm runs 1.00 -> 1.20,
 # so g(r) falls by ~30% top-to-bottom and the three candidate profiles are
 # numerically far apart.
-_NLAYER = 5
 _HEIGHT = np.array([0.04, 0.04, 0.04, 0.04, 0.04])
 _R_LOWER = np.array([1.00, 1.04, 1.08, 1.12, 1.16])
 _G_BTM = 2140.0        # cgs, W39b-like
 _R_BTM = 6.5e9         # cm
 
 
-def _profile():
-    art = _FakeArt(_HEIGHT, _R_LOWER)
-    g = _gravity_profile_invsq(art, T_art=None, mmw_art=None,
-                               radius_btm=_R_BTM, gravity_btm=_G_BTM)
-    return art, np.asarray(g)
-
-
 def test_gravity_profile_is_exactly_inverse_square():
     """g(r) == g_btm / r_mid**2 on the mid-layer normalized radius, with
     radius_btm / gravity_btm reaching `atmosphere_height` unmodified (a helper
     that substituted a default planet would still pass the algebra)."""
-    art, g = _profile()
+    art = _FakeArt(_HEIGHT, _R_LOWER)
+    g = np.asarray(_gravity_profile_invsq(art, T_art=None, mmw_art=None,
+                                          radius_btm=_R_BTM, gravity_btm=_G_BTM))
     r_mid = _R_LOWER + 0.5 * _HEIGHT
-    expected = (_G_BTM / r_mid**2).reshape(_NLAYER, 1)
+    expected = (_G_BTM / r_mid**2).reshape(-1, 1)
     # Same operations in the same precision -> exact, not merely close.
     np.testing.assert_array_equal(g, expected)
     assert art.calls == [(_R_BTM, _G_BTM)]

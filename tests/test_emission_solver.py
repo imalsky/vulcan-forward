@@ -117,9 +117,9 @@ from vulcan_forward.exojax_rt import _run_emis_ckd_linsap    # noqa: E402
 
 
 def _gquad(ng=16):
-    """Gauss-Legendre nodes and weights on [0, 1] (a synthetic quadrature)."""
-    g, w = np.polynomial.legendre.leggauss(ng)
-    return jnp.asarray(0.5 * (g + 1.0)), jnp.asarray(0.5 * w)
+    """Gauss-Legendre weights on [0, 1] (a synthetic quadrature)."""
+    _, w = np.polynomial.legendre.leggauss(ng)
+    return jnp.asarray(0.5 * w)
 
 
 def test_ckd_emission_matches_line_by_line_when_every_g_is_identical():
@@ -133,7 +133,7 @@ def test_ckd_emission_matches_line_by_line_when_every_g_is_identical():
     """
     art = _art()
     ng = 16
-    gg, gw = _gquad(ng)
+    gw = _gquad(ng)
     rng = np.random.default_rng(0)
     base = np.abs(rng.lognormal(-3.0, 1.5, size=(NLAYER, NU.size)))
     T = jnp.asarray(np.linspace(900.0, 2600.0, NLAYER))
@@ -153,7 +153,7 @@ def test_ckd_emission_keeps_the_interior_source_upstream_run_ckd_drops():
     art_ibased = ArtEmisPure(nu_grid=NU, pressure_top=1e-8, pressure_btm=100.0,
                              nlayer=NLAYER, rtsolver="ibased", nstream=8)
     ng = 16
-    gg, gw = _gquad(ng)
+    gw = _gquad(ng)
     T = jnp.asarray(np.linspace(900.0, 2600.0, NLAYER))
     thin = jnp.full((NLAYER, ng, NU.size), 1e-4 / NLAYER)
 
@@ -172,7 +172,7 @@ def test_ckd_emission_is_not_the_same_as_using_the_band_mean_opacity():
     """
     art = _art()
     ng = 16
-    gg, gw = _gquad(ng)
+    gw = _gquad(ng)
     rng = np.random.default_rng(1)
     w = np.asarray(gw)
     base = np.abs(rng.lognormal(-3.0, 1.5, size=(NLAYER, NU.size)))
@@ -193,7 +193,7 @@ def test_ckd_emission_tangent_sign_follows_the_lapse_rate():
     """
     art = _art()
     ng = 8
-    gg, gw = _gquad(ng)
+    gw = _gquad(ng)
     rng = np.random.default_rng(2)
     base = np.abs(rng.lognormal(-3.0, 1.5, size=(NLAYER, NU.size)))
     dtau_g = jnp.asarray(np.repeat(base[:, None, :], ng, axis=1))

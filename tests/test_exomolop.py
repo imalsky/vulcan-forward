@@ -38,22 +38,20 @@ SPLIT_TOL = 1e-6    # the split quadrature's 0.9 / 0.1 weight sums
 EXOK_TOL = 1e-9
 
 
-def _write(path, *, nb=NB, ng=NG, nu0=100.0, r=1000.0, kscale=1.0,
-           zeros=False, g_shift=0.0, kunits="cm^2/molecule", punits="bar",
-           method="petit_samples", ngauss=None, doi="x.xxxx/yyyyy",
-           mol_name=None):
+def _write(path, *, nb=NB, nu0=100.0, zeros=False, g_shift=0.0,
+           kunits="cm^2/molecule", punits="bar", method="petit_samples",
+           ngauss=None):
     """A miniature file in ExoMolOP's petitRADTRANS layout, header included
     (the real files carry the same unit attributes and string datasets)."""
     import h5py
-    edges = nu0 * np.exp(np.arange(nb + 1) / r)
+    edges = nu0 * np.exp(np.arange(nb + 1) / 1000.0)
     t = np.linspace(300.0, 3000.0, NT)
     p = np.logspace(-5, 2, NP)
-    g = np.linspace(0.02, 0.98, ng) + g_shift
-    w = np.full(ng, 1.0 / ng)
+    g = np.linspace(0.02, 0.98, NG) + g_shift
+    w = np.full(NG, 1.0 / NG)
     rng = np.random.default_rng(0)
     # ExoMolOP order: (n_P, n_T, n_band, n_g), k ascending in g
-    k = np.sort(rng.lognormal(-50.0, 1.0, size=(NP, NT, nb, ng)),
-                axis=-1) * kscale
+    k = np.sort(rng.lognormal(-50.0, 1.0, size=(NP, NT, nb, NG)), axis=-1)
     if zeros:
         k[0, 0, 0, :] = 0.0
     with h5py.File(path, "w") as f:
@@ -67,12 +65,10 @@ def _write(path, *, nb=NB, ng=NG, nu0=100.0, r=1000.0, kscale=1.0,
         f["samples"] = g
         f["weights"] = w
         f["mol_mass"] = np.array([18])
-        f["ngauss"] = ng if ngauss is None else ngauss
+        f["ngauss"] = NG if ngauss is None else ngauss
         f.create_dataset("method", data=np.array([method], dtype=h5py.string_dtype()))
-        f.create_dataset("DOI", data=np.array([doi], dtype=h5py.string_dtype()))
-        if mol_name is not None:
-            f.create_dataset("mol_name",
-                             data=np.array([mol_name], dtype=h5py.string_dtype()))
+        f.create_dataset("DOI", data=np.array(["x.xxxx/yyyyy"],
+                                              dtype=h5py.string_dtype()))
     return k, edges, t, p, g, w
 
 
@@ -178,7 +174,7 @@ def test_table_info_and_provenance_report_what_is_on_disk(data_root):
         exomolop.table_info("H2O")
     with pytest.raises(FileNotFoundError, match="fetch_exomolop"):
         exomolop.provenance()
-    _, edges, t, p, _, _ = _write(exomolop.table_path("H2O"), doi="x.xxxx/yyyyy")
+    _, edges, t, p, _, _ = _write(exomolop.table_path("H2O"))
     info = exomolop.table_info("H2O")
     assert info["doi"] == "x.xxxx/yyyyy"
     assert info["mol_name"] is None and info["date_id"] is None

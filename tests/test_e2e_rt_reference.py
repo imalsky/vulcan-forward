@@ -57,10 +57,18 @@ if not exomolop.table_path("H2O").exists():
 import jax  # noqa: E402
 import jax.numpy as jnp  # noqa: E402
 
+from exojax.rt.planck import piBarr  # noqa: E402
+
 from vulcan_forward import constants, exojax_rt  # noqa: E402
 
 DATA = Path(__file__).parent / "data"
 RSTAR_W39 = 0.932 * 6.957e10
+# The emission cases' profile. pRT ran constant g = 1e3; a huge rp makes the
+# hydrostatic g-variation over the column < 1e-4 relative (meta records it).
+EMIS_PROF = dict(molecules=["H2O"], nu_min=1.0e4 / 5.0, nu_max=1.0e4 / 3.0,
+                 opacity_mode="exomolop", art_nlayer=80,
+                 art_ptop_bar=1.0e-6, art_pbtm_bar=1.0e2,
+                 rp_cm=100 * 7.1492e9, gs_cgs=1.0e3, rstar_cm=RSTAR_W39)
 ROUND_TOL = 1e-12      # float64 rounding bar
 # Eclipse flux against the gray closed form: _photosphere_lnp interpolates
 # ln P linearly in tau between layer boundaries (80 layers); the worst of the
@@ -180,14 +188,10 @@ def test_emission_isothermal_atmosphere_radiates_pi_planck():
     machine precision, max |ratio-1| = 6.7e-16 at VMR 1e-3 and 1e-5 alike.
     A g-weight normalization error, a flux unit slip, or a wrong boundary
     temperature each break this by orders of magnitude."""
-    nlay = 80
-    prof = dict(molecules=["H2O"], nu_min=1.0e4 / 5.0, nu_max=1.0e4 / 3.0,
-                opacity_mode="exomolop", art_nlayer=nlay,
-                art_ptop_bar=1.0e-6, art_pbtm_bar=1.0e2,
-                rp_cm=100 * 7.1492e9, gs_cgs=1.0e3, rstar_cm=RSTAR_W39)
+    prof = EMIS_PROF
+    nlay = prof["art_nlayer"]
     trt = exojax_rt.build_rt_model(prof)
     emod = exojax_rt.build_emis_model(trt, prof)
-    from exojax.rt.planck import piBarr
     T = 1500.0
     zeros = jnp.zeros(nlay)
     want = np.asarray(piBarr(jnp.asarray([T]), jnp.asarray(emod.nu_grid)))[0]
@@ -218,11 +222,8 @@ def test_wo_batch_is_bit_identical_to_separate_solves():
     unknown-molecule refusal."""
     mols = ["H2O"] + [m for m in ("CO2", "CO", "CH4")
                       if exomolop.table_path(m).exists()]
-    nlay = 40
-    prof = dict(molecules=mols, nu_min=1.0e4 / 5.0, nu_max=1.0e4 / 3.0,
-                opacity_mode="exomolop", art_nlayer=nlay,
-                art_ptop_bar=1.0e-6, art_pbtm_bar=1.0e2,
-                rp_cm=7.1492e9, gs_cgs=1.0e3, rstar_cm=RSTAR_W39)
+    prof = {**EMIS_PROF, "molecules": mols, "art_nlayer": 40, "rp_cm": 7.1492e9}
+    nlay = prof["art_nlayer"]
     trt = exojax_rt.build_rt_model(prof)
     emod = exojax_rt.build_emis_model(trt, prof)
     zeros = jnp.zeros(nlay)
@@ -272,13 +273,8 @@ def test_wo_batch_is_bit_identical_to_separate_solves():
 
 def test_emission_h2o_matches_prt():
     z, meta = _load("prt_ref_emission_h2o.npz")
-    nlay = 80
-    prof = dict(molecules=["H2O"], nu_min=1.0e4 / 5.0, nu_max=1.0e4 / 3.0,
-                opacity_mode="exomolop", art_nlayer=nlay,
-                art_ptop_bar=1.0e-6, art_pbtm_bar=1.0e2,
-                # pRT ran constant g = 1e3; a huge rp makes the hydrostatic
-                # g-variation over the column < 1e-4 relative (meta records it)
-                rp_cm=100 * 7.1492e9, gs_cgs=1.0e3, rstar_cm=RSTAR_W39)
+    prof = EMIS_PROF
+    nlay = prof["art_nlayer"]
     trt = exojax_rt.build_rt_model(prof)
     emod = exojax_rt.build_emis_model(trt, prof)
     p = np.asarray(emod.p_art_bar)
@@ -304,14 +300,10 @@ def test_eclipse_flux_carries_the_tau_two_thirds_photospheric_radius():
     integral reaches 2/3, and the eclipse flux must be pi*B(T) times
     (R(P_phot)/R_em)^2. The plain
     emission flux stays pi*B(T): the radius enters the eclipse quantity only."""
-    nlay = 80
-    prof = dict(molecules=["H2O"], nu_min=1.0e4 / 5.0, nu_max=1.0e4 / 3.0,
-                opacity_mode="exomolop", art_nlayer=nlay,
-                art_ptop_bar=1.0e-6, art_pbtm_bar=1.0e2,
-                rp_cm=1.2 * 7.1492e9, gs_cgs=500.0, rstar_cm=RSTAR_W39)
+    prof = {**EMIS_PROF, "rp_cm": 1.2 * 7.1492e9, "gs_cgs": 500.0}
+    nlay = prof["art_nlayer"]
     trt = exojax_rt.build_rt_model(prof)
     emod = exojax_rt.build_emis_model(trt, prof)
-    from exojax.rt.planck import piBarr
     T, mmw = 1500.0, 2.33
     zeros, Tcol, mcol = jnp.zeros(nlay), jnp.full(nlay, T), jnp.full(nlay, mmw)
     lnp = jnp.log(jnp.asarray(emod.p_art_bar))
