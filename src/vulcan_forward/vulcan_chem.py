@@ -279,13 +279,9 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         for consumers that never read ``baseline_conv_normal`` (which is then
         None = not evaluated). Inference profiles must leave it False.
     tp_eval : callable or None, optional
-        Temperature-profile hook. When ``None`` (default) the
-        temperature is the validated uniform shift ``T = T_base + theta[3]`` (theta[3]
-        is a bulk offset). When supplied,
-        ``tp_eval(theta[3:3+n_tp_params], p_bar)`` returns the full (nz,) T-P profile
-        (bar-indexed) that replaces the scalar shift -- used by the retrieval framework
-        to retrieve an ExoJax Guillot/power-law T-P. Either way the rate table AND the
-        T/composition-dependent atmospheric structure are rebuilt on-graph.
+        Temperature-profile hook. ``None`` (default): ``T = T_base + theta[3]``,
+        a uniform offset in K. Otherwise ``tp_eval(theta[3:3+n_tp_params], p_bar)``
+        returns the full (nz,) T(P) on the bar grid.
     n_tp_params : int, optional
         Number of T-P parameters consumed from ``theta[3:]`` when ``tp_eval`` is given.
 
@@ -304,9 +300,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     constants.check_profile_keys(profile)
     import vulcan_jax
 
-    # Baseline VULCAN config, loaded by name from vulcan_jax/configs/*.yaml
-    # (overridable per profile; the case presets set this). Env VULCAN_JAX_* was
-    # set above, so this first vulcan_jax import freezes the SNCHO network.
+    # Baseline VULCAN config by name (vulcan_jax/configs/*.yaml).
     cfg = vulcan_jax.load_config(profile.get("vulcan_cfg_name") or constants.DEFAULT_CFG_NAME)
     cfg.use_print_prog = False
     cfg.use_photo = bool(profile["use_photo"])
@@ -324,8 +318,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     vulcan_jax.validate_overrides(profile.get("cfg_overrides") or {})
     for _k, _v in (profile.get("cfg_overrides") or {}).items():
         setattr(cfg, _k, _v)
-    # `_prep` re-seeds the per-proposal ProfileVars fields but not these two,
-    # which would stay at the baseline column / temperature on every proposal.
+
     if bool(cfg.use_fix_all_bot):
         raise ValueError(
             "use_fix_all_bot=True is not supported here: the per-proposal "
@@ -339,13 +332,10 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
             "sections (pv.p_absp_T_cross, pv.p_cross_J_T), so photolysis would use "
             "the baseline temperature. Set T_cross_sp=[] in the config or "
             "cfg_overrides.")
-    # Warm-continuation step cap for the MUTATION path only: a proposal still
-    # unconverged at warm_count_max is headed for rejection, so cut the loop
-    # there instead of dragging the lockstep batch to the cold cap. The cap
-    # rides the runner CARRY (`count_max_dyn`, seeded by `_runner_carry_seed`),
-    # so the batched entry points take it per lane through `warm_cap=True` and
-    # share one compiled runner with the cold call. Checked after the
-    # overrides: a `cfg_overrides` count_max is the cold cap too.
+    # Step cap for warm mutation solves (warm_cap=True): a proposal still
+    # unconverged here is headed for rejection. It rides the carry
+    # (count_max_dyn), so capped and uncapped solves share one runner.
+    # Checked after the overrides: a cfg_overrides count_max is the cold cap too.
     _wcm = profile.get("warm_count_max")
     warm_count_max = int(_wcm) if _wcm is not None else int(cfg.count_max)
     if warm_count_max > int(cfg.count_max):
@@ -435,18 +425,14 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
                 + ("runner closure only (skip_warmup)" if skip_warmup
                    else "warming up runner ..."))
     if skip_warmup:
-        # Forward-only consumers skip the solve and build only the runner
-        # closure; the XLA compile happens on the first real solve.
-        # baseline_conv_normal None = not evaluated. Not for inference.
+        # Runner closure only; the XLA compile happens on the first real solve.
         integ._ensure_runner(var, atm)
         baseline_conv_normal = None
     else:
         tw = time.time()
         rs_warmup = integ(rs)
-        # Diagnostic only: end_case 1 is a certified exit on a
-        # finite column. Nothing consumes the warm-up column, so False only
-        # flags a configuration that may not converge (exported as
-        # baseline_conv_normal).
+        # end_case 1 = certified exit on a finite column. Diagnostic only:
+        # nothing reads the warm-up column.
         _w_end = int(rs_warmup.params.end_case)
         baseline_conv_normal = _w_end == 1
         if not baseline_conv_normal:
@@ -490,18 +476,13 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
 
     def _conv_diag(final, tangent_ok=True, tangent_longdy=jnp.nan):
         """ConvDiag read off the runner's exit carry. ``conv_normal`` is
-        vulcan-jax's ``conv_normal`` certificate (tight OR loose branch, the
-        photo-flux gate, the geometry and element-budget terms; not the ready
-        gate, hybrid-phase or non-finite exit) AND the supplied tangent
-        certificate. True only for a certified exit; False when the exit
-        exhausted a count/runtime budget without certifying. The controlling
-        cell is the argmax of the masked per-cell ratio the runner maximised
-        for longdy (``where_varies_most`` rides the carry). ``tangent_ok`` is the
-        solver's sensitivity certificate on the ``converged_y_jvp`` path
-        (``OuterLoop.run_jvp``); the primal path passes the default. It
-        enters ``conv_normal`` only: ``conv_branch`` stays the COLUMN's own
-        branch, so a consumer can tell an unsettled sensitivity (branch
-        set, ``tangent_longdy`` above the gate) from an uncertified column."""
+        ``vulcan_jax.conv_normal`` (the terms listed on ConvDiag; not the ready
+        gate, hybrid phase or non-finite exit) AND ``tangent_ok``, the
+        ``OuterLoop.run_jvp`` sensitivity certificate on the ``converged_y_jvp``
+        path (primal path: True). ``conv_branch`` stays the column's own branch,
+        so a consumer can tell an unsettled sensitivity (branch set,
+        ``tangent_longdy`` above the gate) from an uncertified column. The
+        controlling cell is the argmax of the carry's ``where_varies_most``."""
         ok, branch = vulcan_jax.conv_normal(final, cfg)
         flat = jnp.argmax(final.where_varies_most)
         return ConvDiag(
@@ -534,13 +515,11 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     T_base = jnp.asarray(np.asarray(atm.Tco, dtype=np.float64))
 
     # --- on-graph atmosphere rebuild inputs -------------------------------
-    # refresh_static packs the runner's own hydrostatic-refresh kernel inputs (pico,
-    # gs, Rp, pref anchor, species masses); update_mu_dz_jax(ymix, st) is what
-    # the runner fires in-loop every update_frq accepted steps, so seeding the initial
-    # carry with it makes step 1 consistent with what the loop maintains thereafter.
-    # phys0/spec_atm feed atm_jax._mol_diff, the committed on-graph Dzz(T, M) builder
-    # (field-for-field equal to the host make_atm_static for this atm_type; validated
-    # in VULCAN-JAX tests/test_atm_jax.py).
+    # refresh_static: inputs of the runner's own hydrostatic-refresh kernel
+    # (pico, gs, Rp, pref anchor, species masses).
+    # phys0/spec_atm: inputs of atm_jax._mol_diff, the on-graph Dzz(T, M)
+    # builder (field-for-field equal to the host make_atm_static for this
+    # atm_type; VULCAN-JAX tests/test_atm_jax.py).
     refresh_static = integ._build_refresh_static(atm)
     phys0, spec_atm = atm_jax.make_physical_inputs(cfg, var, atm, list(network.species))
     use_vm = bool(spec_atm.use_vm_mol and spec_atm.use_moldiff)
@@ -710,9 +689,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         _p = _as_params(theta)
         lnZ, c_o, lnKzz = _p.lnZ, _p.c_o, _p.lnKzz
 
-        # Temperature: uniform T shift by default; with a tp_eval hook the full
-        # differentiable T-P profile. Either way the rate table is rebuilt
-        # on-graph (rates_jax) with n_0 = pco/(kb T).
+
         if tp_eval is None:
             T = T_base + _p.tp[0]
         else:
@@ -764,8 +741,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         pv_T = pv_T._replace(r_Dzz_top=Dzz_new[-1], y_ini=y0p)
 
         # --- condensation at the proposed T ---------------------------------
-        # Rebuild every T/structure-dependent condensation array from the live
-        # T and structure and splice it into the ProfileVars carry.
+        # Replace every T-dependent condensation field; the carry holds baseline-T values.
         if conden_spec is not None:
             cprof = conden_mod.build_conden_profile(conden_spec, T, pco, M, Dzz_new)
             pv_T = pv_T._replace(
@@ -868,10 +844,8 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
 
         ``lnZ_ref`` / ``c_o_ref`` may be scalars or ``(N,)`` arrays: the
         mutation path gives every lane the reference its carried column was
-        converged at. ``warm_cap=True`` caps every lane at ``warm_count_max``
-        -- the mutation-path semantics of ``converged_y(..., warm_cap=True)``,
-        carried by ``count_max_dyn`` (the runner reads the budget off the
-        carry, so the cap needs no second runner).
+        converged at. ``warm_cap=True`` caps every lane at ``warm_count_max``,
+        as on ``converged_y``.
         """
         lnZ_r, c_o_r = _ref_leaves(int(jnp.shape(thetas)[0]), lnZ_ref, c_o_ref)
 
@@ -1056,12 +1030,10 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         #                                            never longdy alone)
         audit_init=audit_init,
         baseline_conv_normal=baseline_conv_normal,  # warm-up exit certified?
-        #                                             (the retrieval warns on False;
-        #                                             None = skip_warmup, not
-        #                                             evaluated)
+        #                                             None = skip_warmup, not evaluated
         conden_spec=conden_spec,   # static conden metadata (None when conden off)
         prep_pv=prep_pv,           # theta -> initial ProfileVars (no solve; tests)
-        _integ=integ,              # the OuterLoop (baked statics access; tests only)
+        _integ=integ,              # the OuterLoop (baked statics access)
         co_bz_bound=co_bz_bound,   # fixed-O knob validity: b_z > 0 iff c_o < this (build column)
         co_bz_margin=co_bz_margin, # the same margin on any column, e.g. the warm converged one
         y0=np.asarray(y0, dtype=np.float64),   # baked baseline column (warm-start fallback)
