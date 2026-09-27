@@ -405,7 +405,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
 
     pco = jnp.asarray(np.asarray(atm.pco, dtype=np.float64))
     p_bar = np.asarray(atm.pco, dtype=np.float64) / constants.BAR_CGS
-    p_bar_j = jnp.asarray(p_bar)   # bar-indexed grid for the optional tp_eval hook
+    p_bar_j = jnp.asarray(p_bar)   # bar grid for tp_eval and the equilibrium seed
 
     thermo_dir = resolve_data_path(cfg.network).parent
     if not (thermo_dir / "NASA9").exists():
@@ -461,18 +461,19 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     logger.info(f"[chem] diffusion scheme: use_vm_mol={use_vm_mol_v} "
                 f"hybrid={hybrid_v}{_warm_note}")
 
-    def _runner_carry_seed(init, *, warm_continuation, warm_cap):
-        """Re-seed the carry's live termination budget + diffusion blend for the
-        runner about to consume ``init`` (see the block comment above)."""
+    def _seeded_prep(theta, warm_y=None, lnZ_ref=0.0, c_o_ref=0.0, warm_cap=False):
+        """``_prep`` with the carry's live termination budget + diffusion blend
+        re-seeded for the runner (see the block comment above)."""
+        init, atm_T = _prep(theta, warm_y=warm_y, lnZ_ref=lnZ_ref, c_o_ref=c_o_ref)
         blend = 1.0 if use_vm_mol_v else 0.0
-        if warm_continuation and hybrid_v:
+        if warm_y is not None and hybrid_v:
             blend = 0.0   # continue on the converged (phase-1, central) operator
         return init._replace(
             hybrid_use_vm=jnp.float64(blend),
             count_min_dyn=jnp.int32(count_min_v),
             count_max_dyn=jnp.int32(warm_count_max if warm_cap else cold_count_max),
             runtime_dyn=jnp.float64(runtime_v),
-        )
+        ), atm_T
 
     def _conv_diag(final, tangent_ok=True, tangent_longdy=jnp.nan):
         """ConvDiag read off the runner's exit carry. ``conv_normal`` is
@@ -560,9 +561,10 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     _y0_np = np.asarray(y0, dtype=np.float64)
     _elem_cols = [constants.ATOM_COLS["H"]] + [constants.ATOM_COLS[e] for e, _ in elem_pairs]
     # (ni, 1+nrep) atoms-per-molecule for [H, He, O, C, N, S]-as-present
-    E_mat = jnp.asarray(np.asarray(compo[:, _elem_cols], dtype=np.float64))
+    E_np = np.asarray(compo[:, _elem_cols], dtype=np.float64)
+    E_mat = jnp.asarray(E_np)
     rep_cols = np.asarray([sidx[sp] for _, sp in elem_pairs], dtype=np.int64)
-    A0 = _y0_np @ np.asarray(compo[:, _elem_cols], dtype=np.float64)  # per-layer (nz, 1+nrep)
+    A0 = _y0_np @ E_np                                                # per-layer (nz, 1+nrep)
     A0 = A0.sum(axis=0)                                               # column totals
     missing = [sp for _, sp in _ELEMENTAL_REPAIR if sp not in sidx]
     if not elem_pairs:
@@ -575,15 +577,15 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     cscale_kind = jnp.asarray(_ck)
     R0_j = jnp.asarray(R0_ratios)
     _names = [e for e, _ in elem_pairs]
+
+    def _targets(lnZ, c_o):
+        return R0_j * jnp.exp(lnZ * zscale_kind + c_o * cscale_kind)
+
     logger.info("[chem] elemental mode: exact column ratios to H via repair species "
                 f"{[sp for _, sp in elem_pairs]}"
                 + (f" (absent: {missing})" if missing else "")
                 + "; baseline C/O = "
                 f"{A0[1 + _names.index('C')] / A0[1 + _names.index('O')]:.4f}")
-
-    _nO = np.asarray(compo[:, constants.ATOM_COLS["O"]], dtype=np.float64)
-    _mC = np.asarray(carbon_mask)
-    _mOo = np.asarray(o_only_mask)
 
     # --- cold-start seed: the network's own Gibbs equilibrium at the proposal's
     # own T-P and column elemental ratios (the upstream VULCAN start). End-to-end
@@ -592,12 +594,11 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     # carries the custom_jvp); lnZ / c_o tangents enter through the exact
     # elemental projection below. Only cold solves (warm_y=None) use it.
     _ratio_idx = ratio_indices([e for e, _ in elem_pairs])
-    _p_bar_seed = jnp.asarray(np.asarray(pco, dtype=np.float64) / constants.BAR_CGS)
 
     def _eq_seed(T, ratios, M):
         """The equilibrium column as ABSOLUTE densities (nz, ni): eq_seed
         returns mixing ratios, and every caller here works in densities."""
-        return eq_seed(T, _p_bar_seed,
+        return eq_seed(T, p_bar_j,
                        element_vector(ratios, _ratio_idx)) * M[:, None]
 
     def co_bz_margin(y):
@@ -607,7 +608,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         one). inf in proxy mode (no b_z compensation)."""
         if not co_fixed_o:
             return float("inf")
-        return bz_margin(y, _nO, _mC, _mOo)
+        return bz_margin(y, nO_per_species, carbon_mask, o_only_mask)
 
     co_bz_bound = co_bz_margin(_y0_np)   # the build's initial column
 
@@ -622,7 +623,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         the smallest per-species repair factor (must stay > 0 for a physical column;
         it is ~1 +/- the mask-leakage scale everywhere in the shipped prior boxes).
         """
-        targets = R0_j * jnp.exp(lnZ * zscale_kind + c_o * cscale_kind)  # (nrep,)
+        targets = _targets(lnZ, c_o)                            # (nrep,)
         y = y_in * (M / jnp.sum(y_in, axis=1))[:, None]
         min_adj = jnp.asarray(1.0, dtype=jnp.float64)
         for _ in range(_ELEMENTAL_REPAIR_ITERS):
@@ -703,8 +704,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         Kzz_eff = Kzz0 * jnp.exp(lnKzz)
 
         if warm_y is None:
-            ratios = R0_j * jnp.exp(lnZ * zscale_kind + c_o * cscale_kind)
-            y0p = _eq_seed(T, ratios, M)
+            y0p = _eq_seed(T, _targets(lnZ, c_o), M)
         else:
             y0p = _guess_y0(lnZ, c_o, warm_y, lnZ_ref, c_o_ref)
 
@@ -778,9 +778,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         WRONG whenever theta carries a T-P or Kzz offset). Cold by default;
         ``warm_y`` / ``lnZ_ref`` / ``c_o_ref`` start it as ``converged_y``'s
         continuation does."""
-        init, atm_T = _prep(theta, warm_y=warm_y, lnZ_ref=lnZ_ref, c_o_ref=c_o_ref)
-        init = _runner_carry_seed(init, warm_continuation=warm_y is not None,
-                                  warm_cap=False)
+        init, atm_T = _seeded_prep(theta, warm_y, lnZ_ref, c_o_ref)
         final = integ._runner(init, atm_T)
         return (final, init, atm_T) if return_atm else (final, init)
 
@@ -808,10 +806,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         certification recomputed at the exit, so a budget exit reads
         False even when ``longdy < yconv_min``. ConvDiag's float fields
         carry a tangent -- AD callers stop_gradient them."""
-        init, atm_T = _prep(theta, warm_y=warm_y,
-                            lnZ_ref=lnZ_ref, c_o_ref=c_o_ref)
-        init = _runner_carry_seed(init, warm_continuation=warm_y is not None,
-                                  warm_cap=warm_cap)
+        init, atm_T = _seeded_prep(theta, warm_y, lnZ_ref, c_o_ref, warm_cap)
         final = integ._runner(init, atm_T)
         if return_conv_diag:
             return final.y, _conv_diag(final)
@@ -849,18 +844,13 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         """
         lnZ_r, c_o_r = _ref_leaves(int(jnp.shape(thetas)[0]), lnZ_ref, c_o_ref)
 
-        def prep_one(theta_i, warm_i, lnZ_i, c_o_i):
-            init, atm_T = _prep(theta_i, warm_y=warm_i,
-                                lnZ_ref=lnZ_i, c_o_ref=c_o_i)
-            return _runner_carry_seed(init, warm_continuation=warm_y is not None,
-                                      warm_cap=warm_cap), atm_T
-
         # The AtmStatic toggles are unbatched Python bools (the runner's own
         # lane vmap broadcasts them), so they take out_axes None and every
         # array leaf takes 0 -- exactly `_ATM_STATIC_BATCH_AXES`. warm_y=None
         # is an empty pytree node, so the same vmap covers the cold seed.
         init_b, atm_b = jax.vmap(
-            prep_one, out_axes=(0, outer_loop._ATM_STATIC_BATCH_AXES),
+            lambda t, w, a, b: _seeded_prep(t, w, a, b, warm_cap),
+            out_axes=(0, outer_loop._ATM_STATIC_BATCH_AXES),
         )(thetas, warm_y, lnZ_r, c_o_r)
         final_b = integ.run_batch(init_b, atm_b)
         if return_conv_diag:
@@ -897,14 +887,10 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         key = (warm_y is not None, bool(warm_cap))
         fns = _queue_fns.get(key)
         if fns is None:
-            warm_cont, warm_cap_k = key
+            warm_cap_k = key[1]
 
             def init_fn(job):
-                theta_i, warm_i, lnZ_i, c_o_i = job
-                init, atm_T = _prep(theta_i, warm_y=warm_i,
-                                    lnZ_ref=lnZ_i, c_o_ref=c_o_i)
-                return _runner_carry_seed(init, warm_continuation=warm_cont,
-                                          warm_cap=warm_cap_k), atm_T
+                return _seeded_prep(*job, warm_cap=warm_cap_k)
 
             def out_fn(final):
                 # The ConvDiag is a report, never differentiated. With a
@@ -948,9 +934,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         the run stops only when EVERY direction has settled, so ``tangent_ok``
         is the AND over directions and ``tangent_longdy`` the worst of them."""
         def _seeded(th):
-            init, atm_T = _prep(th, warm_y=warm_y, lnZ_ref=lnZ_ref, c_o_ref=c_o_ref)
-            return _runner_carry_seed(init, warm_continuation=warm_y is not None,
-                                      warm_cap=False), atm_T
+            return _seeded_prep(th, warm_y, lnZ_ref, c_o_ref)
         def _leaves(p):   # named or positional, like converged_y
             if isinstance(p, ChemParams):
                 return jax.tree_util.tree_map(
@@ -988,22 +972,19 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         init, _atm_T = _prep(theta, warm_y=warm_y, lnZ_ref=lnZ_ref, c_o_ref=c_o_ref)
         y = np.asarray(init.y, dtype=np.float64)
         Mn = np.asarray(init.pv.n_0, dtype=np.float64)
-        A = (y @ np.asarray(compo[:, _elem_cols], dtype=np.float64)).sum(axis=0)
+        A = (y @ E_np).sum(axis=0)
         ratios = A[1:] / A[0]
-        names = [e for e, _ in elem_pairs]
+        iC, iO = _names.index("C"), _names.index("O")
+        tg = R0_ratios * np.exp(float(th[0]) * _zk + float(th[1]) * _ck)
         out = {
             "density_closure_max_rel": float(np.max(np.abs(y.sum(axis=1) - Mn) / Mn)),
-            "ratios_to_H": dict(zip(names, ratios.tolist())),
-            "baseline_ratios_to_H": dict(zip(names, (A0[1:] / A0[0]).tolist())),
+            "ratios_to_H": dict(zip(_names, ratios.tolist())),
+            "baseline_ratios_to_H": dict(zip(_names, R0_ratios.tolist())),
+            "dln_CO_achieved": float(np.log((ratios[iC] / ratios[iO])
+                                            / (R0_ratios[iC] / R0_ratios[iO]))),
+            "target_ratios_to_H": dict(zip(_names, tg.tolist())),
+            "ratio_max_rel_err": float(np.max(np.abs(ratios / tg - 1.0))),
         }
-        if "C" in names and "O" in names:
-            r_now = ratios[names.index("C")] / ratios[names.index("O")]
-            r_base = (A0[1:] / A0[0])[names.index("C")] / (A0[1:] / A0[0])[names.index("O")]
-            out["dln_CO_achieved"] = float(np.log(r_now / r_base))
-        tg = np.asarray(R0_j) * np.exp(float(th[0]) * np.asarray(zscale_kind)
-                                       + float(th[1]) * np.asarray(cscale_kind))
-        out["target_ratios_to_H"] = dict(zip(names, tg.tolist()))
-        out["ratio_max_rel_err"] = float(np.max(np.abs(ratios / tg - 1.0)))
         # Re-run the projection from the raw GUESS to expose the actual repair
         # magnitude (projecting the already-repaired y would always report ~1).
         if warm_y is None:

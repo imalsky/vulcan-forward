@@ -83,21 +83,21 @@ def _record(url, ds, iso, nat):
     return rec
 
 
-def _get(url, retries=HTTP_RETRIES):
-    """Fetch a page or raise after ``retries`` attempts, so a network failure
-    is never reported as SKIP (a page with no k-table link)."""
+def _get(url):
+    """Fetch a page or raise after ``HTTP_RETRIES`` attempts, so a network
+    failure is never reported as SKIP (a page with no k-table link)."""
     last = None
-    for k in range(retries):
+    for k in range(HTTP_RETRIES):
         try:
             req = urllib.request.Request(url, headers={"User-Agent": UA})
             with urllib.request.urlopen(req, timeout=PAGE_TIMEOUT_S) as r:
                 return r.read().decode("utf-8", "replace")
         except _NET_ERRORS as e:
             last = e
-            if k < retries - 1:
+            if k < HTTP_RETRIES - 1:
                 time.sleep(RETRY_WAIT_S)
     raise RuntimeError(
-        f"failed to fetch {url} after {retries} attempts: {last}. "
+        f"failed to fetch {url} after {HTTP_RETRIES} attempts: {last}. "
         "Cannot tell whether ExoMolOP publishes this species; fix the "
         "network and re-run rather than skipping.") from last
 
@@ -119,10 +119,7 @@ def _is_principal(iso: str) -> bool:
     ``12C-32S``. An unparseable token returns False, which makes the caller
     raise rather than silently accept an unknown naming form.
     """
-    parts = iso.split("-")
-    if not parts:
-        return False
-    for tok in parts:
+    for tok in iso.split("-"):
         m = _ISO_TOKEN.match(tok)
         if not m:
             return False
@@ -143,7 +140,7 @@ def resolve(mol: str):
             f"{mol}: no isotopologue links parsed from {ROOT}/{mol}/ -- the page "
             "layout changed or the response was not the molecule page. Not a "
             "SKIP (that means a page with no k-table link); fix the parser.")
-    if isos and not principal:
+    if not principal:
         raise RuntimeError(
             f"{mol}: none of the isotopologues ExoMolOP lists {isos} parses as "
             "the principal one (most abundant isotope of every element). "
@@ -155,36 +152,35 @@ def resolve(mol: str):
         raise RuntimeError(
             f"{mol}: {principal} all parse as principal isotopologues, which "
             "should be impossible. Refusing to pick one arbitrarily.")
-    for iso in principal:                      # principal isotopologue page
-        sets = []
-        dhtml = _get(f"{ROOT}/{mol}/{iso}/")
-        for m in re.finditer(r'href="([A-Za-z0-9_-]+)(?:#[^"]*)?"[^>]*>(.*?)</a>',
-                             dhtml, re.S):
-            if "list-group-item" in m.group(0):
-                sets.append((m.group(1), "recommended" in m.group(2)))
-        if not sets:
-            return None
-        rec = [s for s in sets if s[1]] or sets
-        ds = rec[-1][0]
-        fhtml = _get(f"{ROOT}/{mol}/{iso}/{ds}/")
-        prt = [h for h in sorted(set(re.findall(r'href="(/db/[^"]+)"', fhtml)))
-               if "petitRADTRANS" in h and h.endswith(".h5")]
-        if not prt:
-            return None
-        # More than one petitRADTRANS product per species, not interchangeable:
-        # O2's only k-table is R15000_0.2-30mu, 11.8 GB on a different grid,
-        # which taking prt[0] would download.
-        onthe = [h for h in prt if GRID_TOKEN in h]
-        if not onthe:
-            raise RuntimeError(
-                f"{mol}: ExoMolOP has petitRADTRANS files for {iso}/{ds} but "
-                f"none on the {GRID_TOKEN} grid this engine uses "
-                f"(found {[h.rsplit('/', 1)[1] for h in prt]}). A different "
-                "resolution or wavelength span is NOT a drop-in substitute -- "
-                "every table in a mixture must share one band grid.")
-        nat = [h for h in onthe if "-all__" in h or "NatAbund__" in h]
-        return BASE + (nat[0] if nat else onthe[0]), ds, iso, bool(nat)
-    return None
+    iso = principal[0]                         # principal isotopologue page
+    sets = []
+    dhtml = _get(f"{ROOT}/{mol}/{iso}/")
+    for m in re.finditer(r'href="([A-Za-z0-9_-]+)(?:#[^"]*)?"[^>]*>(.*?)</a>',
+                         dhtml, re.S):
+        if "list-group-item" in m.group(0):
+            sets.append((m.group(1), "recommended" in m.group(2)))
+    if not sets:
+        return None
+    rec = [s for s in sets if s[1]] or sets
+    ds = rec[-1][0]
+    fhtml = _get(f"{ROOT}/{mol}/{iso}/{ds}/")
+    prt = [h for h in sorted(set(re.findall(r'href="(/db/[^"]+)"', fhtml)))
+           if "petitRADTRANS" in h and h.endswith(".h5")]
+    if not prt:
+        return None
+    # More than one petitRADTRANS product per species, not interchangeable:
+    # O2's only k-table is R15000_0.2-30mu, 11.8 GB on a different grid,
+    # which taking prt[0] would download.
+    onthe = [h for h in prt if GRID_TOKEN in h]
+    if not onthe:
+        raise RuntimeError(
+            f"{mol}: ExoMolOP has petitRADTRANS files for {iso}/{ds} but "
+            f"none on the {GRID_TOKEN} grid this engine uses "
+            f"(found {[h.rsplit('/', 1)[1] for h in prt]}). A different "
+            "resolution or wavelength span is NOT a drop-in substitute -- "
+            "every table in a mixture must share one band grid.")
+    nat = [h for h in onthe if "-all__" in h or "NatAbund__" in h]
+    return BASE + (nat[0] if nat else onthe[0]), ds, iso, bool(nat)
 
 
 def _assert_grid_matches(mol, part, dest, dest_dir):

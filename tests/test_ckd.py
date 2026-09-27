@@ -14,6 +14,7 @@ import numpy as np
 import pytest
 
 import jax
+import jax.numpy as jnp
 
 # x64 mirrors production; without it the 1e-12 oracle agreement below would
 # read ~1e-6 and fail loudly rather than pass silently, but set it anyway.
@@ -38,7 +39,6 @@ def gauss_legendre(ng):
 
 def _mean_conservation_error(ng, sigma, seed):
     """Relative error in the g-weighted mean optical depth after resort-rebin."""
-    import jax.numpy as jnp
     rng = np.random.default_rng(seed)
     nl, nb = 4, 6
     g, w = gauss_legendre(ng)
@@ -73,7 +73,6 @@ def test_overlap_nearly_conserves_the_band_mean_and_converges_in_ng():
 def test_overlap_returns_a_monotone_g_ordering():
     """k(g) is a sorted distribution by construction; a non-monotone result
     would break the quadrature."""
-    import jax.numpy as jnp
     rng = np.random.default_rng(1)
     ng = 16
     g, w = gauss_legendre(ng)
@@ -87,8 +86,6 @@ def test_overlap_returns_a_monotone_g_ordering():
 def test_overlap_is_differentiable():
     """The retrieval and the Fisher forecast push forward-mode tangents through
     the whole opacity path, so the sort and the rebin must carry them."""
-    import jax
-    import jax.numpy as jnp
     ng = 8
     g, w = gauss_legendre(ng)
     gg, gw = jnp.asarray(g), jnp.asarray(w)
@@ -111,7 +108,6 @@ def test_fold_wo_is_bit_identical_to_naive_refolds():
     scale the pRT verification tolerances live at. Grouped contract: full ==
     naive fold, every wo row == naive refold with the zero operand, order
     matters, empty wo_idx returns the full fold only."""
-    import jax.numpy as jnp
     rng = np.random.default_rng(3)
     nl, ng, nb, n = 3, 8, 4, 5
     g, w = gauss_legendre(ng)
@@ -127,17 +123,20 @@ def test_fold_wo_is_bit_identical_to_naive_refolds():
         return tot
 
     wo_idx = [0, 2, 4]
-    full, wo = ckd._fold_wo(dts, lambda i: zero, gg, gw, wo_idx)
+    full, wo = ckd._fold_wo(dts, lambda i: zero, gg, gw, wo_idx,
+                             finish=lambda t: t)
     assert np.array_equal(np.asarray(full), np.asarray(naive(dts)))
     assert [i for i, _ in wo] == wo_idx
     for i, got in wo:
         want = naive([zero if j == i else dts[j] for j in range(n)])
         assert np.array_equal(np.asarray(got), np.asarray(want)), i
     # order matters: permuting the operands changes bits
-    perm, _ = ckd._fold_wo(dts[::-1], lambda i: zero, gg, gw, [])
+    perm, _ = ckd._fold_wo(dts[::-1], lambda i: zero, gg, gw, [],
+                           finish=lambda t: t)
     assert not np.array_equal(np.asarray(perm), np.asarray(full))
     # empty wo_idx: full only; finish is applied per wo row
-    full2, none = ckd._fold_wo(dts, lambda i: zero, gg, gw, [])
+    full2, none = ckd._fold_wo(dts, lambda i: zero, gg, gw, [],
+                                finish=lambda t: t)
     assert none == [] and np.array_equal(np.asarray(full2), np.asarray(full))
     _, summed = ckd._fold_wo(dts, lambda i: zero, gg, gw, [1],
                              finish=lambda t: float(jnp.sum(t)))
@@ -152,7 +151,6 @@ def test_fold_is_bit_identical_to_the_python_loop_fold():
     steps. Bitwise on the CPU; on GPU the two differ in the last bits
     (XLA fuses a scan body and straight-line code differently and rounds
     inside a fusion accordingly), so there the bar is rounding."""
-    import jax.numpy as jnp
     rng = np.random.default_rng(4)
     nl, ng, nb, n = 3, 8, 4, 5
     g, w = gauss_legendre(ng)
@@ -188,7 +186,6 @@ def test_fold_is_bit_identical_to_the_python_loop_fold():
 def test_interp_logk_clamps_outside_the_table_rather_than_extrapolating():
     """Extrapolating log k off the end of a k-table produces nonsense opacity;
     clamping is the documented behaviour and the caller validates the span."""
-    import jax.numpy as jnp
     t = jnp.asarray(np.linspace(500.0, 2000.0, 4))
     p = jnp.asarray(np.logspace(-6, 1, 3))
     logk = jnp.asarray(np.arange(4 * 3 * 2 * 1, dtype=float).reshape(4, 3, 2, 1))
@@ -208,7 +205,6 @@ def test_interp_logk_matches_exojax_interpolate_log_k_2d():
     layout, but interpolates over T per P-column and then over log P, where
     ours forms fractional indices and blends four corners. Agreement is
     float64 rounding (measured 2.8e-14; the 1e-12 bar is 35x that)."""
-    import jax.numpy as jnp
     from exojax.opacity.ckd.core import interpolate_log_k_2d
 
     rng = np.random.default_rng(0)

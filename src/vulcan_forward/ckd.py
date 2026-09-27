@@ -82,7 +82,7 @@ def fold(dts, gg, gw):
     return tot
 
 
-def _fold_wo(dts, zero_of, gg, gw, wo_idx, finish=None):
+def _fold_wo(dts, zero_of, gg, gw, wo_idx, finish):
     """Left-fold ``dts`` with ``overlap``; for each i in ``wo_idx`` also produce
     the same fold with ``dts[i]`` replaced by ``zero_of(i)``, reusing the
     running prefix. Returns ``(full_total, [(i, finish(total_wo)), ...])`` with
@@ -99,9 +99,6 @@ def _fold_wo(dts, zero_of, gg, gw, wo_idx, finish=None):
     ``finish`` maps each wo total to its observable before the next fold starts,
     so at most one (nlayer, ng, nband) wo total is alive at a time.
     """
-    if finish is None:
-        def finish(t):
-            return t
     n = len(dts)
     wo_idx = set(wo_idx)
     out = []

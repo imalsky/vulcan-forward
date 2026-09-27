@@ -53,11 +53,9 @@ version = { attr = "vulcan_forward._version.__version__" }
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F"]
 
-# vulcan_chem must set the VULCAN_JAX_* import-frozen env vars and jax x64
-# before importing jax/vulcan_jax, so its module-level imports legitimately
-# follow executable statements.
+# exojax_rt enables jax x64 before its exojax imports, so its module-level
+# imports follow a statement (vulcan_chem marks its two with noqa).
 [tool.ruff.lint.per-file-ignores]
-"src/vulcan_forward/vulcan_chem.py" = ["E402"]
 "src/vulcan_forward/exojax_rt.py" = ["E402"]
 
 [tool.ruff]
