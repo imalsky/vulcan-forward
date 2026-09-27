@@ -299,9 +299,10 @@ def test_emission_h2o_matches_prt():
 
 def test_eclipse_flux_carries_the_tau_two_thirds_photospheric_radius():
     """Gray isothermal column (the alpha = 0 cloud deck is the only opacity):
-    tau(P) = kappa P / g, so the photosphere sits at P = (2/3) g / kappa
-    exactly, and the eclipse flux must be pi*B(T) times (R(P_phot)/R_em)^2
-    with R from the same hydrostatic integral the anchor uses. The plain
+    tau(P) = kappa int dP / g(r), with the inverse-square g(r) of the same
+    hydrostatic integral the anchor uses, so the photosphere sits where that
+    integral reaches 2/3, and the eclipse flux must be pi*B(T) times
+    (R(P_phot)/R_em)^2. The plain
     emission flux stays pi*B(T): the radius enters the eclipse quantity only."""
     nlay = 80
     prof = dict(molecules=["H2O"], nu_min=1.0e4 / 5.0, nu_max=1.0e4 / 3.0,
@@ -323,17 +324,21 @@ def test_eclipse_flux_carries_the_tau_two_thirds_photospheric_radius():
 
     assert float(r_em) == pytest.approx(r_iso(emod.p_ref_emission_bar), rel=ROUND_TOL)
     # tau is zero at the grid's TOP BOUNDARY (half a layer above the first
-    # centre; exojax's dParr[0] spans p0 k^0.5 .. p0 k^-0.5), so the gray
-    # photosphere sits at P_top + (2/3) g / kappa. Third point: inside the top
-    # half layer, where a clamped integrator would return the top-centre radius.
+    # centre; exojax's dParr[0] spans p0 k^0.5 .. p0 k^-0.5). Third point:
+    # inside the top half layer, where a clamped integrator would return the
+    # top-centre radius.
     p0 = float(emod.p_art_bar[0])
     dl = float(np.log(emod.p_art_bar[1] / emod.p_art_bar[0]))
     p_top = p0 * np.exp(-0.5 * dl)
+    pg = np.geomspace(p_top, prof["art_pbtm_bar"], 200001)
+    inv_g = r_iso(pg) ** 2 / (prof["gs_cgs"] * prof["rp_cm"] ** 2)   # 1 / g(r)
+    int_inv_g = 1.0e6 * np.concatenate(                           # bar -> cgs
+        [[0.0], np.cumsum(0.5 * (inv_g[1:] + inv_g[:-1]) * np.diff(pg))])
     lk_top = float(np.log10((2.0 / 3.0) * float(g_em)
                             / ((p0 * np.exp(-0.4 * dl) - p_top) * 1.0e6)))
     for log_kappa in (-1.5, -3.0, lk_top):  # ~0.01 bar, ~0.3 bar, top half layer
         cloud = jnp.asarray([log_kappa, 0.0])
-        p_phot = p_top + (2.0 / 3.0) * float(g_em) / 10.0 ** log_kappa / 1.0e6
+        p_phot = np.interp(2.0 / 3.0, 10.0 ** log_kappa * int_inv_g, pg)
         r_phot = r_iso(p_phot)
         want = (np.asarray(piBarr(jnp.asarray([T]), jnp.asarray(emod.nu_grid)))[0]
                 * (float(r_phot) / float(r_em)) ** 2)

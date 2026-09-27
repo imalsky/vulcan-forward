@@ -514,8 +514,7 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
         Rp_btm, g_btm = _anchor_to_grid_bottom(
             lnp_art, T_art, mmw_art, Rp_ref, g_ref, p_ref_bar)
         # Inverse-square g(r), the gravity ExoJax uses for the chord heights
-        # (see _gravity_profile_invsq). Emission keeps one gravity at
-        # p_ref_emission_bar.
+        # (see _gravity_profile_invsq); emission uses the same law.
         g_prof = _gravity_profile_invsq(art, T_art, mmw_art, Rp_btm, g_btm)  # (nlayer,1)
         dtau_g = _accumulate_dtau_ckd(
             art, ckd_pack, mols, molmass, opacia, opacia_he,
@@ -659,16 +658,22 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
             vmr, vmr_h2, vmr_he, T_art, mmw_art, g_em, cloud=cloud,
             rayleigh_xs=None)
 
+    def _g_layers(T_art, mmw_art):
+        """Inverse-square g(r) at the layer centres, (nlayer, 1): the optical
+        depth takes the same g(r) as the radius anchor and the photosphere."""
+        return _radius_at(lnp_em, T_art, mmw_art, r_ref_em, g_ref_em,
+                          p_ref_used, jnp.exp(lnp_em))[1][:, None]
+
     def emission_flux(vmr, vmr_h2, T_art, mmw_art, vmr_he=None, cloud=None):
         """Emergent thermal flux (n_nu,) from ART-grid VMR/T/mmw profiles.
 
         vmr_he is REQUIRED (H2-He CIA -- same continuum physics as transmission;
         the None default only upgrades the omission error message)."""
         _require_he(vmr_he)
-        _, g_em = _emission_anchor(T_art, mmw_art)
         # linsap takes the source at the layer BOUNDARIES (nlayer + 1); the
         # representative centres would raise a broadcasting error.
-        dtau_g = _dtau(vmr, vmr_h2, vmr_he, T_art, mmw_art, g_em, cloud)
+        dtau_g = _dtau(vmr, vmr_h2, vmr_he, T_art, mmw_art,
+                       _g_layers(T_art, mmw_art), cloud)
         return _run_emis_ckd_linsap(art, dtau_g, _boundary_temperature(T_art),
                                     nu_grid, ckd_pack.gw)
 
@@ -703,14 +708,15 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
         on the AD path.
         """
         _require_he(vmr_he)
-        _, g_em = _emission_anchor(T_art, mmw_art)
-        dtau_g = _dtau(vmr, vmr_h2, vmr_he, T_art, mmw_art, g_em, cloud)
+        dtau_g = _dtau(vmr, vmr_h2, vmr_he, T_art, mmw_art,
+                       _g_layers(T_art, mmw_art), cloud)
         return jnp.min(jnp.sum(dtau_g, axis=0), axis=0)
 
     def _flux_tau(vmr, vmr_h2, T_art, mmw_art, vmr_he, cloud, wo_mols,
                   photosphere):
         _require_he(vmr_he)
-        r_em, g_em = _emission_anchor(T_art, mmw_art)
+        r_em, _ = _emission_anchor(T_art, mmw_art)
+        g_em = _g_layers(T_art, mmw_art)
 
         def _finish(dtau_g):
             w = None
