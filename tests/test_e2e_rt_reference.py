@@ -245,6 +245,13 @@ def test_wo_batch_is_bit_identical_to_separate_solves():
             np.asarray(d_wo[i]),
             np.asarray(trt.transmission_depth_r(wo_vmr(m), zeros, T, mmw, 0.0,
                                                 vmr_he=zeros))), m
+    # lnR0 rescales the radius at P_btm with gravity fixed: the disk goes as
+    # R^2 and the atmosphere's annulus as R, so d ln(depth) / d lnR0 sits just
+    # below 2 (a depth scaling as R would read ~1).
+    h = 1.0e-2
+    d_h = np.asarray(trt.transmission_depth_r(vmr, zeros, T, mmw, h, vmr_he=zeros))
+    slope = np.log(d_h / np.asarray(d_full)) / h
+    assert np.all((slope > 1.5) & (slope < 2.0)), (slope.min(), slope.max())
 
     f, tau, f_wo, tau_wo = emod.emission_flux_tau(vmr, zeros, T, mmw,
                                                   vmr_he=zeros, wo_mols=mols)
@@ -322,11 +329,11 @@ def test_eclipse_flux_carries_the_tau_two_thirds_photospheric_radius():
     p0 = float(emod.p_art_bar[0])
     dl = float(np.log(emod.p_art_bar[1] / emod.p_art_bar[0]))
     p_top = p0 * np.exp(-0.5 * dl)
-    lk_top = float(np.log10(exojax_rt.TAU_PHOTOSPHERE * float(g_em)
+    lk_top = float(np.log10((2.0 / 3.0) * float(g_em)
                             / ((p0 * np.exp(-0.4 * dl) - p_top) * 1.0e6)))
     for log_kappa in (-1.5, -3.0, lk_top):  # ~0.01 bar, ~0.3 bar, top half layer
         cloud = jnp.asarray([log_kappa, 0.0])
-        p_phot = p_top + exojax_rt.TAU_PHOTOSPHERE * float(g_em) / 10.0 ** log_kappa / 1.0e6
+        p_phot = p_top + (2.0 / 3.0) * float(g_em) / 10.0 ** log_kappa / 1.0e6
         r_phot = r_iso(p_phot)
         want = (np.asarray(piBarr(jnp.asarray([T]), jnp.asarray(emod.nu_grid)))[0]
                 * (float(r_phot) / float(r_em)) ** 2)

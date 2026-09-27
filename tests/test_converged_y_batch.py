@@ -63,6 +63,20 @@ def runs():
     return chem, np.asarray(y_b), cd_b, np.asarray(y_v), cd_v, y_one
 
 
+def test_initial_column_carries_the_theta_elemental_ratios(runs):
+    """lnZ scales every metal's ratio to H by e^lnZ and c_o scales carbon's by
+    e^c_o on top (O stays at e^lnZ, He stays put), read off the built column
+    against the baseline column, independently of the projection's targets."""
+    chem = runs[0]
+    lnZ, c_o = 0.3, 0.1
+    audit = chem.audit_init(jnp.asarray([lnZ, c_o, 0.0, 0.0]))
+    got, base = audit["ratios_to_H"], audit["baseline_ratios_to_H"]
+    want = {"He": 1.0, "C": np.exp(lnZ + c_o)}
+    for e in got:
+        np.testing.assert_allclose(got[e] / base[e], want.get(e, np.exp(lnZ)),
+                                   rtol=1e-10, err_msg=e)
+
+
 def test_batched_lanes_are_their_own_solves_and_agree_with_the_vmap(runs):
     _chem, y_b, cd_b, y_v, cd_v, y_one = runs
     for k in range(THETAS.shape[0]):
