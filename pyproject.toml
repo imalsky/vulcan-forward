@@ -13,10 +13,10 @@ license-files = ["LICENSE"]
 dependencies = [
     "numpy>=1.26",
     "jax>=0.6.2",
-    # exojax==2.2.3 pinned: the inverse-square gravity workaround and one
-    # compatibility-shim import (exojax.database.contdb) depend on it. It caps
-    # numpy<2, which this package keeps out of vulcan-jax.
-    "exojax==2.2.3",
+    # Exact pin: the RT is verified against petitRADTRANS on this version, and
+    # a new version moves the spectra (2.2.3 -> 2.6.0: CODATA 2022 m_u and a
+    # rewritten Planck function shift every spectrum at the 1e-8 level).
+    "exojax==2.6.0",
     # >=0.17.0: vulcan_jax.conv_normal (ConvDiag's certificate) and
     # validate_overrides (the cfg_overrides check).
     "vulcan-jax>=0.17.0",
