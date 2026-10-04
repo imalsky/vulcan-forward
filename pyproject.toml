@@ -14,8 +14,7 @@ dependencies = [
     "numpy>=1.26",
     "jax>=0.6.2",
     # Exact pin: the RT is verified against petitRADTRANS on this version, and
-    # a new version moves the spectra (2.2.3 -> 2.6.0: CODATA 2022 m_u and a
-    # rewritten Planck function shift every spectrum at the 1e-8 level).
+    # a new version moves the spectra.
     "exojax==2.6.0",
     # >=0.17.0: vulcan_jax.conv_normal (ConvDiag's certificate) and
     # validate_overrides (the cfg_overrides check).

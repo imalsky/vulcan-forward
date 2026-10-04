@@ -253,9 +253,9 @@ _SCRATCH_ROOT: str | None = None
 
 def _redirect_output_dirs(cfg) -> None:
     """Redirect a relative ``cfg.output_dir`` to a per-process temp directory,
-    removed at exit: vulcan-jax 0.17.0's ``op.Output`` creates it under the cwd
-    (later speed heads do not), and this engine never writes .vul output. An
-    absolute path is left alone.
+    removed at exit: ``op.Output`` at the vulcan-jax version floor creates it
+    under the cwd, and this engine never writes .vul output. An absolute path
+    is left alone.
     """
     global _SCRATCH_ROOT
     val = getattr(cfg, "output_dir", None)

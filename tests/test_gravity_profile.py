@@ -5,9 +5,9 @@ that a refactor can silently undo. There are two wrong neighbours it could
 collapse onto, and neither raises:
 
 * constant `g_btm`, which makes the upper layers' opacity columns too light;
-* `art.gravity_profile`, ExoJAX's own helper (<=2.2.3), which is LINEAR in
-  1/r while its height integrator `normalized_layer_height` is inverse-square.
-  Using it leaves heights and opacity columns on different gravities.
+* a profile LINEAR in 1/r, while ExoJAX's height integrator
+  `normalized_layer_height` is inverse-square. Using it leaves heights and
+  opacity columns on different gravities.
 
 Against an independent chord quadrature the three differ by tens of ppm in
 transit depth (constant g -102 ppm, 1/r-linear -51 ppm, inverse-square

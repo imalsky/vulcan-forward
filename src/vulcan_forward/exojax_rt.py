@@ -63,11 +63,12 @@ def _check_profile(profile: dict) -> None:
 def _gravity_profile_invsq(art, T_art, mmw_art, radius_btm, gravity_btm):
     """Mid-layer inverse-square gravity profile, g(r) = g_btm * (R_btm/r)^2.
 
-    ExoJax's ``ArtCommon.gravity_profile`` (<=2.2.3) is linear in 1/r while
-    its height integrator is inverse-square; this keeps opacity columns and
-    heights on one gravity (vs a chord quadrature: 1/r-linear -51 ppm,
-    inverse-square +1.5 ppm in depth). Same (nlayer, 1) shape as
-    ``gravity_profile``, so it broadcasts through the dtau kernels.
+    The pinned exojax's ``ArtCommon.gravity_profile`` computes the same
+    profile; this copy keeps the engine's gravity pinned by its own test
+    whatever exojax does. exojax's height integrator is inverse-square too, so
+    opacity columns and heights stay on one gravity (vs a chord quadrature:
+    1/r-linear -51 ppm, inverse-square +1.5 ppm in depth). Same (nlayer, 1)
+    shape as ``gravity_profile``, so it broadcasts through the dtau kernels.
     """
     normalized_height, normalized_radius_lower = art.atmosphere_height(
         T_art, mmw_art, radius_btm, gravity_btm)

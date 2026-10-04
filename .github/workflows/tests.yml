@@ -4,12 +4,12 @@ name: tests
 # with no data installed, that the $VULCAN_FORWARD_DATA contract fails loudly
 # instead of guessing, that the molecule table is injectable, and that planet
 # geometry is required -- the properties the two consumer repos build on.
-# vulcan_jax IS installed (its speed branch), so the normal-tier chemistry
+# vulcan_jax IS installed (its main branch), so the normal-tier chemistry
 # tests (batch, queue) run too; the RT physics runs locally, where exojax and
 # the data are installed.
 on:
   push:
-    branches: [main, speed]
+    branches: [main]
   pull_request:
 
 jobs:
@@ -34,7 +34,7 @@ jobs:
       # heavy tree (exojax is absent, so the modules that need it skip via
       # find_spec). jax + numpy + h5py ARE installed so the
       # ckd, interp_map, exomolop and params_from_vector tests run. vulcan-jax
-      # comes from its speed branch with --no-deps, its own deps listed here,
+      # comes from its main branch with --no-deps, its own deps listed here,
       # and exogibbs --no-deps plus pandas as VULCAN-JAX's CI installs them;
       # jax is pinned to the version VULCAN-JAX's tolerances are calibrated on.
       # numpy<2 as in the root workspace env.
@@ -42,7 +42,7 @@ jobs:
         run: |
           pip install pytest "numpy<2" "jax==0.6.2" h5py scipy pyyaml pandas
           pip install --no-deps "exogibbs==0.6.0"
-          pip install --no-deps "vulcan-jax @ git+https://github.com/imalsky/jax-vulcan.git@speed"
+          pip install --no-deps "vulcan-jax @ git+https://github.com/imalsky/jax-vulcan.git@main"
           pip install --no-deps -e .
       # The normal tier. The full tier (VULCAN_FORWARD_RUN_FULL=1) runs
       # locally: its gradient tests peak near 21 GB, above a hosted runner's

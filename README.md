@@ -20,8 +20,9 @@ vulcan-forward      chemistry driver and radiative transfer
 
 The model uses correlated-k opacity from the published ExoMolOP tables. It
 includes molecular absorption, H2-H2 and H2-He collision-induced absorption,
-Rayleigh scattering, and optional cloud opacity. The main model parameters are
-metallicity, C/O, eddy diffusion, and temperature-profile parameters.
+optional H2/He Rayleigh scattering (transmission only), and optional cloud
+opacity. The main model parameters are metallicity, C/O, eddy diffusion, and
+temperature-profile parameters.
 
 ## Install
 
@@ -32,7 +33,7 @@ python -m pip install \
   vulcan-forward
 ```
 
-The package pins ExoJAX 2.2.3. Do not replace this version without rerunning
+The package pins ExoJAX 2.6.0. Do not replace this version without rerunning
 the radiative-transfer and derivative tests.
 
 Import `vulcan_chem` before ExoJAX. This sets the chemistry network and enables
@@ -63,11 +64,11 @@ is no default planet.
 ## Validation and limits
 
 The tests compare transmission and emission calculations with
-[petitRADTRANS](https://doi.org/10.1051/0004-6361/201935470), and compare the
-chemistry with VULCAN. The correlated-k reader and (T, P) interpolation are
-cross-checked against ExoJAX and exo_k on the same k-table files, at the
-native R = 1000 grid and binned to R = 100. The committed figures and the
-code that makes them live in
+[petitRADTRANS](https://doi.org/10.1051/0004-6361/201935470); VULCAN-JAX's
+own tests compare the chemistry with VULCAN. The correlated-k reader and
+(T, P) interpolation are cross-checked against ExoJAX and exo_k on the same
+k-table files, at the native R = 1000 grid and binned to R = 100. The
+committed figures and the code that makes them live in
 [jwst-transit-authority/validation](https://github.com/imalsky/jwst-transit-authority/tree/main/validation).
 
 ```bash
@@ -89,7 +90,7 @@ Published work should cite the components used by the run:
 - ExoJAX: [Kawahara et al. (2022)](https://arxiv.org/abs/2105.14782) and
   [Kawahara et al. (2025)](https://arxiv.org/abs/2410.06900)
 - ExoMolOP tables: [Chubb et al. (2021)](https://doi.org/10.1051/0004-6361/202038350)
-- FastChem initialization: [Stock et al. (2018)](https://doi.org/10.1093/mnras/sty1531)
+- Equilibrium initialization: the [ExoGibbs](https://github.com/HajimeKawahara/exogibbs) package
 
 Also record the package versions, opacity sources, reaction network, and model
 configuration.

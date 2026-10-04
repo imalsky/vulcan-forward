@@ -7,7 +7,7 @@ integrates once, offline, into a few g-ordinates per band.
 The k-tables themselves come from ExoMolOP (``vulcan_forward.exomolop``); this
 module holds the source-independent machinery that consumes them.
 
-Mixtures: exojax 2.2.3 ships no overlap treatment: ``opacity_profile_xs_ckd`` takes one
+Mixtures: exojax ships no overlap treatment: ``opacity_profile_xs_ckd`` takes one
 species. Tables are per species, because the composition changes every run, so
 they are combined here by random-overlap resort-rebin, the standard approach
 (petitRADTRANS, PICASO, HELIOS). It is written in JAX and is differentiable,
