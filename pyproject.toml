@@ -16,6 +16,10 @@ dependencies = [
     # Exact pin: the RT is verified against petitRADTRANS on this version, and
     # a new version moves the spectra.
     "exojax==2.6.0",
+    # exojax needs radis; radis 0.17.1 requires vaex-core on Python < 3.13,
+    # which has no wheel past 3.10 and fails to build, so 3.11 and 3.12
+    # installs break. 0.16.3 requires vaex only below 3.11.
+    "radis<0.17",
     # >=0.17.0: vulcan_jax.conv_normal (ConvDiag's certificate) and
     # validate_overrides (the cfg_overrides check).
     "vulcan-jax>=0.17.0",
