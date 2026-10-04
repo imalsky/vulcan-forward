@@ -72,7 +72,12 @@ committed figures and the code that makes them live in
 [jwst-transit-authority/validation](https://github.com/imalsky/jwst-transit-authority/tree/main/validation).
 
 ```bash
-python -m pip install -e ".[dev]"
+git clone https://github.com/imalsky/vulcan-forward.git
+cd vulcan-forward
+python -m pip install \
+  -i https://test.pypi.org/simple/ \
+  --extra-index-url https://pypi.org/simple/ \
+  -e ".[dev]"
 python -m pytest tests -q
 ```
 
