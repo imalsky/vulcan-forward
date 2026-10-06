@@ -94,11 +94,14 @@ import jax.numpy as jnp  # noqa: E402
 
 jax.config.update("jax_enable_x64", True)
 
-# Column-repair pairs for the exact-elemental mode: element -> adjuster species,
-# the runner's own atom-conservation reservoirs (abundant carriers in H2-dominated
-# gas, so the linear repair stays tiny and well-conditioned). H is the reference
-# element; He preserves the baseline He/H.
-_ELEMENTAL_REPAIR = (("He", "He"), ("O", "H2O"), ("C", "CO"), ("N", "N2"), ("S", "H2S"))
+# Column-repair groups for the exact-elemental mode: element -> adjuster species,
+# scaled by one common factor per element. Each group holds the element's dominant
+# carriers in H2-dominated gas, so the linear repair stays tiny and
+# well-conditioned. Carbon needs CO and CH4 together: below ~900 K CH4 holds the
+# carbon and CO only ~1e-3 of it, so a CO-only repair of a 1% carbon error drives
+# CO negative. H is the reference element; He preserves the baseline He/H.
+_ELEMENTAL_REPAIR = (("He", ("He",)), ("O", ("H2O",)), ("C", ("CO", "CH4")),
+                     ("N", ("N2",)), ("S", ("H2S",)))
 # Renorm+repair iterations: one pass takes a warm guess's ~1e-1 residual to
 # ~1e-10, two reach machine precision (~1e-15); see audit_init.
 _ELEMENTAL_REPAIR_ITERS = 3
@@ -557,17 +560,24 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     # Baseline elemental totals (layer sums, no dz weight) from the pristine y0 (which sums to
     # M_base per layer by construction: equilibrium mixing ratios x layer density).
     # Targets are RATIOS to elemental H; absolute densities follow from sum_i n_i = M.
-    elem_pairs = [(e, sp) for e, sp in _ELEMENTAL_REPAIR
-                  if sp in sidx and compo[:, constants.ATOM_COLS[e]].sum() > 0]
+    elem_pairs = [(e, tuple(sp for sp in sps if sp in sidx)) for e, sps in _ELEMENTAL_REPAIR
+                  if any(sp in sidx for sp in sps)
+                  and compo[:, constants.ATOM_COLS[e]].sum() > 0]
     _y0_np = np.asarray(y0, dtype=np.float64)
     _elem_cols = [constants.ATOM_COLS["H"]] + [constants.ATOM_COLS[e] for e, _ in elem_pairs]
     # (ni, 1+nrep) atoms-per-molecule for [H, He, O, C, N, S]-as-present
     E_np = np.asarray(compo[:, _elem_cols], dtype=np.float64)
     E_mat = jnp.asarray(E_np)
-    rep_cols = np.asarray([sidx[sp] for _, sp in elem_pairs], dtype=np.int64)
+    # adjuster species of all groups in one gather, and each one's group; the
+    # group totals are explicit adds over those static positions (a contraction
+    # over species would let XLA reorder the sum between batched routes)
+    rep_cols = np.asarray([sidx[sp] for _, sps in elem_pairs for sp in sps], dtype=np.int64)
+    rep_group = np.asarray([k for k, (_, sps) in enumerate(elem_pairs) for _ in sps],
+                           dtype=np.int64)
+    rep_slots = [np.flatnonzero(rep_group == k).tolist() for k in range(len(elem_pairs))]
     A0 = _y0_np @ E_np                                                # per-layer (nz, 1+nrep)
     A0 = A0.sum(axis=0)                                               # column totals
-    missing = [sp for _, sp in _ELEMENTAL_REPAIR if sp not in sidx]
+    missing = [sp for _, sps in _ELEMENTAL_REPAIR for sp in sps if sp not in sidx]
     if not elem_pairs:
         raise RuntimeError("elemental mode: no repair species found in the network")
     R0_ratios = A0[1:] / A0[0]
@@ -614,6 +624,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     co_bz_bound = co_bz_margin(_y0_np)   # the build's initial column
 
     rep_cols_j = jnp.asarray(rep_cols)
+    rep_group_j = jnp.asarray(rep_group)
 
     def _elemental_project(y_in, M, lnZ, c_o):
         """Renormalize to sum_i n_i = M and repair the column elemental ratios exactly.
@@ -621,7 +632,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         y_in : (nz, ni) guessed absolute densities. Returns (y_out, min_adj) where
         y_out rows sum to M and the column ratios-to-H equal the theta targets to the
         fixed-iteration residual (~1e-15 rel; audit_init measures it), and min_adj is
-        the smallest per-species repair factor (must stay > 0 for a physical column;
+        the smallest per-group repair factor (must stay > 0 for a physical column;
         it is ~1 +/- the mask-leakage scale everywhere in the shipped prior boxes).
         """
         targets = _targets(lnZ, c_o)                            # (nrep,)
@@ -629,13 +640,21 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         min_adj = jnp.asarray(1.0, dtype=jnp.float64)
         for _ in range(_ELEMENTAL_REPAIR_ITERS):
             A = jnp.einsum("zi,ie->e", y, E_mat)                # [H, e1..] column totals
-            col_tot = jnp.sum(y[:, rep_cols_j], axis=0)         # (nrep,) adjuster columns
-            B = E_mat[rep_cols_j, :].T * col_tot[None, :]       # (1+nrep, nrep)
+            col_tot = jnp.sum(y[:, rep_cols_j], axis=0)         # adjuster columns
+            Bs = E_mat[rep_cols_j, :].T * col_tot[None, :]      # per adjuster species
+            cols = []
+            for slots in rep_slots:                             # (1+nrep, nrep) per group
+                b = Bs[:, slots[0]]
+                for j in slots[1:]:
+                    b = b + Bs[:, j]
+                cols.append(b)
+            B = jnp.stack(cols, axis=1)
             Msys = B[1:, :] - targets[:, None] * B[0:1, :]
             rhs = targets * A[0] - A[1:]
             alpha = jnp.linalg.solve(Msys, rhs)                 # (nrep,) additive factors
             min_adj = jnp.minimum(min_adj, jnp.min(1.0 + alpha))
-            scale_vec = jnp.ones(ni, dtype=jnp.float64).at[rep_cols_j].set(1.0 + alpha)
+            scale_vec = jnp.ones(ni, dtype=jnp.float64).at[rep_cols_j].set(
+                1.0 + alpha[rep_group_j])
             y = y * scale_vec[None, :]
             y = y * (M / jnp.sum(y, axis=1))[:, None]
         return y, min_adj
