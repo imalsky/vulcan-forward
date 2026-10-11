@@ -241,18 +241,24 @@ def test_wo_batch_is_bit_identical_to_separate_solves():
         np.asarray(d_full),
         np.asarray(trt.transmission_depth_r(vmr, zeros, T, mmw, 0.0,
                                             vmr_he=zeros)))
+    assert np.array_equal(
+        np.asarray(d_full),
+        np.asarray(trt.transmission_depth(vmr, zeros, T, mmw, vmr_he=zeros)))
     for i, m in enumerate(mols):
         assert np.array_equal(
             np.asarray(d_wo[i]),
             np.asarray(trt.transmission_depth_r(wo_vmr(m), zeros, T, mmw, 0.0,
                                                 vmr_he=zeros))), m
-    # lnR0 rescales the radius at P_btm with gravity fixed: the disk goes as
-    # R^2 and the atmosphere's annulus as R, so d ln(depth) / d lnR0 sits just
-    # below 2 (a depth scaling as R would read ~1).
+    # lnR0 is a radius change at fixed planet mass: the depth of a model quoted
+    # at rp_cm * e^h with gravity gs_cgs * e^(-2h). A fixed-g scaling misses
+    # this by the scale-height change, ~2h of the annulus.
     h = 1.0e-2
     d_h = np.asarray(trt.transmission_depth_r(vmr, zeros, T, mmw, h, vmr_he=zeros))
-    slope = np.log(d_h / np.asarray(d_full)) / h
-    assert np.all((slope > 1.5) & (slope < 2.0)), (slope.min(), slope.max())
+    trt_h = exojax_rt.build_rt_model({**prof, "rp_cm": prof["rp_cm"] * np.exp(h),
+                                      "gs_cgs": prof["gs_cgs"] * np.exp(-2.0 * h)})
+    np.testing.assert_allclose(
+        d_h, np.asarray(trt_h.transmission_depth(vmr, zeros, T, mmw, vmr_he=zeros)),
+        rtol=ROUND_TOL, atol=0.0)
 
     f, tau, f_wo, tau_wo = emod.emission_flux_tau(vmr, zeros, T, mmw,
                                                   vmr_he=zeros, wo_mols=mols)

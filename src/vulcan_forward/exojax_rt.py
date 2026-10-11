@@ -527,13 +527,15 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
 
     def transmission_depth_r(vmr, vmr_h2, T_art, mmw_art, lnR0, vmr_he=None,
                              cloud=None, wo_mols=None):
-        """transmission_depth with a reference-radius scaling: the radius at the bottom
-        pressure P_btm is Rp_btm * e^lnR0 (gravity held fixed -- the standard xR_p
-        normalization nuisance, cf. Batalha & Line 2017). lnR0 = 0 reproduces
-        transmission_depth exactly; the lnR0 jvp is the exact geometric+hydrostatic
-        response, RT-only (chemistry profiles enter frozen). Because gravity is held
-        fixed, lnR0 must be read as a pressure-radius normalization, NOT a physical
-        planet-radius change at fixed mass.
+        """transmission_depth with a reference-radius scaling at fixed planet mass:
+        the radius at p_ref_bar is Rp_ref * e^lnR0 and the gravity there
+        g_ref * e^(-2 lnR0), so GM = g_ref Rp_ref^2 is unchanged and the column
+        hangs from the scaled radius under its own gravity. lnR0 = 0 reproduces
+        transmission_depth (bitwise eager; under jit the folded gravity can move
+        by one ulp); the lnR0 jvp is the exact geometric+hydrostatic
+        response, RT-only (chemistry profiles enter frozen). Holding g instead
+        would make the planet e^(2 lnR0) times lighter and every scale height
+        e^(-2 lnR0) times larger, which the retrieval pays for in T and mu.
 
         wo_mols: None (default) returns the depth (n_nu,).
         A list of molecule names returns ``(depth, depth_wo)`` with one row per
@@ -543,20 +545,18 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
         overlap folds instead of (n+1)(n-1): 1.3x fewer at n=5)."""
         _require_he(vmr_he)
         Rp_btm, g_btm = _anchor_to_grid_bottom(
-            lnp_art, T_art, mmw_art, Rp_ref, g_ref, p_ref_bar)
-        Rp_r = Rp_btm * jnp.exp(lnR0)
-        # g(r) at the lnR0-scaled radius (g_btm held fixed); see
-        # transmission_depth.
-        g_prof = _gravity_profile_invsq(art, T_art, mmw_art, Rp_r, g_btm)  # (nlayer,1)
+            lnp_art, T_art, mmw_art, Rp_ref * jnp.exp(lnR0),
+            g_ref * jnp.exp(-2.0 * lnR0), p_ref_bar)
+        # Inverse-square g(r); see transmission_depth.
+        g_prof = _gravity_profile_invsq(art, T_art, mmw_art, Rp_btm, g_btm)  # (nlayer,1)
 
         def _depth_of(Rp2):
             # one expression and op order for both paths, so the single and wo
             # results agree bitwise
-            return (Rp2 * (Rp_btm / rstar_cm) ** 2                  # (radius/R_star)^2
-                    * jnp.exp(2.0 * lnR0))
+            return Rp2 * (Rp_btm / rstar_cm) ** 2                   # (radius/R_star)^2
 
         def _finish(dtau_g):
-            return _depth_of(art.run_ckd(dtau_g, T_art, mmw_art, Rp_r,
+            return _depth_of(art.run_ckd(dtau_g, T_art, mmw_art, Rp_btm,
                                          g_btm, ckd_pack.gw))
 
         if wo_mols is None:
