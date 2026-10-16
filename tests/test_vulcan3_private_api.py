@@ -20,11 +20,9 @@ import pathlib
 
 import pytest
 
-vulcan3 = pytest.importorskip(
-    "vulcan3", reason="VULCAN-JAX is a hard dependency of this engine")
-
-from vulcan3.outer_loop import OuterLoop           # noqa: E402
+# vulcan_chem first: it sets the import-frozen network before vulcan3 loads.
 from vulcan_forward import vulcan_chem                # noqa: E402
+from vulcan3.outer_loop import OuterLoop           # noqa: E402
 
 
 def _private_calls_on(receiver: str):
