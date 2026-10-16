@@ -21,7 +21,7 @@ import pytest
 if importlib.util.find_spec("exojax") is None:              # pragma: no cover
     pytest.skip("exojax not installed (light-CI environment)",
                 allow_module_level=True)
-if importlib.util.find_spec("vulcan_jax") is not None:      # pragma: no cover
+if importlib.util.find_spec("vulcan3") is not None:      # pragma: no cover
     from vulcan_forward import vulcan_chem  # noqa: F401
 else:                                                        # pragma: no cover
     import jax as _jax

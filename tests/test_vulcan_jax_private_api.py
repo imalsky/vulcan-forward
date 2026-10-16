@@ -1,7 +1,7 @@
 """The private VULCAN-JAX surface this engine reaches into must stay callable.
 
 `vulcan_chem.build_chem_model` calls a few PRIVATE methods on
-`vulcan_jax.outer_loop.OuterLoop` (leading underscore, no compatibility promise).
+`vulcan3.outer_loop.OuterLoop` (leading underscore, no compatibility promise).
 The coupling is needed: the engine needs the runner's own packing and
 refresh kernels to seed a carry consistent with what the loop maintains -- but it
 means a refactor inside VULCAN-JAX can break this repo without either project's
@@ -20,10 +20,10 @@ import pathlib
 
 import pytest
 
-vulcan_jax = pytest.importorskip(
-    "vulcan_jax", reason="VULCAN-JAX is a hard dependency of this engine")
+vulcan3 = pytest.importorskip(
+    "vulcan3", reason="VULCAN-JAX is a hard dependency of this engine")
 
-from vulcan_jax.outer_loop import OuterLoop           # noqa: E402
+from vulcan3.outer_loop import OuterLoop           # noqa: E402
 from vulcan_forward import vulcan_chem                # noqa: E402
 
 

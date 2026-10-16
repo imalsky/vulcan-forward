@@ -48,40 +48,40 @@ from vulcan_forward import constants
 
 logger = logging.getLogger(__name__)
 
-# This module must own the first jax import: it fixes the VULCAN_JAX_* import-frozen
+# This module must own the first jax import: it fixes the VULCAN3_* import-frozen
 # env vars and jax x64. If exojax got in first those knobs are already baked wrong.
 if "exojax" in sys.modules:
     raise RuntimeError(
         "vulcan_forward.vulcan_chem must be imported BEFORE exojax: it fixes "
-        "jax x64 and the VULCAN_JAX_* import-frozen env vars. Import order: "
+        "jax x64 and the VULCAN3_* import-frozen env vars. Import order: "
         "vulcan_forward.vulcan_chem, then vulcan_forward.exojax_rt.")
 
 # VULCAN-JAX freezes network/atom_list at ITS first import, so arriving after
 # it makes the setdefault below a no-op and the run fails much later. Raise
 # only when the frozen choice actually conflicts with what this engine needs.
-_WANT_ENV = {"VULCAN_JAX_NETWORK": constants.DEFAULT_NETWORK,
-             "VULCAN_JAX_ATOM_LIST": constants.DEFAULT_ATOM_LIST}
-if "vulcan_jax" in sys.modules:
+_WANT_ENV = {"VULCAN3_NETWORK": constants.DEFAULT_NETWORK,
+             "VULCAN3_ATOM_LIST": constants.DEFAULT_ATOM_LIST}
+if "vulcan3" in sys.modules:
     _conflict = {k: (os.environ.get(k), v) for k, v in _WANT_ENV.items()
                  if os.environ.get(k) not in (None, v)}
-    # With the env vars unset, read the network vulcan_jax actually froze.
+    # With the env vars unset, read the network vulcan3 actually froze.
     if not _conflict:
-        _frozen = getattr(sys.modules["vulcan_jax"], "chem_funs", None)
+        _frozen = getattr(sys.modules["vulcan3"], "chem_funs", None)
         _frozen = getattr(getattr(_frozen, "_NETWORK", None), "network_path", None)
         if _frozen and os.path.basename(_frozen) != os.path.basename(
                 constants.DEFAULT_NETWORK):
-            _conflict = {"VULCAN_JAX_NETWORK": (_frozen,
+            _conflict = {"VULCAN3_NETWORK": (_frozen,
                                                 constants.DEFAULT_NETWORK)}
     if _conflict:
         raise RuntimeError(
-            "vulcan_jax was imported before vulcan_forward.vulcan_chem, so its "
+            "vulcan3 was imported before vulcan_forward.vulcan_chem, so its "
             "network/atom_list are already frozen and cannot be changed: "
             + "; ".join(f"{k} is {got!r} but this engine needs {want!r}"
                         for k, (got, want) in _conflict.items())
             + ". Import vulcan_forward.vulcan_chem first, or set those env vars "
-              "before importing vulcan_jax.")
+              "before importing vulcan3.")
 
-# --- env setup MUST happen before importing vulcan_jax / jax ------------------
+# --- env setup MUST happen before importing vulcan3 / jax ------------------
 # setdefault, not assignment: a caller driving a non-default network (a batched
 # emulator, say) sets these itself, and silently overwriting that choice would
 # model different chemistry than was asked for.
@@ -115,7 +115,7 @@ _ATOMIC_MASS_TOL_G_MOL = 0.01
 
 def _assert_composition_tables(composition) -> None:
     """Verify constants.ATOM_COLS / constants.ATOMIC_MASSES against the composition
-    metadata vulcan_jax actually loaded.
+    metadata vulcan3 actually loaded.
 
     Both config tables are positional hardcoded mirrors of the package's
     composition table (whose atom-column order comes from the com_file header at
@@ -127,14 +127,14 @@ def _assert_composition_tables(composition) -> None:
     if len(constants.ATOMIC_MASSES) != len(atom_list):
         raise RuntimeError(
             f"constants.ATOMIC_MASSES has {len(constants.ATOMIC_MASSES)} entries but "
-            f"vulcan_jax.composition.atom_list has {len(atom_list)} columns "
+            f"vulcan3.composition.atom_list has {len(atom_list)} columns "
             f"{atom_list}: the hardcoded mass table no longer mirrors the "
             "package's composition table.")
     for elem, col in constants.ATOM_COLS.items():
         if atom_list[col] != elem:
             raise RuntimeError(
                 f"constants.ATOM_COLS[{elem!r}] = {col} but "
-                f"vulcan_jax.composition.atom_list[{col}] is {atom_list[col]!r} "
+                f"vulcan3.composition.atom_list[{col}] is {atom_list[col]!r} "
                 f"(full order {atom_list}): the hardcoded element-column map no "
                 "longer matches the package's atom order.")
     compo, compo_row = composition.compo, composition.compo_row
@@ -256,7 +256,7 @@ _SCRATCH_ROOT: str | None = None
 
 def _redirect_output_dirs(cfg) -> None:
     """Redirect a relative ``cfg.output_dir`` to a per-process temp directory,
-    removed at exit: ``op.Output`` at the vulcan-jax version floor creates it
+    removed at exit: ``op.Output`` at the vulcan3 version floor creates it
     under the cwd, and this engine never writes .vul output. An absolute path
     is left alone.
     """
@@ -302,10 +302,10 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     """
     t0 = time.time()
     constants.check_profile_keys(profile)
-    import vulcan_jax
+    import vulcan3
 
-    # Baseline VULCAN config by name (vulcan_jax/configs/*.yaml).
-    cfg = vulcan_jax.load_config(profile.get("vulcan_cfg_name") or constants.DEFAULT_CFG_NAME)
+    # Baseline VULCAN config by name (vulcan3/configs/*.yaml).
+    cfg = vulcan3.load_config(profile.get("vulcan_cfg_name") or constants.DEFAULT_CFG_NAME)
     cfg.use_print_prog = False
     cfg.use_photo = bool(profile["use_photo"])
     cfg.yconv_cri = float(profile["yconv_cri"])
@@ -319,7 +319,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     # Generic cfg overrides, applied BEFORE the pre-loop build so they reach
     # make_atm_static / OuterLoop exactly like use_photo does. setattr checks
     # nothing, so a removed or misspelled key is refused first.
-    vulcan_jax.validate_overrides(profile.get("cfg_overrides") or {})
+    vulcan3.validate_overrides(profile.get("cfg_overrides") or {})
     for _k, _v in (profile.get("cfg_overrides") or {}).items():
         setattr(cfg, _k, _v)
 
@@ -354,24 +354,24 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         cfg.P_t = (float(_ptop if _ptop is not None else constants.ART_PTOP_BAR)
                    * constants.BAR_CGS)
 
-    from vulcan_jax.state import RunState, legacy_view
-    from vulcan_jax import network as net_mod, composition, rates_jax
-    from vulcan_jax import atm_jax, atm_refresh as atm_refresh_mod
-    from vulcan_jax import conden as conden_mod
-    from vulcan_jax.atm_setup import _VISCOSITY_TABLE, settling_velocity_jax
-    from vulcan_jax.jax_step import make_atm_static
-    from vulcan_jax.gibbs import load_nasa9
-    from vulcan_jax.ini_abun import (column_atoms, element_vector, eq_seed,
+    from vulcan3.state import RunState, legacy_view
+    from vulcan3 import network as net_mod, composition, rates_jax
+    from vulcan3 import atm_jax, atm_refresh as atm_refresh_mod
+    from vulcan3 import conden as conden_mod
+    from vulcan3.atm_setup import _VISCOSITY_TABLE, settling_velocity_jax
+    from vulcan3.jax_step import make_atm_static
+    from vulcan3.gibbs import load_nasa9
+    from vulcan3.ini_abun import (column_atoms, element_vector, eq_seed,
                                      ratio_indices)
-    from vulcan_jax._paths import resolve_data_path
-    from vulcan_jax.phy_const import kb
-    import vulcan_jax.legacy_io as op
-    import vulcan_jax.op_jax as op_jax
-    import vulcan_jax.outer_loop as outer_loop
+    from vulcan3._paths import resolve_data_path
+    from vulcan3.phy_const import kb
+    import vulcan3.legacy_io as op
+    import vulcan3.op_jax as op_jax
+    import vulcan3.outer_loop as outer_loop
 
     _assert_composition_tables(composition)
 
-    # Condensation with a live T(P): vulcan-jax's runtime validation (inside
+    # Condensation with a live T(P): vulcan3's runtime validation (inside
     # with_pre_loop_setup) refuses the inert configurations; this is the one
     # it cannot see. _prep rebuilds the conden arrays per proposal.
     use_condense = bool(cfg.use_condense)
@@ -413,7 +413,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
 
     thermo_dir = resolve_data_path(cfg.network).parent
     if not (thermo_dir / "NASA9").exists():
-        thermo_dir = Path(vulcan_jax.__file__).resolve().parent / "thermo"
+        thermo_dir = Path(vulcan3.__file__).resolve().parent / "thermo"
     nasa9, _ = load_nasa9(network.species, thermo_dir)
     remove_list = cfg.remove_list
 
@@ -481,14 +481,14 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
 
     def _conv_diag(final, tangent_ok=True, tangent_longdy=jnp.nan):
         """ConvDiag read off the runner's exit carry. ``conv_normal`` is
-        ``vulcan_jax.conv_normal`` (the terms listed on ConvDiag; not the ready
+        ``vulcan3.conv_normal`` (the terms listed on ConvDiag; not the ready
         gate, hybrid phase or non-finite exit) AND ``tangent_ok``, the
         ``OuterLoop.run_jvp`` sensitivity certificate on the ``converged_y_jvp``
         path (primal path: True). ``conv_branch`` stays the column's own branch,
         so a consumer can tell an unsettled sensitivity (branch set,
         ``tangent_longdy`` above the gate) from an uncertified column. The
         controlling cell is the argmax of the carry's ``where_varies_most``."""
-        ok, branch = vulcan_jax.conv_normal(final, cfg)
+        ok, branch = vulcan3.conv_normal(final, cfg)
         flat = jnp.argmax(final.where_varies_most)
         return ConvDiag(
             accept_count=final.accept_count,
@@ -600,8 +600,8 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
 
     # --- cold-start seed: the network's own Gibbs equilibrium at the proposal's
     # own T-P and column elemental ratios (the upstream VULCAN start). End-to-end
-    # JAX (vulcan_jax.ini_abun.eq_seed): no host callback, so it jits and vmaps
-    # with the rest of the solve. Its tangent is zero by construction (vulcan-jax
+    # JAX (vulcan3.ini_abun.eq_seed): no host callback, so it jits and vmaps
+    # with the rest of the solve. Its tangent is zero by construction (vulcan3
     # carries the custom_jvp); lnZ / c_o tangents enter through the exact
     # elemental projection below. Only cold solves (warm_y=None) use it.
     _ratio_idx = ratio_indices([e for e, _ in elem_pairs])
@@ -887,7 +887,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     def converged_y_queue(thetas, n_lanes, *, chunk=None, warm_y=None,
                           lnZ_ref=0.0, c_o_ref=0.0, warm_cap=False):
         """``converged_y_batch`` on ``n_lanes`` lanes with refill from the job
-        queue (vulcan-jax ``OuterLoop.run_queue``): a lane that certifies is
+        queue (vulcan3 ``OuterLoop.run_queue``): a lane that certifies is
         written out and takes the next theta inside the same while loop, so
         wall time follows total work / lanes instead of the slowest theta.
 
@@ -903,7 +903,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         ``lnZ_ref`` / ``c_o_ref`` (scalar or ``(N,)``) and ``warm_cap`` mean
         what they mean on ``converged_y_batch``: the references ride the jobs
         pytree, so each job is prepped at its own, and the cap rides the
-        carry. ``chunk=None`` keeps vulcan-jax's own refill chunk."""
+        carry. ``chunk=None`` keeps vulcan3's own refill chunk."""
         key = (warm_y is not None, bool(warm_cap))
         fns = _queue_fns.get(key)
         if fns is None:
@@ -915,7 +915,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
             def out_fn(final):
                 # The ConvDiag is a report, never differentiated. With a
                 # tangent it would keep the certificate ring's tangent alive
-                # through the queue's refill cond (vulcan-jax `run_queue` zeroes
+                # through the queue's refill cond (vulcan3 `run_queue` zeroes
                 # the ring's at its lane step for the same reason).
                 return final.y, jax.tree_util.tree_map(jax.lax.stop_gradient,
                                                        _conv_diag(final))
@@ -937,7 +937,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
 
         ``dy`` is the tangent of ``converged_y`` along ``tangent`` (same shape
         as ``theta``), read when BOTH the column and the tangent pass the
-        runner's certificate (vulcan-jax ``OuterLoop.run_jvp``): the tangent
+        runner's certificate (vulcan3 ``OuterLoop.run_jvp``): the tangent
         is held, per cell, to the same change-over-lookback tolerance as
         ``y``, so pass ``tangent`` in the units of a finite-difference step
         (``e_i * h_i``) and divide ``dy`` by ``h_i`` afterwards. A plain
@@ -947,7 +947,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         is the tangent's longdy at exit.
 
         SEVERAL DIRECTIONS AT ONCE: pass ``tangent`` as a stack ``(D, n_theta)``
-        against the single ``(n_theta,)``. The directions ride vulcan-jax's own
+        against the single ``(n_theta,)``. The directions ride vulcan3's own
         tangent axis, so the solver integrates the primal ONCE for all D
         (``jax.vmap`` of this call would integrate it D times -- the tangent
         certificate is in the loop predicate). ``dy`` comes back ``(D, nz, ni)``;

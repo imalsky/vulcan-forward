@@ -14,9 +14,9 @@ planner (jwst-transit-authority); neither depends on the other.
     exojax_rt    opacities + CIA + ArtTransPure/ArtEmisPure -> depth or flux
 
 Import order: ``vulcan_chem`` must be imported before anything
-from exojax: it sets the VULCAN_JAX_* import-frozen env vars and enables jax
+from exojax: it sets the VULCAN3_* import-frozen env vars and enables jax
 x64, both of which are read once at first import. It raises if exojax (or a
-conflicting vulcan_jax) got there first rather than producing a subtly wrong
+conflicting vulcan3) got there first rather than producing a subtly wrong
 model, so the canonical order is:
 
     from vulcan_forward import constants, vulcan_chem, interp_map, exojax_rt

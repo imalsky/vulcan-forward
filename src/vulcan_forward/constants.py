@@ -1,7 +1,7 @@
 """Shared physics constants for the VULCAN-JAX -> ExoJAX forward model.
 
 Pure constants (plus the profile-key check): NO heavy imports (no jax, no
-vulcan_jax, no exojax) and NO filesystem access, so this module is safe to
+vulcan3, no exojax) and NO filesystem access, so this module is safe to
 import before the env-order-sensitive VULCAN-JAX setup runs and safe to import
 on a machine with no data installed. Data locations live in ``paths.py``;
 application-specific settings (planet geometry, run profiles,
@@ -10,16 +10,16 @@ parameter-vector layouts) belong to the consumer, not here.
 from __future__ import annotations
 
 # VULCAN-JAX network selection
-# These must be in the environment BEFORE the first ``import vulcan_jax``
+# These must be in the environment BEFORE the first ``import vulcan3``
 # (VULCAN-JAX freezes network/atom_list at first import). ``vulcan_chem``
 # applies them; the package docstring states the import-order contract.
 DEFAULT_NETWORK = "thermo/SNCHO_photo_network.txt"
 DEFAULT_ATOM_LIST = "H,O,C,N,S"
-# Default ``vulcan_jax.load_config`` name. A caller normally passes
+# Default ``vulcan3.load_config`` name. A caller normally passes
 # ``profile["vulcan_cfg_name"]`` instead; this is only the fallback.
 DEFAULT_CFG_NAME = "W39b"
 
-# Composition tables: mirrors of vulcan_jax.composition (this module stays
+# Composition tables: mirrors of vulcan3.composition (this module stays
 # import-light); vulcan_chem checks them at build time and raises on drift.
 #
 # Index of each element column we touch when building the Z / C/O knobs.
@@ -71,7 +71,7 @@ P_REF_EMISSION_BAR = 1.0e-1
 
 # Physical constants and unit factors, cgs, local so this module stays
 # stdlib-only. K_B_CGS is CODATA 2018 (1.380649e-16). The chemistry uses
-# vulcan_jax.phy_const.kb = 1.38064852e-16 (CODATA 2014), upstream VULCAN's
+# vulcan3.phy_const.kb = 1.38064852e-16 (CODATA 2014), upstream VULCAN's
 # value, so its rates match the reference code; the two differ by 3.5e-7
 # relative.
 K_B_CGS = 1.380649e-16      # Boltzmann constant, erg/K

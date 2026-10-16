@@ -23,7 +23,7 @@ import pytest
 if importlib.util.find_spec("exojax") is None:              # pragma: no cover
     pytest.skip("RT stack (exojax) not installed; run where exojax is present.",
                 allow_module_level=True)
-if importlib.util.find_spec("vulcan_jax") is not None:      # pragma: no cover
+if importlib.util.find_spec("vulcan3") is not None:      # pragma: no cover
     from vulcan_forward import vulcan_chem  # noqa: F401
 else:                                                        # pragma: no cover
     import jax as _jax

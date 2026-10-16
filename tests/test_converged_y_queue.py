@@ -1,5 +1,5 @@
 """``converged_y_queue``: the batched cold solve on a fixed number of lanes fed
-from a queue of thetas (vulcan-jax ``OuterLoop.run_queue``).
+from a queue of thetas (vulcan3 ``OuterLoop.run_queue``).
 
 Three properties:
 
@@ -38,8 +38,8 @@ import numpy as np
 import pytest
 
 # Import order: skip via find_spec, never importorskip("exojax"); vulcan_chem before jax.
-if importlib.util.find_spec("vulcan_jax") is None:           # pragma: no cover
-    pytest.skip("vulcan_jax not installed (light-CI environment)",
+if importlib.util.find_spec("vulcan3") is None:           # pragma: no cover
+    pytest.skip("vulcan3 not installed (light-CI environment)",
                 allow_module_level=True)
 
 from vulcan_forward import vulcan_chem                       # noqa: E402

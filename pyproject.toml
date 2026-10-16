@@ -20,9 +20,10 @@ dependencies = [
     # which has no wheel past 3.10 and fails to build, so 3.11 and 3.12
     # installs break. 0.16.3 requires vaex only below 3.11.
     "radis<0.17",
-    # >=0.17.0: vulcan_jax.conv_normal (ConvDiag's certificate) and
-    # validate_overrides (the cfg_overrides check).
-    "vulcan-jax>=0.17.0",
+    # >=0.18.0: the first release under the vulcan3 name; it carries
+    # conv_normal (ConvDiag's certificate) and validate_overrides (the
+    # cfg_overrides check).
+    "vulcan3>=0.18.0",
     # Core, not an extra: every consumer reads ExoMolOP HDF5 k-tables; the
     # import stays function-local, so the package imports without data.
     "h5py>=3.9",

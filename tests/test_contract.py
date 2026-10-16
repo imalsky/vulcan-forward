@@ -5,7 +5,7 @@ prose: the package imports with no data installed, its
 data-root contract fails loudly instead of guessing, the molecule table is
 injectable, and planet geometry is required rather than defaulted to WASP-39 b.
 
-Dependency-light -- no jax, no exojax, no vulcan_jax -- so this
+Dependency-light -- no jax, no exojax, no vulcan3 -- so this
 file runs anywhere. The physics itself is validated by the consumers' suites
 against real spectra.
 """
@@ -213,7 +213,7 @@ def test_the_engine_never_resolves_its_data_root_from___file__():
 
     Resolving the root from this package's own `__file__` would pin the engine
     to one repo's directory nesting. `vulcan_chem` may still read
-    `vulcan_jax.__file__` -- that locates the SIBLING package's vendored
+    `vulcan3.__file__` -- that locates the SIBLING package's vendored
     thermo data, which is a different thing and is allowed.
     """
     import ast
@@ -227,7 +227,7 @@ def test_the_engine_never_resolves_its_data_root_from___file__():
             if not (isinstance(node, ast.Name) and node.id == "__file__"):
                 continue
             offenders.append(f"{src.name}:{node.lineno}")
-    # vulcan_chem's vulcan_jax.__file__ read is an Attribute, not a bare Name,
+    # vulcan_chem's vulcan3.__file__ read is an Attribute, not a bare Name,
     # so it does not appear above; a bare __file__ would.
     assert offenders == [], (
         f"bare __file__ used in {offenders}: the engine must not resolve its "

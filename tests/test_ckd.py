@@ -21,7 +21,7 @@ import jax.numpy as jnp
 jax.config.update("jax_enable_x64", True)
 
 HAVE_EXOJAX = importlib.util.find_spec("exojax") is not None
-if HAVE_EXOJAX and importlib.util.find_spec("vulcan_jax") is not None:
+if HAVE_EXOJAX and importlib.util.find_spec("vulcan3") is not None:
     # Import order: vulcan_chem before exojax, in every collection order.
     from vulcan_forward import vulcan_chem  # noqa: F401
 

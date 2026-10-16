@@ -1,7 +1,7 @@
 # vulcan-forward
 
 `vulcan-forward` is the shared forward model that I'm using for different VULCAN work. It runs
-[VULCAN-JAX](https://github.com/imalsky/jax-vulcan) chemistry and then uses
+[VULCAN-JAX](https://github.com/imalsky/VULCAN3) chemistry and then uses
 [ExoJAX](https://github.com/HajimeKawahara/exojax) radiative transfer to make
 a transmission or thermal-emission spectrum. I separated it here because I have
 several projects that need this forward model (a retrieval and a JWST
@@ -10,7 +10,7 @@ observation planning tool).
 Two applications use this package:
 
 ```text
-vulcan-jax          chemical kinetics
+vulcan3          chemical kinetics
     |
 vulcan-forward      chemistry driver and radiative transfer
     |

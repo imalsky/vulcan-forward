@@ -33,7 +33,7 @@ if importlib.util.find_spec("h5py") is None:
     pytest.skip("h5py not installed", allow_module_level=True)
 
 # Import order: vulcan_chem before exojax; find_spec, never importorskip("exojax").
-if importlib.util.find_spec("vulcan_jax") is not None:
+if importlib.util.find_spec("vulcan3") is not None:
     from vulcan_forward import vulcan_chem  # noqa: F401
 else:
     import jax as _jax
