@@ -885,7 +885,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     _queue_fns = {}
 
     def converged_y_queue(thetas, n_lanes, *, chunk=None, warm_y=None,
-                          lnZ_ref=0.0, c_o_ref=0.0, warm_cap=False):
+                          lnZ_ref=0.0, c_o_ref=0.0, warm_cap=False, active=None):
         """``converged_y_batch`` on ``n_lanes`` lanes with refill from the job
         queue (vulcan3 ``OuterLoop.run_queue``): a lane that certifies is
         written out and takes the next theta inside the same while loop, so
@@ -903,14 +903,29 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         ``lnZ_ref`` / ``c_o_ref`` (scalar or ``(N,)``) and ``warm_cap`` mean
         what they mean on ``converged_y_batch``: the references ride the jobs
         pytree, so each job is prepped at its own, and the cap rides the
-        carry. ``chunk=None`` keeps vulcan3's own refill chunk."""
-        key = (warm_y is not None, bool(warm_cap))
+        carry. ``chunk=None`` keeps vulcan3's own refill chunk.
+
+        ``active`` (optional ``(N,)`` bool): a job with ``active[i]`` False is
+        a placeholder (a padded row). Its lane starts done, so it takes no
+        step: it is written out at the next refill (or the final flush) with
+        its seed column and a ConvDiag of zero accepted steps, and its lane
+        goes to the next job. Its result is meaningless; the caller discards
+        it. ``None`` (the default) is the program without the mask."""
+        masked = active is not None
+        key = (warm_y is not None, bool(warm_cap), masked)
         fns = _queue_fns.get(key)
         if fns is None:
             warm_cap_k = key[1]
 
-            def init_fn(job):
-                return _seeded_prep(*job, warm_cap=warm_cap_k)
+            if masked:
+                def init_fn(job):
+                    *core, act = job
+                    init, atm_T = _seeded_prep(*core, warm_cap=warm_cap_k)
+                    return init._replace(
+                        is_done=init.is_done | jnp.logical_not(act)), atm_T
+            else:
+                def init_fn(job):
+                    return _seeded_prep(*job, warm_cap=warm_cap_k)
 
             def out_fn(final):
                 # The ConvDiag is a report, never differentiated. With a
@@ -925,11 +940,18 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
 
         # warm_y=None is an empty pytree node, so the same jobs pytree covers
         # the cold seed.
-        lnZ_r, c_o_r = _ref_leaves(int(jnp.shape(thetas)[0]), lnZ_ref, c_o_ref)
+        n = int(jnp.shape(thetas)[0])
+        lnZ_r, c_o_r = _ref_leaves(n, lnZ_ref, c_o_ref)
+        jobs = (thetas, warm_y, lnZ_r, c_o_r)
+        if masked:
+            act = jnp.asarray(active, dtype=bool)
+            if act.shape != (n,):
+                raise ValueError(f"converged_y_queue: active must have shape ({n},), "
+                                 f"got {act.shape}")
+            jobs = jobs + (act,)
         chunk_kw = {} if chunk is None else {"chunk": int(chunk)}
         (y, cd), _n_iter = integ.run_queue(
-            init_fn, (thetas, warm_y, lnZ_r, c_o_r), int(n_lanes), out_fn,
-            **chunk_kw)
+            init_fn, jobs, int(n_lanes), out_fn, **chunk_kw)
         return y, cd
 
     def converged_y_jvp(theta, tangent, warm_y=None, lnZ_ref=0.0, c_o_ref=0.0):

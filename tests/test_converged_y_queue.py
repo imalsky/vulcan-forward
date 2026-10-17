@@ -205,6 +205,42 @@ def test_two_stage_warm_queue_keeps_the_observed_species(chem):
             assert max(worst) < SPECIES_MAX, name
 
 
+def test_masked_jobs_take_no_step(chem):
+    """``active``: a masked job's lane starts done, so it takes no step (zero
+    accepted steps, never certified) and its lane goes to the next job. A
+    masked SUFFIX -- how vulcan-retrieval pads a short chunk -- leaves the
+    active jobs' schedule alone: their step counts and certificates are the
+    unmasked queue's, and their columns agree to roundoff (on the GPU the
+    retrieval's real-mix check pins them bitwise)."""
+    th = jnp.asarray(THETAS)
+    y0 = jnp.broadcast_to(jnp.asarray(chem.y0), (THETAS.shape[0],) + chem.y0.shape)
+    warm = {"warm_y": y0, "lnZ_ref": 0.0, "c_o_ref": 0.0}
+    act = np.array([True, True, False, False])
+    y_m, cd_m = chem.converged_y_queue(th, n_lanes=2, chunk=1, active=jnp.asarray(act),
+                                       **warm)
+    y_u, cd_u = chem.converged_y_queue(th, n_lanes=2, chunk=1, **warm)
+    acc_m, acc_u = np.asarray(cd_m.accept_count), np.asarray(cd_u.accept_count)
+    y_m, y_u = np.asarray(y_m), np.asarray(y_u)
+    print(f"[masked suffix] accept_count masked {acc_m.tolist()} unmasked "
+          f"{acc_u.tolist()}; active columns bitwise "
+          f"{bool(np.array_equal(y_m[act], y_u[act]))}", flush=True)
+    assert np.all(acc_m[~act] == 0)
+    assert not np.any(np.asarray(cd_m.conv_normal)[~act])
+    assert np.all(acc_u[~act] > 0)            # unmasked, the same jobs do run
+    assert np.array_equal(acc_m[act], acc_u[act])
+    assert np.array_equal(np.asarray(cd_m.conv_normal)[act],
+                          np.asarray(cd_u.conv_normal)[act])
+    assert bool(np.all(np.asarray(cd_m.conv_normal)[act]))
+    for k in np.flatnonzero(act):
+        mix = y_u[k] / y_u[k].sum(axis=1, keepdims=True)
+        obs = mix > MIX_FLOOR
+        rel = np.abs(y_m[k] - y_u[k]) / np.maximum(np.abs(y_u[k]), 1e-300)
+        assert rel[obs].max() < 1.0e-9, (k, float(rel[obs].max()))
+    with pytest.raises(ValueError, match="active must have shape"):
+        chem.converged_y_queue(th, n_lanes=2, chunk=1, active=jnp.asarray(act[:3]),
+                               **warm)
+
+
 def _dy_rel(dy, dy_ref, mix):
     """max|dy - dy_ref| / max|dy_ref| over the cells the spectrum can see.
 
