@@ -55,19 +55,28 @@ def overlap(a, b, gg, gw):
     The nodes/weights are ARGUMENTS, not a module assumption: ExoMolOP tables
     carry petitRADTRANS' split quadrature (8 points on [0, 0.9] + 8 on
     [0.9, 1]), not plain Gauss-Legendre, and they flow through unchanged.
+
+    Layout: the ng*ng sums of one (layer, band) cell lie along the LAST axis,
+    in flat order i*ng + j, and ONE stable two-operand ``lax.sort`` carries
+    the weights with them. On the GPU this is ~4x faster than an argsort along
+    the middle axis plus two ``take_along_axis`` gathers (XLA's sort kernel is
+    slow on a non-minor sort axis), and it is the same computation: the same
+    keys in the same order, the same stable comparator (ties keep i*ng + j
+    order), the same cumsum and interpolation, so the result is bitwise the
+    middle-axis form's. The rebin is sensitive to the cumsum's rounding (an
+    ulp in the cumulative g moves the spectrum by up to ~1e-9), so keep the
+    weights sorted as a payload rather than re-gathered.
     """
     nl, ng, nb = a.shape
-    s = (a[:, :, None, :] + b[:, None, :, :]).reshape(nl, ng * ng, nb)
-    w = jnp.broadcast_to((gw[:, None] * gw[None, :])[None, :, :, None],
-                         (nl, ng, ng, nb)).reshape(nl, ng * ng, nb)
-    idx = jnp.argsort(s, axis=1)
-    ss = jnp.take_along_axis(s, idx, axis=1)
-    ws = jnp.take_along_axis(w, idx, axis=1)
-    cg = jnp.cumsum(ws, axis=1) - 0.5 * ws
-    f = jax.vmap(jax.vmap(lambda c, v: jnp.interp(gg, c, v),
-                          in_axes=(1, 1), out_axes=1),
-                 in_axes=(0, 0), out_axes=0)
-    return f(cg, ss)
+    at = jnp.swapaxes(a, 1, 2)                                 # (nl, nb, ng)
+    bt = jnp.swapaxes(b, 1, 2)
+    s = (at[:, :, :, None] + bt[:, :, None, :]).reshape(nl, nb, ng * ng)
+    w = jnp.broadcast_to((gw[:, None] * gw[None, :]).reshape(ng * ng),
+                         (nl, nb, ng * ng))
+    ss, ws = jax.lax.sort((s, w), dimension=2, num_keys=1, is_stable=True)
+    cg = jnp.cumsum(ws, axis=2) - 0.5 * ws
+    f = jax.vmap(jax.vmap(lambda c, v: jnp.interp(gg, c, v)))
+    return jnp.swapaxes(f(cg, ss), 1, 2)                      # (nl, ng, nb)
 
 
 def fold(dts, gg, gw):
