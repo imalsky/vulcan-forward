@@ -218,8 +218,8 @@ def test_wo_batch_is_bit_identical_to_separate_solves():
     fold implementations together: the batch's full spectrum comes from the
     leave-one-out Python-loop prefix, a single solve from ckd.fold's scan, so
     up to four molecules make the scan take several steps. Grouped:
-    transmission full + rows, emission flux/tau full + rows, and the
-    unknown-molecule refusal."""
+    transmission full + rows, lnR0 at fixed mass for both observables,
+    emission flux/tau full + rows, and the unknown-molecule refusal."""
     mols = ["H2O"] + [m for m in ("CO2", "CO", "CH4")
                       if exomolop.table_path(m).exists()]
     prof = {**EMIS_PROF, "molecules": mols, "art_nlayer": 40, "rp_cm": 7.1492e9}
@@ -259,6 +259,19 @@ def test_wo_batch_is_bit_identical_to_separate_solves():
     np.testing.assert_allclose(
         d_h, np.asarray(trt_h.transmission_depth(vmr, zeros, T, mmw, vmr_he=zeros)),
         rtol=ROUND_TOL, atol=0.0)
+    # Emission follows the same fixed-mass convention: the eclipse flux, its
+    # bottom optical depth and the prefactor radius at lnR0 = h are those of
+    # the model built at rp_cm * e^h, gs_cgs * e^(-2h).
+    emod_h = exojax_rt.build_emis_model(
+        trt_h, {**prof, "rp_cm": prof["rp_cm"] * np.exp(h),
+                "gs_cgs": prof["gs_cgs"] * np.exp(-2.0 * h)})
+    for got, want in zip(
+            emod.eclipse_flux_tau(vmr, zeros, T, mmw, vmr_he=zeros, lnR0=h)
+            + (emod.emission_radius(T, mmw, lnR0=h),),
+            emod_h.eclipse_flux_tau(vmr, zeros, T, mmw, vmr_he=zeros)
+            + (emod_h.emission_radius(T, mmw),)):
+        np.testing.assert_allclose(np.asarray(got), np.asarray(want),
+                                   rtol=ROUND_TOL, atol=0.0)
 
     f, tau, f_wo, tau_wo = emod.emission_flux_tau(vmr, zeros, T, mmw,
                                                   vmr_he=zeros, wo_mols=mols)

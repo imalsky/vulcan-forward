@@ -659,13 +659,21 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
             vmr, vmr_h2, vmr_he, T_art, mmw_art, g_em, cloud=cloud,
             rayleigh_xs=None)
 
-    def _g_layers(T_art, mmw_art):
+    # lnR0 is a radius change at fixed planet mass, as in transmission_depth_r:
+    # the anchor at p_ref_bar becomes radius r e^lnR0 with gravity g e^(-2 lnR0),
+    # so the gravity profile, the optical depth, the photospheric radius and
+    # the prefactor radius all follow. lnR0 = 0 is the unscaled model.
+    def _anchor(lnR0):
+        return r_ref_em * jnp.exp(lnR0), g_ref_em * jnp.exp(-2.0 * lnR0)
+
+    def _g_layers(T_art, mmw_art, lnR0):
         """Inverse-square g(r) at the layer centres, (nlayer, 1): the optical
         depth takes the same g(r) as the radius anchor and the photosphere."""
-        return _radius_at(lnp_em, T_art, mmw_art, r_ref_em, g_ref_em,
+        return _radius_at(lnp_em, T_art, mmw_art, *_anchor(lnR0),
                           p_ref_used, jnp.exp(lnp_em))[1][:, None]
 
-    def emission_flux(vmr, vmr_h2, T_art, mmw_art, vmr_he=None, cloud=None):
+    def emission_flux(vmr, vmr_h2, T_art, mmw_art, vmr_he=None, cloud=None,
+                      lnR0=0.0):
         """Emergent thermal flux (n_nu,) from ART-grid VMR/T/mmw profiles.
 
         vmr_he is REQUIRED (H2-He CIA -- same continuum physics as transmission;
@@ -674,20 +682,16 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
         # linsap takes the source at the layer BOUNDARIES (nlayer + 1); the
         # representative centres would raise a broadcasting error.
         dtau_g = _dtau(vmr, vmr_h2, vmr_he, T_art, mmw_art,
-                       _g_layers(T_art, mmw_art), cloud)
+                       _g_layers(T_art, mmw_art, lnR0), cloud)
         return _run_emis_ckd_linsap(art, dtau_g, _boundary_temperature(T_art),
                                     nu_grid, ckd_pack.gw)
 
-    def _emission_anchor(T_art, mmw_art):
+    def _emission_anchor(T_art, mmw_art, lnR0):
         """(radius, gravity) at p_ref_emission_bar -- ONE consistent pair."""
-        return _radius_at(lnp_em, T_art, mmw_art, r_ref_em, g_ref_em,
+        return _radius_at(lnp_em, T_art, mmw_art, *_anchor(lnR0),
                           p_ref_used, p_ref_em)
 
-    # lnR0 convention: the eclipse prefactor scales this radius by
-    # exp(2*lnR0), as transmission does. Approximate: the consistent exponent
-    # is 2*Rp_btm/r_em and g_em's lnR0 response is dropped; both are below the
-    # eclipse-depth error budget and must be corrected together.
-    def emission_radius(T_art, mmw_art):
+    def emission_radius(T_art, mmw_art, lnR0=0.0):
         """Planet radius (cm) at p_ref_emission_bar, for the eclipse-depth
         (R_p/R_star)^2 prefactor.
 
@@ -697,9 +701,9 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
         misstates GM. Differentiable, and traced through T/mmw like the
         gravity the same column uses.
         """
-        return _emission_anchor(T_art, mmw_art)[0]
+        return _emission_anchor(T_art, mmw_art, lnR0)[0]
 
-    def tau_bottom(vmr, vmr_h2, T_art, mmw_art, vmr_he, cloud=None):
+    def tau_bottom(vmr, vmr_h2, T_art, mmw_art, vmr_he, cloud=None, lnR0=0.0):
         """Minimum over g-ordinates of the total vertical optical depth at the
         column bottom, per band (n_nu,).
 
@@ -710,19 +714,19 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
         """
         _require_he(vmr_he)
         dtau_g = _dtau(vmr, vmr_h2, vmr_he, T_art, mmw_art,
-                       _g_layers(T_art, mmw_art), cloud)
+                       _g_layers(T_art, mmw_art, lnR0), cloud)
         return jnp.min(jnp.sum(dtau_g, axis=0), axis=0)
 
     def _flux_tau(vmr, vmr_h2, T_art, mmw_art, vmr_he, cloud, wo_mols,
-                  photosphere):
+                  photosphere, lnR0):
         _require_he(vmr_he)
-        r_em, _ = _emission_anchor(T_art, mmw_art)
-        g_em = _g_layers(T_art, mmw_art)
+        r_em, _ = _emission_anchor(T_art, mmw_art, lnR0)
+        g_em = _g_layers(T_art, mmw_art, lnR0)
 
         def _finish(dtau_g):
             w = None
             if photosphere:
-                r_phot, _ = _radius_at(lnp_em, T_art, mmw_art, r_ref_em, g_ref_em,
+                r_phot, _ = _radius_at(lnp_em, T_art, mmw_art, *_anchor(lnR0),
                                        p_ref_used,
                                        jnp.exp(_photosphere_lnp(dtau_g, lnp_em)))
                 w = (r_phot / r_em) ** 2
@@ -745,7 +749,7 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
         return flux, tau, flux_wo, tau_wo
 
     def emission_flux_tau(vmr, vmr_h2, T_art, mmw_art, vmr_he=None, cloud=None,
-                          wo_mols=None):
+                          wo_mols=None, lnR0=0.0):
         """Emergent flux AND bottom optical depth from ONE optical-depth build.
 
         Returns ``(flux, tau_bottom)`` -- bitwise what the separate
@@ -757,17 +761,17 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
         but reusing the shared correlated-k fold prefix (see ckd._fold_wo).
         """
         return _flux_tau(vmr, vmr_h2, T_art, mmw_art, vmr_he, cloud, wo_mols,
-                         photosphere=False)
+                         photosphere=False, lnR0=lnR0)
 
     def eclipse_flux_tau(vmr, vmr_h2, T_art, mmw_art, vmr_he=None, cloud=None,
-                         wo_mols=None):
+                         wo_mols=None, lnR0=0.0):
         """``emission_flux_tau`` with the tau = 2/3 photospheric radius folded
         in: the flux is ``sum_g w_g F_g (R_phot,g / R_em)^2`` per band, so
         eclipse depth = flux / F_star x (R_em / R_star)^2 with ``R_em`` from
         ``emission_radius``. This is the quantity an eclipse depth is built
         from; ``emission_flux_tau`` is the plain emergent flux."""
         return _flux_tau(vmr, vmr_h2, T_art, mmw_art, vmr_he, cloud, wo_mols,
-                         photosphere=True)
+                         photosphere=True, lnR0=lnR0)
 
     return SimpleNamespace(
         emission_flux=emission_flux,
