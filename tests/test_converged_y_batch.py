@@ -14,9 +14,8 @@ Two properties, and they pull in opposite directions:
 
 The measured differences are printed (``pytest -s``).
 
-The warm-continuation arguments are covered too: the mutation cap
-(``warm_cap``) and the PER-LANE reference composition, both of which the
-retrieval's warm mutation kernel needs from a batched call.
+The warm-continuation arguments are covered too: the PER-LANE reference
+composition the retrieval's warm starts need from a batched call.
 
 Cheap profile: nz=20, photochemistry off -- the solve itself is what is under
 test, not the column.
@@ -95,59 +94,10 @@ def test_batched_lanes_are_their_own_solves_and_agree_with_the_vmap(runs):
         assert rel[obs].max() < REL_MAX
 
 
-WARM_CMAX = 5     # under count_min=120: a warm continuation cannot certify
-COLD_CMAX = 50    # well above WARM_CMAX, so the cap that binds is identifiable
-
-
-@pytest.fixture(scope="module")
-def chem_capped():
-    """A model whose warm cap (5) is far below its cold cap (50), the shape the
-    retrieval's mutation path runs (1500 against 5000)."""
-    return vulcan_chem.build_chem_model(
-        {**PROFILE, "warm_count_max": WARM_CMAX, "count_max": COLD_CMAX})
-
-
-def test_warm_cap_binds_per_lane_batched_and_queued(chem_capped):
-    """``warm_cap=True`` cuts every lane of a BATCH and of the QUEUE at
-    warm_count_max, exactly as it cuts the solo ``converged_y``.
-
-    The cap rides the runner carry (``count_max_dyn``), not a second compiled
-    runner, so the batched calls reproduce the mutation-path semantics without
-    one: termination is ``accept_count > cap``, hence cap + 1 accepted steps on
-    every lane. The uncapped arm of the same batch marches on to the cold cap,
-    which is what identifies the warm cap as the thing that stopped it."""
-    chem = chem_capped
-    th = jnp.asarray(THETAS)
-    yw = jnp.broadcast_to(jnp.asarray(chem.y0), (THETAS.shape[0],) + chem.y0.shape)
-    _y, cd_cap = chem.converged_y_batch(th, warm_y=yw, warm_cap=True,
-                                        return_conv_diag=True)
-    _y, cd_cold = chem.converged_y_batch(th, warm_y=yw, warm_cap=False,
-                                         return_conv_diag=True)
-    _y, cd_queue = chem.converged_y_queue(th, 1, chunk=1, warm_y=yw, warm_cap=True)
-    solo = [chem.converged_y(th[k], warm_y=yw[k], warm_cap=True,
-                             return_conv_diag=True)[1]
-            for k in range(THETAS.shape[0])]
-    acc_cap = np.asarray(cd_cap.accept_count)
-    acc_queue = np.asarray(cd_queue.accept_count)
-    acc_solo = np.array([int(np.asarray(cd.accept_count)) for cd in solo])
-    print(f"[warm cap {WARM_CMAX} / cold cap {COLD_CMAX}] accept_count batched "
-          f"{acc_cap.tolist()} queued {acc_queue.tolist()} solo "
-          f"{acc_solo.tolist()} uncapped-batch "
-          f"{np.asarray(cd_cold.accept_count).tolist()}", flush=True)
-    assert np.array_equal(acc_cap, acc_solo)
-    assert np.all(acc_cap == WARM_CMAX + 1)
-    assert np.all(acc_queue == WARM_CMAX + 1)
-    assert np.all(np.asarray(cd_cold.accept_count) == COLD_CMAX + 1)
-    # neither arm can certify this far below count_min: the cap, not
-    # convergence, ended both runs
-    assert not bool(np.any(np.asarray(cd_cap.conv_normal)))
-    assert not bool(np.any(np.asarray(cd_cold.conv_normal)))
-
-
 def test_per_lane_references_match_the_scalar_calls(runs):
     """``lnZ_ref`` / ``c_o_ref`` as (N,) arrays give every lane the reference
-    composition ITS carried column was converged at -- what the warm mutation
-    needs, since each particle carries its own.
+    composition ITS carried column was converged at -- what the retrieval's
+    warm starts need, since each row starts from its own anchor.
 
     Reference: the same warm continuation as a batch of ONE with the scalar
     reference. The bound is the convergence scale (a traced reference is not the
@@ -181,14 +131,14 @@ def test_per_lane_references_match_the_scalar_calls(runs):
         assert rel[obs].max() < REL_MAX
 
 
-def test_inputs_that_would_be_ignored_are_refused(chem_capped):
+def test_inputs_that_would_be_ignored_are_refused(runs):
     """A profile key the engine does not read (a typo, or a retired knob such
-    as `fastchem_met_scale`) would leave its default in place silently, so it
+    as `warm_count_max`) would leave its default in place silently, so it
     is refused. A warm column with the wrong trailing shape would BROADCAST --
     (N, 1, ni) seeds every layer from one layer -- so it is refused too."""
-    chem = chem_capped
-    with pytest.raises(ValueError, match="'warm_count_mx'"):
-        vulcan_chem.build_chem_model({**PROFILE, "warm_count_mx": 10})
+    chem = runs[0]
+    with pytest.raises(ValueError, match="'warm_count_max'"):
+        vulcan_chem.build_chem_model({**PROFILE, "warm_count_max": 10})
     with pytest.raises(ValueError, match="warm_y"):
         chem.converged_y_batch(jnp.asarray(THETAS),
                                warm_y=jnp.ones((THETAS.shape[0], 1, chem.ni)))

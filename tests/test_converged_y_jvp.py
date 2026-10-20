@@ -43,7 +43,7 @@ pytestmark = pytest.mark.skipif(os.environ.get("VULCAN_FORWARD_RUN_FULL") != "1"
 
 K = 40
 PROFILE = {"use_photo": False, "yconv_cri": 1.0e-2, "nz": 20,
-           "count_min": K, "count_max": K, "warm_count_max": K}
+           "count_min": K, "count_max": K}
 THETA = np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float64)
 # [lnZ, c_o, lnKzz, T-offset]: unit directions in lnZ and in the T offset.
 DIRS = np.eye(4, dtype=np.float64)[[0, 3]]

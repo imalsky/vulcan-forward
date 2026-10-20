@@ -30,12 +30,9 @@ end-to-end route.
 """
 from __future__ import annotations
 
-import atexit
 import logging
 import os
-import shutil
 import sys
-import tempfile
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -215,9 +212,9 @@ class ConvDiag(NamedTuple):
     """Per-solve convergence diagnostics read off the runner's final carry.
 
     Every field rides the runner's primal carry, so reading them is free inside a
-    forward-mode jvp chain. ``accept_count`` and ``count_since_new_min`` are
-    integer-valued (no tangent); ``longdy``/``longdydt`` are floats and DO carry a
-    tangent -- callers on an AD path must ``stop_gradient`` them.
+    forward-mode jvp chain. ``accept_count`` is integer-valued (no tangent);
+    ``longdy``/``longdydt`` are floats and DO carry a tangent -- callers on an AD
+    path must ``stop_gradient`` them.
 
     ``accept_count`` alone is NOT a convergence test: the runtime budget, a
     hybrid run's post-flip step budget or a non-finite state can end the runner
@@ -231,7 +228,6 @@ class ConvDiag(NamedTuple):
     accept_count: jnp.ndarray         # () int32   accepted steps taken
     longdy: jnp.ndarray               # () float64 runner's convergence metric at exit
     longdydt: jnp.ndarray             # () float64 longdy per lookback time
-    count_since_new_min: jnp.ndarray  # () int32   steps since longdy improved >= 5%
     conv_normal: jnp.ndarray          # () bool    canonical certification at exit
     aflux_change: jnp.ndarray         # () float64 max relative actinic-flux change at exit
     conv_branch: jnp.ndarray          # () int32   certified branch: 1 tight (yconv_cri,
@@ -244,29 +240,6 @@ class ConvDiag(NamedTuple):
     dt: jnp.ndarray                   # () float64 step size at exit (s)
     tangent_longdy: jnp.ndarray       # () float64 converged_y_jvp only: the tangent's
     #                                               longdy at exit (NaN on the primal path)
-    budget_drift_max: jnp.ndarray     # () float64 max |X/H drift| of the column budget at
-    #                                               exit
-    budget_drift_atom: jnp.ndarray    # () int32   index into the runner's atom order
-    #                                               (``atom_order``) of that maximum
-
-
-_SCRATCH_ROOT: str | None = None
-
-
-def _redirect_output_dirs(cfg) -> None:
-    """Redirect a relative ``cfg.output_dir`` to a per-process temp directory,
-    removed at exit: ``op.Output`` at the vulcan3 version floor creates it
-    under the cwd, and this engine never writes .vul output. An absolute path
-    is left alone.
-    """
-    global _SCRATCH_ROOT
-    val = getattr(cfg, "output_dir", None)
-    if val is None or os.path.isabs(str(val)):
-        return
-    if _SCRATCH_ROOT is None:
-        _SCRATCH_ROOT = tempfile.mkdtemp(prefix="vulcan_forward_")
-        atexit.register(shutil.rmtree, _SCRATCH_ROOT, ignore_errors=True)
-    cfg.output_dir = os.path.join(_SCRATCH_ROOT, "output_dir")
 
 
 def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> SimpleNamespace:
@@ -318,12 +291,6 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     for _k, _v in (profile.get("cfg_overrides") or {}).items():
         setattr(cfg, _k, _v)
 
-    if bool(cfg.use_fix_all_bot):
-        raise ValueError(
-            "use_fix_all_bot=True is not supported here: the per-proposal "
-            "rebuild (_prep) does not re-seed the bottom pin pv.bottom_n, so every "
-            "proposal would be pinned to the baseline bottom column. Set "
-            "use_fix_all_bot=False in the config or cfg_overrides.")
     if list(cfg.T_cross_sp or []):
         raise ValueError(
             f"T_cross_sp={list(cfg.T_cross_sp)} is not supported here: the "
@@ -331,16 +298,6 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
             "sections (pv.p_absp_T_cross, pv.p_cross_J_T), so photolysis would use "
             "the baseline temperature. Set T_cross_sp=[] in the config or "
             "cfg_overrides.")
-    # Step cap for warm mutation solves (warm_cap=True): a proposal still
-    # unconverged here is headed for rejection. It rides the carry
-    # (count_max_dyn), so capped and uncapped solves share one runner.
-    # Checked after the overrides: a cfg_overrides count_max is the cold cap too.
-    _wcm = profile.get("warm_count_max")
-    warm_count_max = int(_wcm) if _wcm is not None else int(cfg.count_max)
-    if warm_count_max > int(cfg.count_max):
-        raise ValueError(
-            f"warm_count_max={warm_count_max} exceeds count_max={int(cfg.count_max)}: "
-            "the warm mutation cap must be at most the cold cap")
     # The chemistry grid must reach the RT top (interp_map refuses a clamped
     # top). An explicit cfg_overrides P_t wins: the model-top ladder and the
     # condensation pin bring their own grids.
@@ -416,7 +373,6 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     solver = op_jax.Ros2JAX()
     if rs.photo_static is not None:
         solver._photo_static = rs.photo_static
-    _redirect_output_dirs(cfg)
     integ = outer_loop.OuterLoop(solver, op.Output(cfg=cfg), cfg=cfg)
     solver.naming_solver(para)
     logger.info(f"[chem] setup {time.time() - t0:.1f}s; nz={nz} ni={ni} photo={cfg.use_photo}")
@@ -428,7 +384,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     # the hybrid scheme a warm continuation starts from a column converged on
     # the central operator, so it continues on it (pure-upwind configs keep
     # upwind).
-    cold_count_max = int(cfg.count_max)
+    count_max_v = int(cfg.count_max)
     count_min_v = int(cfg.count_min)
     runtime_v = float(cfg.runtime)
     use_vm_mol_v = bool(cfg.use_vm_mol)
@@ -438,7 +394,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     logger.info(f"[chem] diffusion scheme: use_vm_mol={use_vm_mol_v} "
                 f"hybrid={hybrid_v}{_warm_note}")
 
-    def _seeded_prep(theta, warm_y=None, lnZ_ref=0.0, c_o_ref=0.0, warm_cap=False):
+    def _seeded_prep(theta, warm_y=None, lnZ_ref=0.0, c_o_ref=0.0):
         """``_prep`` with the carry's live termination budget + diffusion blend
         re-seeded for the runner (see the block comment above)."""
         init, atm_T = _prep(theta, warm_y=warm_y, lnZ_ref=lnZ_ref, c_o_ref=c_o_ref)
@@ -448,7 +404,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         return init._replace(
             hybrid_use_vm=jnp.float64(blend),
             count_min_dyn=jnp.int32(count_min_v),
-            count_max_dyn=jnp.int32(warm_count_max if warm_cap else cold_count_max),
+            count_max_dyn=jnp.int32(count_max_v),
             runtime_dyn=jnp.float64(runtime_v),
         ), atm_T
 
@@ -467,7 +423,6 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
             accept_count=final.accept_count,
             longdy=final.longdy,
             longdydt=final.longdydt,
-            count_since_new_min=final.count_since_new_min,
             conv_normal=ok & tangent_ok,
             aflux_change=final.aflux_change,
             conv_branch=branch,
@@ -477,8 +432,6 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
             t=final.t,
             dt=final.dt,
             tangent_longdy=jnp.float64(tangent_longdy),
-            budget_drift_max=jnp.max(jnp.abs(final.budget_drift)),
-            budget_drift_atom=jnp.argmax(jnp.abs(final.budget_drift)).astype(jnp.int32),
         )
 
     def _conv_normal_at_exit(final):
@@ -789,7 +742,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         return init.pv
 
     def converged_y(theta, warm_y=None, lnZ_ref=0.0, c_o_ref=0.0,
-                    warm_cap=False, return_conv_diag=False):
+                    return_conv_diag=False):
         """Converged ABSOLUTE number densities y (nz, ni), with optional
         continuation warm-start (warm_y at lnZ_ref / c_o_ref). Forward-mode
         differentiable w.r.t. theta.
@@ -798,13 +751,12 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         solve; under the hybrid vm_mol scheme a warm continuation runs on the
         central operator instead of re-entering upwind phase 0.
 
-        ``warm_cap=True`` caps the solve at ``warm_count_max`` (the SMC mutation
-        path; the cap rides the carry). ``return_conv_diag=True`` returns ``(y, ConvDiag)`` -- free
+        ``return_conv_diag=True`` returns ``(y, ConvDiag)`` -- free
         reads off the primal carry; ``conv_normal`` is the canonical
         certification recomputed at the exit, so a budget exit reads
         False even when ``longdy < yconv_min``. ConvDiag's float fields
         carry a tangent -- AD callers stop_gradient them."""
-        init, atm_T = _seeded_prep(theta, warm_y, lnZ_ref, c_o_ref, warm_cap)
+        init, atm_T = _seeded_prep(theta, warm_y, lnZ_ref, c_o_ref)
         final = integ._runner(init, atm_T)
         if return_conv_diag:
             return final.y, _conv_diag(final)
@@ -813,14 +765,14 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     def _ref_leaves(n, lnZ_ref, c_o_ref):
         """The reference composition as PER-LANE (n,) leaves for the vmapped
         prep. A scalar broadcasts, so a shared reference still works; the
-        retrieval's warm mutation passes each particle its OWN carried
-        (lnZ, c_o). References are CONSTANTS of the map -- a caller
+        retrieval's warm starts pass each row its OWN anchor's (lnZ, c_o).
+        References are CONSTANTS of the map -- a caller
         differentiates with respect to theta, never to these."""
         return (jnp.broadcast_to(jnp.asarray(lnZ_ref, dtype=jnp.float64), (n,)),
                 jnp.broadcast_to(jnp.asarray(c_o_ref, dtype=jnp.float64), (n,)))
 
     def converged_y_batch(thetas, warm_y=None, lnZ_ref=0.0, c_o_ref=0.0,
-                          warm_cap=False, return_conv_diag=False):
+                          return_conv_diag=False):
         """Converged ABSOLUTE number densities for a STACK of thetas (N, n_theta)
         -> y (N, nz, ni), with the optional per-lane continuation warm-start
         ``warm_y`` (N, nz, ni) at lnZ_ref / c_o_ref and, with
@@ -835,10 +787,9 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         stop test reads the primal only); a tangent-CERTIFIED derivative is
         ``converged_y_jvp``.
 
-        ``lnZ_ref`` / ``c_o_ref`` may be scalars or ``(N,)`` arrays: the
-        mutation path gives every lane the reference its carried column was
-        converged at. ``warm_cap=True`` caps every lane at ``warm_count_max``,
-        as on ``converged_y``.
+        ``lnZ_ref`` / ``c_o_ref`` may be scalars or ``(N,)`` arrays: a warm
+        batch gives every lane the reference its carried column was converged
+        at.
         """
         lnZ_r, c_o_r = _ref_leaves(int(jnp.shape(thetas)[0]), lnZ_ref, c_o_ref)
 
@@ -847,7 +798,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         # array leaf takes 0 -- exactly `_ATM_STATIC_BATCH_AXES`. warm_y=None
         # is an empty pytree node, so the same vmap covers the cold seed.
         init_b, atm_b = jax.vmap(
-            lambda t, w, a, b: _seeded_prep(t, w, a, b, warm_cap),
+            _seeded_prep,
             out_axes=(0, outer_loop._ATM_STATIC_BATCH_AXES),
         )(thetas, warm_y, lnZ_r, c_o_r)
         final_b = integ.run_batch(init_b, atm_b)
@@ -863,7 +814,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     _queue_fns = {}
 
     def converged_y_queue(thetas, n_lanes, *, chunk=None, warm_y=None,
-                          lnZ_ref=0.0, c_o_ref=0.0, warm_cap=False, active=None):
+                          lnZ_ref=0.0, c_o_ref=0.0, active=None):
         """``converged_y_batch`` on ``n_lanes`` lanes with refill from the job
         queue (vulcan3 ``OuterLoop.run_queue``): a lane that certifies is
         written out and takes the next theta inside the same while loop, so
@@ -878,10 +829,10 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         ``(y (N, nz, ni), ConvDiag stacked over N)``; the ConvDiag is not
         optional here (it rides the per-job write-out).
 
-        ``lnZ_ref`` / ``c_o_ref`` (scalar or ``(N,)``) and ``warm_cap`` mean
-        what they mean on ``converged_y_batch``: the references ride the jobs
-        pytree, so each job is prepped at its own, and the cap rides the
-        carry. ``chunk=None`` keeps vulcan3's own refill chunk.
+        ``lnZ_ref`` / ``c_o_ref`` (scalar or ``(N,)``) mean what they mean on
+        ``converged_y_batch``: the references ride the jobs pytree, so each
+        job is prepped at its own. ``chunk=None`` keeps vulcan3's own refill
+        chunk.
 
         ``active`` (optional ``(N,)`` bool): a job with ``active[i]`` False is
         a placeholder (a padded row). Its lane starts done, so it takes no
@@ -890,20 +841,18 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         goes to the next job. Its result is meaningless; the caller discards
         it. ``None`` (the default) is the program without the mask."""
         masked = active is not None
-        key = (warm_y is not None, bool(warm_cap), masked)
+        key = (warm_y is not None, masked)
         fns = _queue_fns.get(key)
         if fns is None:
-            warm_cap_k = key[1]
-
             if masked:
                 def init_fn(job):
                     *core, act = job
-                    init, atm_T = _seeded_prep(*core, warm_cap=warm_cap_k)
+                    init, atm_T = _seeded_prep(*core)
                     return init._replace(
                         is_done=init.is_done | jnp.logical_not(act)), atm_T
             else:
                 def init_fn(job):
-                    return _seeded_prep(*job, warm_cap=warm_cap_k)
+                    return _seeded_prep(*job)
 
             def out_fn(final):
                 # The ConvDiag is a report, never differentiated. With a
@@ -1038,8 +987,6 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         y0=np.asarray(y0, dtype=np.float64),   # baked baseline column (warm-start fallback)
         compo_array=compo,
         atom_list=tuple(composition.atom_list),   # compo_array column order
-        atom_order=tuple(integ._atom_order),      # runner's atom basis; ConvDiag's
-        #                                           budget_drift_atom indexes this
         T_base=np.asarray(T_base),
         p_bar=p_bar,
         dz=np.asarray(atm.dz, dtype=np.float64),   # layer thickness (cm), n0*dz weights
@@ -1047,6 +994,5 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         species_masses=species_masses,
         nz=nz, ni=ni,
         count_max=int(cfg.count_max),   # the resolved (profile-overridden or YAML-config) cap
-        warm_count_max=warm_count_max,  # mutation-path cap (warm_cap=True; == count_max when unset)
         yconv_min=float(cfg.yconv_min), # loose convergence gate: a converged solve has longdy<this
     )

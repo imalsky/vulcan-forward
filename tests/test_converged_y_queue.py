@@ -19,7 +19,7 @@ Three properties:
 
 The acceptance tests at the bottom pin a consumer's batched GRADIENT against
 the per-theta solve: the cold two-stage map (batch and queue, one test each),
-and the WARM-capped mutation map with a per-lane reference composition.
+and the WARM continuation map with a per-lane reference composition.
 
 The measured differences are printed (``pytest -s``).
 
@@ -312,11 +312,9 @@ def test_queue_is_differentiable(chem, ref):
 
 # Gradient acceptance tests (solo, batch, queue; plus the queue reversed) for
 # the two-stage cold gradient with photochemistry on, which exercises the
-# tick-keyed photolysis and refresh cadences. warm_count_max is the production
-# mutation cap (1500) against a cold cap of 30000.
-PHOTO_PROFILE = {"use_photo": True, "yconv_cri": 1.0e-2, "nz": 20,
-                 "warm_count_max": 1500}
-# An MCMC-sized proposal step away from the carried column, per direction.
+# tick-keyed photolysis and refresh cadences.
+PHOTO_PROFILE = {"use_photo": True, "yconv_cri": 1.0e-2, "nz": 20}
+# A small step away from the carried column, per direction.
 WARM_DELTA = np.array([0.05, 0.02, 0.1, 5.0], dtype=np.float64)
 # Bounds a modest factor above the measured worst (1.7e-1, 2.0e-4, 2.9e-5).
 COL_MAX = 4.0e-1
@@ -493,7 +491,7 @@ def test_two_stage_cold_gradient_queue_matches_solo(chem_photo, cold_solo):
 
 
 def _warm_routes(chem, th, yw, r0, r1):
-    """(solo, batch, queue, queue-reversed) results of the WARM-capped
+    """(solo, batch, queue, queue-reversed) results of the WARM
     continuation map -- each theta from its OWN carried column ``yw`` at its
     OWN reference composition (r0, r1) -- as
     ``(y (N, nz, ni), ConvDiag over N, dy (N, D, nz, ni))``.
@@ -509,7 +507,7 @@ def _warm_routes(chem, th, yw, r0, r1):
         def one(t, y_w, a, b):
             def f(tt):
                 return chem.converged_y(tt, warm_y=y_w, lnZ_ref=a, c_o_ref=b,
-                                        warm_cap=True, return_conv_diag=True)
+                                        return_conv_diag=True)
             (y_l, cd_l), (dy_l, _d) = jax.vmap(
                 lambda v: jax.jvp(f, (t,), (v,)))(eye)
             return y_l[0], jax.tree_util.tree_map(lambda x: x[0], cd_l), dy_l
@@ -525,12 +523,11 @@ def _warm_routes(chem, th, yw, r0, r1):
 
     def batch(TH, y_w=yw, a=r0, b=r1):
         return stacked(lambda C: chem.converged_y_batch(
-            C, warm_y=y_w, lnZ_ref=a, c_o_ref=b, warm_cap=True,
-            return_conv_diag=True), TH)
+            C, warm_y=y_w, lnZ_ref=a, c_o_ref=b, return_conv_diag=True), TH)
 
     def queue(TH, y_w=yw, a=r0, b=r1):
         return stacked(lambda C: chem.converged_y_queue(
-            C, 2, chunk=1, warm_y=y_w, lnZ_ref=a, c_o_ref=b, warm_cap=True), TH)
+            C, 2, chunk=1, warm_y=y_w, lnZ_ref=a, c_o_ref=b), TH)
 
     rev = queue(TH=th[::-1], y_w=yw[::-1], a=r0[::-1], b=r1[::-1])
     rev = (rev[0][::-1], jax.tree_util.tree_map(lambda x: x[::-1], rev[1]),
@@ -539,11 +536,11 @@ def _warm_routes(chem, th, yw, r0, r1):
 
 
 @FULL
-def test_warm_capped_gradient_three_routes(chem_photo):
-    """The batched and queued WARM mutation gradient agree with the per-theta one.
+def test_warm_gradient_three_routes(chem_photo):
+    """The batched and queued WARM continuation gradient agree with the per-theta one.
 
-    vulcan-retrieval's warm mutation kernel: per-lane cap, carried column and
-    reference composition; the same bars as the cold tests.
+    vulcan-retrieval's warm starts: per-lane carried column and reference
+    composition; the same bars as the cold tests.
     """
     chem = chem_photo
     th0 = jnp.asarray(THETAS)
