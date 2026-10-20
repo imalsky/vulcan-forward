@@ -68,13 +68,13 @@ Tags: [M] measured, [E] estimated, [I] inferred.
 
 151 commits are dated before 2026-10-13 [M: `git log`]. They were made on other machines
 and their provenance is not recorded on NAS. The items below are live at HEAD and on by
-default unless noted; each needs the maintainer's confirmation (the first is the todo
-item "conv_normal certificate terms").
+default unless noted. The maintainer confirmed the first (2026-10-20: the terms and the
+per-theta re-anchoring stay); the rest stay live.
 
 - `b8cae5c`, `b72b0d2`, `3bb7cab`, `aa79f25`, `dfa2a0f`: `conv_normal` adds geometry and
   element-budget certificate terms and per-theta re-anchoring. This decides which draws
-  are rejected and goes beyond VULCAN's original criteria. The terms live in vulcan3:
-  one decision (VULCAN3 todo "Confirm the departures from VULCAN master").
+  are rejected and goes beyond VULCAN's original criteria. The terms live in vulcan3
+  (VULCAN3 notes "Decided by the maintainer, not to be re-opened").
 - `0ee65a4` + `fb244c7`: chemistry top `P_t` forced to the RT top, now 1e-9 bar
   (`build_chem_model` sets `cfg.P_t` from `art_ptop_bar`; `constants.ART_PTOP_BAR`). A
   model choice, not a parity item (evidence: "Geometry and anchors").
@@ -277,7 +277,7 @@ item "conv_normal certificate terms").
   grid (`budget_ref`, zeroed `budget_err`/`budget_drift`, `y_prev = y0p`), so the
   certificate charges the solver, not the geometry refresh. Retrieval smoke (nz 30, 6
   draws): `budget_drift_max` 0.13-12.9 (6/6 uncertified) without the `y_prev` seed,
-  2.5e-8 to 1.3e-3 with it [M].
+  2.5e-8 to 1.3e-3 with it [M]. Kept by the maintainer (2026-10-20).
 - On the planner's W39b default (C/O 0.55) the loose-branch exit is set by N2O at
   3.5 mbar, VMR 6e-18: one ultratrace cell decides when the solve stops [M].
 - `converged_y_jvp` runs `OuterLoop.run_jvp` and stops only when the column and the

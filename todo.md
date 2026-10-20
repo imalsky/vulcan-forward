@@ -2,23 +2,9 @@
 
 Open, owed or undecided work for vulcan-forward; the evidence is in `notes.md`.
 
-1. [decision] Confirm the per-theta budget re-anchoring in `_prep` (the certificate terms themselves are decided: they stay).
-2. [stale] Two full-tier queue-vs-batch tests sit on knife edges that the 0.27.2 carbon repair tipped and fail on daw as on the GitHub runner; re-point or re-bar them.
+1. [stale] Two full-tier queue-vs-batch tests sit on knife edges that the 0.27.2 carbon repair tipped and fail on daw as on the GitHub runner; re-point or re-bar them.
 
-## 1. conv_normal certificate terms
-
-- The certificate terms are vulcan3's and stay (VULCAN-JAX notes "Decided by the
-  maintainer, not to be re-opened"); this repo only ANDs `vulcan3.conv_normal` into
-  `ConvDiag.conv_normal` (`_conv_diag` in `src/vulcan_forward/vulcan_chem.py`).
-- This repo's part: the per-theta re-anchoring in `_prep` (`budget_ref`, zeroed
-  `budget_err`/`budget_drift`, `y_prev = y0p`). Commits `b8cae5c`, `b72b0d2`, `3bb7cab`,
-  `aa79f25`, `dfa2a0f`; evidence: notes.md "Provenance audit" (first bullet) and
-  "Convergence certificate". The other provenance-unknown commits there can be confirmed
-  in the same pass.
-- Done means: the re-anchoring is confirmed or removed;
-  the result goes to notes.md "Convergence certificate".
-
-## 2. Two knife-edge full-tier tests
+## 1. Two knife-edge full-tier tests
 
 - Tests: `tests/test_converged_y_queue.py::test_queue_agrees_with_the_batch_with_and_without_refill`
   and `::test_queue_is_differentiable` (both stop at the queue-vs-batch primal check in
