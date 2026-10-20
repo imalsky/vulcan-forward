@@ -246,7 +246,8 @@ per-theta re-anchoring stay); the rest stay live.
 ## RT validation and the exojax pin
 
 - Committed fixtures `tests/data/prt_ref_*.npz` gate the RT in
-  `tests/test_e2e_rt_reference.py`. Meta holds the pRT version, opacity files, constants,
+  `tests/test_e2e_rt_reference.py`. Meta holds the pRT version (3.4.0, pinned in
+  `tests/test_e2e_fixtures.py`), opacity files, constants,
   generating script and achieved agreement; tolerances are 3x achieved; pRT ran in a
   throwaway venv. Both codes read the same k-table file [M]:
   - transmission, isothermal H2O: mean ratio 1.00003, rms 0.0013%; 6 species 1.0010 /
@@ -465,6 +466,9 @@ per-theta re-anchoring stay); the rest stay live.
 
 ## Known and deliberately untracked
 
+- `test_batched_lanes_are_their_own_solves_and_agree_with_the_vmap` (bitwise lane vs
+  batch-of-one) passes on daw and CI; an outside x86 container reported lane 1 differing
+  (124 vs 121 steps), so bitwise lane independence may depend on the CPU [I].
 - The photolysis-cadence switch threshold stays at VULCAN3's derived 1.0 when a profile
   overrides `yconv_min`: only the refresh timing moves, the certificate does not.
 - `co_mode` defaults to `fixed_O`, which both consumers pass; `proxy` is kept and no test

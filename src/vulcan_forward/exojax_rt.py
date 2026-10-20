@@ -610,9 +610,9 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
     molmass, opacia, mols = trt._molmass, trt._opacia, trt.molecules
     opacia_he = trt._opacia_he
     _require_geometry(profile, "gs_cgs", "rp_cm")
-    # Plane-parallel emission uses one gravity. Radius and gravity are
-    # re-anchored together at p_ref_emission_bar (the transit radius with this
-    # gravity is 8.9% off in GM); ``emission_radius`` returns that radius.
+    # Radius and gravity are re-anchored together at p_ref_emission_bar (the
+    # transit radius with this gravity is 8.9% off in GM); ``emission_radius``
+    # returns that radius.
     # ``eclipse_flux_tau`` applies the per-k-ordinate tau = 2/3 radius
     # (Fortney et al. 2019); ``emission_flux`` is the plain emergent flux.
     g_ref_em = float(profile["gs_cgs"])
