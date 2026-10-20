@@ -82,8 +82,9 @@ The shared vulcan3 -> ExoJAX forward engine. DAG: `vulcan3 <- vulcan-forward <-
     bottom. exojax's `radius_btm` is the bottom layer's lower boundary, so `_radius_at`
     carries an extra half-layer node; dropping it makes the depth depend on
     `art_nlayer`.
-  - Emission anchors radius and gravity at `p_ref_emission_bar` (0.1 bar);
-    `emission_radius()` gives the consumer's prefactor radius. lnR0 is a radius change
+  - Emission anchors radius and gravity at the constant `constants.P_REF_EMISSION_BAR`
+    (0.1 bar; not a profile key); `emission_radius()` gives the consumer's prefactor
+    radius. lnR0 is a radius change
     at fixed GM in both observables: `transmission_depth_r` and every emission function
     take `lnR0` and re-anchor, so a consumer passes it through and never multiplies a
     depth by e^(2 lnR0). The eclipse prefactor uses the tau = 2/3 radius per k-ordinate

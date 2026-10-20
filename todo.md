@@ -2,26 +2,24 @@
 
 Open, owed or undecided work for vulcan-forward; the evidence is in `notes.md`.
 
-1. [decision] Confirm the extra `conv_normal` certificate terms (geometry, element budget) and the per-theta re-anchoring, whose provenance is not recorded.
-2. [stale] Three full-tier tests sit on knife edges that the 0.27.2 carbon repair tipped and fail on daw as on the GitHub runner; re-point or re-bar them.
+1. [decision] Confirm the extra `conv_normal` certificate terms (geometry, element budget) and the per-theta re-anchoring; the terms are decided in VULCAN3's todo item "Confirm the departures from VULCAN master".
+2. [stale] Two full-tier queue-vs-batch tests sit on knife edges that the 0.27.2 carbon repair tipped and fail on daw as on the GitHub runner; re-point or re-bar them.
 
 ## 1. conv_normal certificate terms
 
-- Evidence: notes.md "Provenance audit" (first bullet) and "Convergence certificate".
-- Commits: `b8cae5c` (geometry term), `b72b0d2` (element-budget term), `3bb7cab`
-  (per-theta budget reference), `aa79f25` (per-theta `y_prev` seed), `dfa2a0f`
-  (`ConvDiag` delegates to `vulcan3.conv_normal`). The terms live in vulcan3; this repo
-  ANDs them into `ConvDiag.conv_normal` (`_conv_diag` in
-  `src/vulcan_forward/vulcan_chem.py`) and re-anchors per theta in `_prep`.
-- Why it needs a decision: these terms decide which draws a retrieval rejects and go
-  beyond VULCAN's original convergence criteria. vulcan-retrieval's todo lists the same
-  question for the vulcan3 side.
-- The other provenance-unknown commits in that notes section can be confirmed in the same
-  pass.
-- Done means: the maintainer keeps or removes each term; the decision is recorded in
-  notes.md "Convergence certificate".
+- The decision lives in VULCAN3's `todo.md`, item "Confirm the departures from VULCAN
+  master" (the referee verdicts and the zero-code A/B are there): the terms are vulcan3's,
+  and this repo only ANDs `vulcan3.conv_normal` into `ConvDiag.conv_normal` (`_conv_diag`
+  in `src/vulcan_forward/vulcan_chem.py`).
+- This repo's part: the per-theta re-anchoring in `_prep` (`budget_ref`, zeroed
+  `budget_err`/`budget_drift`, `y_prev = y0p`). Commits `b8cae5c`, `b72b0d2`, `3bb7cab`,
+  `aa79f25`, `dfa2a0f`; evidence: notes.md "Provenance audit" (first bullet) and
+  "Convergence certificate". The other provenance-unknown commits there can be confirmed
+  in the same pass.
+- Done means: the vulcan3 decision is made, and the re-anchoring is confirmed or removed;
+  the result goes to notes.md "Convergence certificate".
 
-## 2. Three knife-edge full-tier tests
+## 2. Two knife-edge full-tier tests
 
 - Tests: `tests/test_converged_y_queue.py::test_queue_agrees_with_the_batch_with_and_without_refill`
   and `::test_queue_is_differentiable` (both stop at the queue-vs-batch primal check in
@@ -34,8 +32,9 @@ Open, owed or undecided work for vulcan-forward; the evidence is in `notes.md`.
   `a6a1094` certifies / diverges / certifies (the settled uncapped-dt edge). The test's
   own start barely moves (CH4 1.5e-4 of CO there; repair factor within 1e-9 of 1; the primal
   certifies in 77 vs 78 steps).
-- Still open: commits since `a6a1094` (`d5d29b5` rename, `39c2c45` new normal-tier test)
-  did not touch these tests' thetas or bars; not re-run at HEAD.
+- Re-run after the 2026-10-20 cleanup (`co_mode` default `fixed_O`): both queue tests
+  still fail at exactly 6.874e-2 (job 1 of 2; job 0 3.4e-3); the warm jvp test now
+  certifies and passes [M]. Two tests remain red.
 - Choice: move `THETA_WARM` and the queue thetas off the edge, or widen the bars.
 - Command (daw, about 20 min, about 24 GB peak; keep the CPU cap):
   `JAX_PLATFORMS=cpu XLA_FLAGS="--xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1" OMP_NUM_THREADS=1 VULCAN_FORWARD_RUN_FULL=1 taskset -c <12 free CPUs> uv run python -m pytest tests -q -n 6 --dist worksteal`

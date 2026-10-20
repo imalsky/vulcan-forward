@@ -8,8 +8,9 @@ Tags: [M] measured, [E] estimated, [I] inferred.
 
 ## Current state
 
-- Version 0.29.0 (`801f7e7`, tag `v0.29.0`); last code commit on `main` is `39c2c45`.
-  One branch, `main`.
+- Version 0.29.0 (`801f7e7`, tag `v0.29.0`); last code commit `39c2c45`. The
+  2026-10-20 cleanup on `main`: no build-time warm-up solve, `co_mode` default `fixed_O`,
+  the emission anchor a constant, merged docs. One branch, `main`.
 - Floors (`pyproject.toml`): `exojax==2.6.0`, `radis<0.17`, `vulcan3>=0.18.0` (first
   release under that name; carries `conv_normal` and `validate_overrides`),
   `jax>=0.6.2`, `numpy>=1.26`, `h5py>=3.9`.
@@ -25,7 +26,10 @@ Tags: [M] measured, [E] estimated, [I] inferred.
 - Full tier (`VULCAN_FORWARD_RUN_FULL=1`): the `converged_y_jvp` tests, the five `@FULL`
   queue/gradient tests and the 8-species pRT case. At `a6a1094`: 100 passed / 3 failed
   in 20.0 min at `-n 6 --dist worksteal` (the three knife-edge tests in `todo.md`); at
-  `4ca5fa6`: 103 passed in 20.7 min, 23.9 GB peak [M].
+  `4ca5fa6`: 103 passed in 20.7 min, 23.9 GB peak [M]. After the 2026-10-20 cleanup (`co_mode`
+  default `fixed_O`, no warm-up solve): 102 passed / 2 failed in 31.7 min at `-n 6 --dist
+  worksteal`, load ~16 [M]; the two failures are the queue-vs-batch knife edge at exactly
+  the recorded 6.874e-2, and the warm jvp case now certifies.
 - Known defect, no shipped number moves: the `ckd.overlap` sort-crossing jumps (see
   "Opacity").
 
@@ -46,10 +50,19 @@ Tags: [M] measured, [E] estimated, [I] inferred.
 
 ## Warm starts
 
-- Every warm start begins from the build's pre-loop photo carry: `_prep`'s
-  `state0._replace` does not touch the photo flux fields, and the pre-loop `dflux_u` is
-  the zero array `photo_setup` allocates [I: code]. For 27 of 98 certified lanes in the
-  ad_advice sample that reset was the last gate to clear [M].
+- Every warm start begins from the build's pre-loop photo carry, not the warm column's
+  own field: `state0` is packed from the build's RunState and `_prep`'s
+  `state0._replace` does not touch the photo flux fields [I: code]. Whether that
+  pre-loop `dflux_u` is zero was not verified [I]. ad_advice sample: for 27 of 98
+  certified lanes the photo carry was the last gate to clear [M].
+- Weighted vs unweighted inventory: the projection fixes each layer's total and the
+  unweighted (layer-summed) column ratios to H; the element budget tracks the
+  dz-weighted column (`budget_ref`, "Convergence certificate"). So two starts at one
+  theta can carry different weighted inventories: algebraically real. On the shipped
+  HD209 column the weighted and unweighted column ratios agree to 1e-11..2e-10,
+  because the column's atoms sit in the bottom scale heights [M, one column, second
+  referee]; W39b is unchecked. vulcan-retrieval's 97 of 1320 warm-certify, cold-fail
+  rows (baseline_v2) are fixed-point path dependence, a different effect.
 
 ## Provenance audit
 
@@ -60,21 +73,25 @@ item "conv_normal certificate terms").
 
 - `b8cae5c`, `b72b0d2`, `3bb7cab`, `aa79f25`, `dfa2a0f`: `conv_normal` adds geometry and
   element-budget certificate terms and per-theta re-anchoring. This decides which draws
-  are rejected and goes beyond VULCAN's original criteria.
+  are rejected and goes beyond VULCAN's original criteria. The terms live in vulcan3:
+  one decision (VULCAN3 todo "Confirm the departures from VULCAN master").
 - `0ee65a4` + `fb244c7`: chemistry top `P_t` forced to the RT top, now 1e-9 bar
-  (`build_chem_model` sets `cfg.P_t` from `art_ptop_bar`; `constants.ART_PTOP_BAR`).
+  (`build_chem_model` sets `cfg.P_t` from `art_ptop_bar`; `constants.ART_PTOP_BAR`). A
+  model choice, not a parity item (evidence: "Geometry and anchors").
 - `3b7654b`, `2838121`, `5018e4d`, `d40211d`: cold start is in-graph equilibrium at the
   proposal's T-P; the 'baseline' start was deleted.
 - `a6a1094`: carbon repaired through CO+CH4 (used in all three W39b production runs).
 - `2807b9a`, `0250ce0`: elemental abundance map only.
-- `4446e6e`, `e2aacba`: transit radius anchored at 1 mbar (`constants.P_REF_BAR`); bottom
-  boundary; emission solver linsap.
+- `4446e6e`, `e2aacba`: transit radius anchored at 1 mbar (`constants.P_REF_BAR`, a model
+  choice: "Geometry and anchors"); bottom boundary; emission solver linsap.
 - `d26e9d3`, `801f7e7`: fixed planet mass under lnR0. The daw record calls the emission
   half (0.29.0) the maintainer's choice.
 - `773837e`: hand-written correlated-k random overlap, T/P clamps, `K_FLOOR` 1e-60.
 - `db94d6e`: line-by-line and Mie paths removed (also removed a runtime overwrite of
   MdbHitran gamma_air/n_air; ExoJAX source itself was never modified).
-- `aedbcbc`: 12 of 27 molecular masses changed.
+- `aedbcbc`: 12 of 27 molecular masses changed. The mass cancels in the line-opacity
+  conversion ("Library and data contract"), so the edit moves no spectrum beyond
+  rounding.
 - `6aa0cb8`: `warm_count_max` defaults to `count_max`. `c63815c`: emission uses g(r).
   `ccdf92f`: exojax 2.6.0. `879a99c`: the jvp path also needs a tangent certificate.
   `55613bc`: `eclipse_flux_tau` (opt-in).
@@ -195,8 +212,10 @@ item "conv_normal certificate terms").
   vulcan-retrieval run 90302) [M]. At lnR0 = 0 the outputs are bitwise the old ones;
   `test_e2e_rt_reference.py` pins lnR0 against a model rebuilt at the scaled radius and
   gravity to 1e-12.
-- Emission anchors radius and gravity at `p_ref_emission_bar = 0.1`; a transit radius
-  with emission gravity puts GM 8.9% off. `emission_radius()` gives the prefactor radius.
+- Emission anchors radius and gravity at the constant `constants.P_REF_EMISSION_BAR`
+  (0.1 bar), not a profile key; the emission model still carries the value as
+  `p_ref_emission_bar`. A transit radius with emission gravity puts GM 8.9% off.
+  `emission_radius()` gives the prefactor radius.
 - Eclipse prefactor: the tau = 2/3 radius per k-ordinate (`eclipse_flux_tau`; Fortney et
   al. 2019). A single radius reads low on W39b's dayside by 7% median, 13% in the CO2
   core; under 2.5% on HD 189733 b [M]. Pinned against a numpy loop to 9e-16 and a
@@ -220,7 +239,7 @@ item "conv_normal certificate terms").
   inverse-square at layer midpoints +1.5 ppm [M]. The engine keeps its own
   `_gravity_profile_invsq` so an exojax change cannot move it.
 - The emission optical depth uses the same g(r) (`c63815c`). The old single gravity at
-  `p_ref_emission_bar` put the eclipse flux 0.5-1% high on a W39b-like column, 0.9-2% on a
+  the 0.1 bar emission anchor put the eclipse flux 0.5-1% high on a W39b-like column, 0.9-2% on a
   WASP-107b-like one [M]. The pRT emission gate did not move (its large rp holds g
   constant).
 
@@ -270,9 +289,6 @@ item "conv_normal certificate terms").
   planner's AD rows call it.
 - A warm tangent blowing up after the primal converged, dt uncapped, is the settled
   uncapped-dt case in VULCAN3's notes, not a new defect.
-- The build-time warm-up check (`baseline_conv_normal`) is a diagnostic by decision:
-  nothing consumes its column and every solve certifies itself. It reads the runner's
-  `end_case == 1`.
 
 ## Batched routes (`converged_y_batch`, `converged_y_queue`)
 
@@ -384,6 +400,10 @@ item "conv_normal certificate terms").
 - Middle-axis argsort in `ckd.overlap`: replaced by the last-axis two-operand sort,
   `5e8d43a`.
 - The `speed` branch (0.21.0-0.27.0, from `43e895d`): merged; `main` is the only line.
+- The build-time warm-up solve (`baseline_conv_normal`, `skip_warmup`): a full solve at
+  build whose column was never the returned seed and whose bit nothing gated on (every
+  solve certifies itself). Removed in the 2026-10-20 cleanup; the first real solve now
+  compiles the runner. `p_ref_emission_bar` as a profile key went in the same pass.
 
 ## Do not retry
 
@@ -445,8 +465,9 @@ item "conv_normal certificate terms").
 
 - The photolysis-cadence switch threshold stays at VULCAN3's derived 1.0 when a profile
   overrides `yconv_min`: only the refresh timing moves, the certificate does not.
-- The fixed-O C/O guess (the retrieval's `co_mode` default) has no normal-tier test; it is
-  only the start guess, which the elemental projection puts on the exact targets.
+- `co_mode` defaults to `fixed_O`, which both consumers pass; `proxy` is kept and no test
+  in any repo sets it. The modes differ only in a warm continuation's guess, which the
+  elemental projection puts on the exact targets.
 - `transmission_depth`, `emission_flux` and `tau_bottom` have no production caller (grep
   of vulcan-retrieval/src and vulcan-jwst-tool/src).
 - Importing `vulcan_chem` sets `OMP_NUM_THREADS=1` (`setdefault`, undocumented).
@@ -454,7 +475,7 @@ item "conv_normal certificate terms").
   IndexError [I].
 - A non-default `VULCAN3_NETWORK` is kept when `vulcan_chem` is imported first, refused
   when `vulcan3` was.
-- No engine test sets `co_mode`, `cfg_overrides`, `run_diag`, `use_rayleigh`,
+- No engine test sets `cfg_overrides`, `run_diag`, `use_rayleigh`,
   `rt_integration` or `molecule_table` (consumers use all but the last).
   `test_contract.py`'s docstring says the planner's datacheck reads the path helpers; it
   re-derives the path.
