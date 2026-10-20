@@ -298,10 +298,13 @@ per-theta re-anchoring stay); the rest stay live.
   (before, a lane's eq seed moved ~4e-15 with the batch width).
 - The cold queue is not bitwise the batch: `run_queue` builds the seed inside its jitted
   loop, and the two compilations of `_prep` differ by 1.1e-15 in `y_ini`, amplified until
-  accept counts split (queue [121,122,121,121] vs batch [121,121,121,166]) [M]. The exact
-  batch-tick check therefore starts both from `y0` as a continuation. Tests compare
-  `conv_normal`, not `conv_branch` (an S4 cell at 1e-20 certifies tight in one
-  compilation, loose in another).
+  accept counts split (queue [121,122,121,121] vs batch [121,121,121,166]) [M]. Started
+  both from `y0` they still split (queue [121,127,122,148] vs batch [123,...]) since the
+  carbon repair, and a 1e-12 lnZ nudge moves the queue-vs-batch max rel from 0.4e-2 to
+  7e-2 on every job [M]: tests compare `conv_normal` (not `conv_branch`: an S4 cell at
+  1e-20 certifies tight in one compilation, loose in another) and the convergence scale
+  (bar 0.1, `yconv_min`), and a plain-jvp tangent only between routes that stop on the
+  same accept count (two that stop a step apart differ by 9.9e-1).
 - Warm-started stage 2: every theta certifies in both arms at different relaxation
   depths; the worst cells are floor sulfur; H2O, CO, H2, He <= 2.8e-4 rel, CO2 and CH4 up
   to 2.0e-2 [M]. The transit-depth effect is unmeasured.

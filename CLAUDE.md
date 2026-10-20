@@ -104,9 +104,10 @@ jwst-transit-authority}`. A forward-model change usually belongs here, not in a 
 - The batched primal is `converged_y_batch` or `converged_y_queue` (lanes refilled from a
   theta queue; `active=` masks padding jobs). Both agree with the solo solve at the
   convergence scale only, and the queue is not bitwise the batch: compare certificates
-  (`conv_normal`), never bytes, and compare accept counts exactly only when both routes
-  start from one column. A plain `jax.jvp` through either is supported; a
-  tangent-certified derivative stays on `converged_y_jvp` (notes "Batched routes").
+  (`conv_normal`) and the convergence scale, never bytes or accept counts, even from one
+  column. A plain `jax.jvp` through either is supported, but its tangents are comparable
+  only between routes that stop on the same step; a tangent-certified derivative stays on
+  `converged_y_jvp` (notes "Batched routes").
 - Set no photolysis refresh cadence in the engine: the config YAML decides, and a
   consumer overrides per column through `cfg_overrides`
   (notes "Photolysis refresh cadence").
