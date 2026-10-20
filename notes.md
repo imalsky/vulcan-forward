@@ -27,8 +27,8 @@ Tags: [M] measured, [E] estimated, [I] inferred.
   queue/gradient tests and the 8-species pRT case. At `a6a1094`: 100 passed / 3 failed
   in 20.0 min at `-n 6 --dist worksteal` (the three knife-edge tests in `todo.md`); at
   `4ca5fa6`: 103 passed in 20.7 min, 23.9 GB peak [M]. After the 2026-10-20 cleanup (`co_mode`
-  default `fixed_O`, no warm-up solve): 102 passed / 2 failed in 31.7 min at `-n 6 --dist
-  worksteal`, load ~16 [M]; the two failures are the queue-vs-batch knife edge at exactly
+  default `fixed_O`, no warm-up solve): 95 passed / 2 failed in 31.4 min at `-n 6 --dist
+  worksteal` (after the further cuts; was 102 / 2) [M]; the two failures are the queue-vs-batch knife edge at exactly
   the recorded 6.874e-2, and the warm jvp case now certifies.
 - Known defect, no shipped number moves: the `ckd.overlap` sort-crossing jumps (see
   "Opacity").
@@ -102,10 +102,10 @@ item "conv_normal certificate terms").
 
 - No data at import, no writes to the caller's cwd, no paths from `__file__`: each has a
   test in `tests/test_contract.py`. The old `__file__`-relative path (`parents[3]` plus a
-  `data/cm24_wasp39b` marker) made the package un-importable elsewhere; output
-  directories now go through `_redirect_output_dirs`. A build is cwd-clean only on
-  vulcan3 code that dropped a pre-loop `Output()` (VULCAN-JAX `d8856c6`); the test checks
-  imports only.
+  `data/cm24_wasp39b` marker) made the package un-importable elsewhere. A build is
+  cwd-clean because vulcan3 dropped the pre-loop `Output()` (VULCAN-JAX `d8856c6`, in the
+  0.18.0 floor): a build plus one solve in an empty directory left it empty, so the
+  `output_dir` redirect was removed [M]. The test checks imports only.
 - `exomolop`'s path helpers and `provenance()` import without jax or h5py (a subprocess
   test). The planner's `datacheck.exomolop_table_path` re-derives the path; a data-gated
   planner test pins that the two agree.
@@ -144,13 +144,13 @@ item "conv_normal certificate terms").
 - `PROFILE_KEYS` is the union of the keys the three builders read (consumers pass one
   dict to all three); `check_profile_keys` refuses anything else (`affaecf`, 0.26.0).
   Before it, deleting a reader turned a set key into a silent no-op. `cfg_overrides` pass
-  `vulcan3.validate_overrides` first (0.27.0); only `output_dir` is redirected.
+  `vulcan3.validate_overrides` first (0.27.0).
 - Every build-time refusal names the remedy: missing table (fetch command), missing
   geometry, out-of-grid anchor, clamped chemistry top or bottom, CIA span, `art_pbtm_bar`
   deeper than the table's 100 bar ceiling, unknown profile key, unknown `co_mode`,
-  repeated molecule, `warm_count_max` above the cold cap, `use_fix_all_bot=True`, a
-  non-empty `T_cross_sp`. The last two because `_prep` leaves `pv.bottom_n` and the
-  T-dependent cross sections at the baseline; no shipped config sets either.
+  repeated molecule, a non-empty `T_cross_sp`. The last because `_prep` leaves the
+  T-dependent cross sections at the baseline; no shipped config sets it.
+  (`use_fix_all_bot`, dead in upstream master, is no longer a vulcan3 key.)
 
 ## Opacity: correlated-k on ExoMolOP
 
@@ -312,9 +312,7 @@ item "conv_normal certificate terms").
   1.0e-4). The gradient tests assert column max rel 4e-1, median 1e-3, tangent
   stack-relative 2e-4; measured cold 1.70e-1 / 2.08e-4 / 1.73e-5, warm 1.16e-1 /
   5.74e-5 / 2.56e-5 [M].
-- `warm_cap` rides the carry (`count_max_dyn`), solo path included, so there is one
-  runner; a capped lane reads cap + 1. Per-lane `lnZ_ref` / `c_o_ref` are bitwise the
-  scalar path [M].
+- Per-lane `lnZ_ref` / `c_o_ref` are bitwise the scalar path [M].
 - Test bars, calibrated on daw (Xeon 8462Y+): queue-vs-batch primal 0.05 (`REL_MAX`);
   batch-vs-solo 0.1 (6e-2 and 8e-2 measured across Python 3.10-3.12 and numpy
   1.26-2.x); queued tangent 1e-2 on the settled thetas (<= 4.6e-4 measured) and a 1.0
@@ -393,6 +391,10 @@ item "conv_normal certificate terms").
   peak; the unrolled molecule loop held the memory. Added `faa580a`, removed in 0.25.0
   `fd88866` for `ckd.fold`'s scan; `integ_warm` went in the same commit.
 - `converged_ymix`: no caller. Deleted `a5d2190`.
+- `warm_cap` / `warm_count_max`, a step cap for the SMC sampler's mutation solves (it
+  rode the carry's `count_max_dyn`): no caller after the SMC removal, both retrieval call
+  sites passed `warm_cap=False`. Removed with the unread `ConvDiag` fields
+  (`count_since_new_min`, `budget_drift_max`, `budget_drift_atom`) and `atom_order`.
 - One gravity in the emission optical depth: replaced by g(r), `c63815c`.
 - Consumer-side e^(2 lnR0) eclipse prefactor at fixed g: replaced by lnR0 at fixed GM in
   the engine, `d26e9d3` (transmission) and `801f7e7` (emission).

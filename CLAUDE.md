@@ -75,8 +75,7 @@ The shared vulcan3 -> ExoJAX forward engine. DAG: `vulcan3 <- vulcan-forward <-
   the convergence scale only, and the queue is not bitwise the batch: compare
   certificates, never bytes, and compare accept counts exactly only when both routes
   start from one column. A plain `jax.jvp` through either is supported; a
-  tangent-certified derivative stays on `converged_y_jvp`. The warm cap rides the carry
-  (`count_max_dyn`), solo path included: no second runner (notes "Batched routes").
+  tangent-certified derivative stays on `converged_y_jvp` (notes "Batched routes").
 - **Geometry** (notes "Geometry and anchors"):
   - `rp_cm`/`gs_cgs` apply at `p_ref_bar` (default 1e-3 bar), not at the RT grid
     bottom. exojax's `radius_btm` is the bottom layer's lower boundary, so `_radius_at`
