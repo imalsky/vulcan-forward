@@ -23,7 +23,7 @@ and the WARM-capped mutation map with a per-lane reference composition.
 
 The measured differences are printed (``pytest -s``).
 
-Cheap profile: nz=20, photochemistry off, no build-time warm-up solve.
+Cheap profile: nz=20, photochemistry off.
 
 Full tier (``VULCAN_FORWARD_RUN_FULL=1``): the gradient tests (minutes of
 compile and ~16 GB per route) and the two convergence-scale comparisons
@@ -52,7 +52,7 @@ FULL = pytest.mark.skipif(os.environ.get("VULCAN_FORWARD_RUN_FULL") != "1",
 
 # dt_max: the production step cap (vulcan-retrieval's case sets 1e11 s).
 PROFILE = {"use_photo": False, "yconv_cri": 1.0e-2, "nz": 20,
-           "skip_warmup": True, "dt_max": 1.0e11}
+           "dt_max": 1.0e11}
 # [lnZ, c_o, lnKzz, T-offset]: the baseline column and three perturbed ones,
 # heterogeneous enough that they do not all converge at the same tick.
 THETAS = np.array([[0.0, 0.0, 0.0, 0.0],
@@ -315,7 +315,6 @@ def test_queue_is_differentiable(chem, ref):
 # tick-keyed photolysis and refresh cadences. warm_count_max is the production
 # mutation cap (1500) against a cold cap of 30000.
 PHOTO_PROFILE = {"use_photo": True, "yconv_cri": 1.0e-2, "nz": 20,
-                 "skip_warmup": True,
                  "warm_count_max": 1500}
 # An MCMC-sized proposal step away from the carried column, per direction.
 WARM_DELTA = np.array([0.05, 0.02, 0.1, 5.0], dtype=np.float64)

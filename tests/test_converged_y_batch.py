@@ -18,8 +18,8 @@ The warm-continuation arguments are covered too: the mutation cap
 (``warm_cap``) and the PER-LANE reference composition, both of which the
 retrieval's warm mutation kernel needs from a batched call.
 
-Cheap profile: nz=20, photochemistry off, no build-time warm-up solve -- the
-solve itself is what is under test, not the column.
+Cheap profile: nz=20, photochemistry off -- the solve itself is what is under
+test, not the column.
 """
 from __future__ import annotations
 
@@ -38,8 +38,7 @@ from vulcan_forward import vulcan_chem                       # noqa: E402
 import jax                                                   # noqa: E402
 import jax.numpy as jnp                                      # noqa: E402
 
-PROFILE = {"use_photo": False, "yconv_cri": 1.0e-2, "nz": 20,
-           "skip_warmup": True}
+PROFILE = {"use_photo": False, "yconv_cri": 1.0e-2, "nz": 20}
 # [lnZ, c_o, lnKzz, T-offset]: the baseline column and a perturbed one.
 THETAS = np.array([[0.0, 0.0, 0.0, 0.0],
                    [0.3, 0.1, 0.5, 40.0]], dtype=np.float64)

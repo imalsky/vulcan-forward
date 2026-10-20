@@ -64,9 +64,9 @@ P_REF_BAR = 1.0e-3
 # hot Jupiters (Fortney, Lupu, Morley, Freedman & Hood 2019, ApJL 880, L16).
 # 0.1 bar is HyDRA's stated convention, "the mean pressure of the tau=1 surface"
 # (Gandhi & Madhusudhan 2018). This re-anchors both the column's radius and
-# gravity (exojax_rt's emission_radius); the fully correct treatment computes a
-# wavelength-dependent radius at vertical tau = 2/3, as POSEIDON and PLATON II
-# do: exojax_rt's eclipse_flux_tau.
+# gravity (exojax_rt's emission_radius); a closer approximation for an extended
+# atmosphere computes a wavelength-dependent radius at vertical tau = 2/3, as
+# POSEIDON and PLATON II do: exojax_rt's eclipse_flux_tau.
 P_REF_EMISSION_BAR = 1.0e-1
 
 # Physical constants and unit factors, cgs, local so this module stays
@@ -158,12 +158,11 @@ PROFILE_KEYS = frozenset({
     # build_chem_model
     "vulcan_cfg_name", "use_photo", "yconv_cri", "yconv_min", "nz",
     "count_min", "count_max", "warm_count_max", "dt_max", "cfg_overrides",
-    "skip_warmup", "co_mode",
+    "co_mode",
     # build_rt_model / build_emis_model (art_ptop_bar also sets the chemistry top)
     "molecules", "molecule_table", "nu_min", "nu_max", "opacity_mode",
     "art_nlayer", "art_ptop_bar", "art_pbtm_bar", "rt_integration",
     "use_rayleigh", "rp_cm", "gs_cgs", "rstar_cm", "p_ref_bar",
-    "p_ref_emission_bar",
 })
 
 

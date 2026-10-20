@@ -534,8 +534,9 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
         transmission_depth (bitwise eager; under jit the folded gravity can move
         by one ulp); the lnR0 jvp is the exact geometric+hydrostatic
         response, RT-only (chemistry profiles enter frozen). Holding g instead
-        would make the planet e^(2 lnR0) times lighter and every scale height
-        e^(-2 lnR0) times larger, which the retrieval pays for in T and mu.
+        would make the planet e^(2 lnR0) times heavier (M = g R^2 / G) and keep
+        every scale height at its lnR0 = 0 value, not e^(2 lnR0) times it as at
+        fixed mass, which the retrieval pays for in T and mu.
 
         wo_mols: None (default) returns the depth (n_nu,).
         A list of molecule names returns ``(depth, depth_wo)`` with one row per
@@ -616,16 +617,15 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
     # (Fortney et al. 2019); ``emission_flux`` is the plain emergent flux.
     g_ref_em = float(profile["gs_cgs"])
     r_ref_em = float(profile["rp_cm"])
-    p_ref_em = float(profile.get("p_ref_emission_bar",
-                                 constants.P_REF_EMISSION_BAR))
+    p_ref_em = constants.P_REF_EMISSION_BAR
     if not (trt.art_ptop_bar <= p_ref_em <= trt.art_pbtm_bar):
         # jnp.interp clamps at the grid ends, so an out-of-grid anchor would
         # silently use the edge radius and gravity.
         raise ValueError(
-            f"p_ref_emission_bar={p_ref_em:g} lies outside the RT grid "
-            f"[{trt.art_ptop_bar:g}, {trt.art_pbtm_bar:g}] bar. It is the "
-            "level the emission column's radius and gravity are anchored at, "
-            "so the grid must actually cover it.")
+            f"the emission anchor P_REF_EMISSION_BAR={p_ref_em:g} lies outside "
+            f"the RT grid [{trt.art_ptop_bar:g}, {trt.art_pbtm_bar:g}] bar. It "
+            "is the level the emission column's radius and gravity are "
+            "anchored at, so the grid must cover it: deepen art_pbtm_bar.")
     # The transit anchor comes from trt, where it was validated against the
     # grid -- both observables must share it. A conflicting per-profile value
     # would silently anchor emission on a different planet, so it raises.
@@ -785,7 +785,7 @@ def build_emis_model(trt, profile: dict) -> SimpleNamespace:
         art_pbtm_bar=float(trt.art_pbtm_bar),
         art_ptop_bar=float(trt.art_ptop_bar),
         art_nlayer=art_nlayer,
-        # echoed so a consumer can verify the engine honored the key
+        # the emission anchor, for a consumer's labels and checks
         p_ref_emission_bar=p_ref_em,
         p_ref_bar=p_ref_used,
         molecules=mols,

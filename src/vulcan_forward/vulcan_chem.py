@@ -1,7 +1,7 @@
 """The differentiable physics-parameters -> converged-VMR map on VULCAN-JAX.
 
-``build_chem_model(profile)`` runs the one-time pre-loop + a warm-up convergence
-(compiles and caches the JIT'd inner runner), then returns a model whose
+``build_chem_model(profile)`` runs the one-time pre-loop and builds the inner
+runner closure (XLA compiles it on the first solve), then returns a model whose
 ``converged_y(theta)`` re-converges the column as a function of
 ``theta = [lnZ, c_o, lnKzz, T...]``.
 
@@ -37,7 +37,6 @@ import shutil
 import sys
 import tempfile
 import time
-import warnings
 from pathlib import Path
 from types import SimpleNamespace
 from typing import NamedTuple
@@ -278,10 +277,6 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     profile : dict
         A caller-owned settings dict (keys: ``constants.PROFILE_KEYS``; an
         unknown key raises). ``use_photo`` and ``yconv_cri`` are required.
-        ``profile["skip_warmup"]`` (default False) skips the build-time
-        warm-up SOLVE and keeps only its runner-closure half: bit-identical
-        for consumers that never read ``baseline_conv_normal`` (which is then
-        None = not evaluated). Inference profiles must leave it False.
     tp_eval : callable or None, optional
         Temperature-profile hook. ``None`` (default): ``T = T_base + theta[3]``,
         a uniform offset in K. Otherwise ``tp_eval(theta[3:3+n_tp_params], p_bar)``
@@ -417,37 +412,15 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     nasa9, _ = load_nasa9(network.species, thermo_dir)
     remove_list = cfg.remove_list
 
-    # --- one warm-up run: compiles integ._runner and reports whether the primal certifies
+    # --- runner closure: XLA compiles integ._runner on the first solve
     solver = op_jax.Ros2JAX()
     if rs.photo_static is not None:
         solver._photo_static = rs.photo_static
     _redirect_output_dirs(cfg)
     integ = outer_loop.OuterLoop(solver, op.Output(cfg=cfg), cfg=cfg)
     solver.naming_solver(para)
-    skip_warmup = bool(profile.get("skip_warmup", False))
-    logger.info(f"[chem] setup {time.time() - t0:.1f}s; nz={nz} ni={ni} photo={cfg.use_photo}; "
-                + ("runner closure only (skip_warmup)" if skip_warmup
-                   else "warming up runner ..."))
-    if skip_warmup:
-        # Runner closure only; the XLA compile happens on the first real solve.
-        integ._ensure_runner(var, atm)
-        baseline_conv_normal = None
-    else:
-        tw = time.time()
-        rs_warmup = integ(rs)
-        # end_case 1 = certified exit on a finite column. Diagnostic only:
-        # nothing reads the warm-up column.
-        _w_end = int(rs_warmup.params.end_case)
-        baseline_conv_normal = _w_end == 1
-        if not baseline_conv_normal:
-            warnings.warn(f"[chem] the warm-up solve did not end certified "
-                          f"(end_case={_w_end}, termination_reason="
-                          f"{int(rs_warmup.params.termination_reason)}, longdy="
-                          f"{float(rs_warmup.step.longdy):.3e}). Its column is not "
-                          f"used, but this configuration may not converge.",
-                          stacklevel=2)
-        logger.info(f"[chem] warm-up converge {time.time() - tw:.1f}s "
-                    f"(certified: {baseline_conv_normal})")
+    logger.info(f"[chem] setup {time.time() - t0:.1f}s; nz={nz} ni={ni} photo={cfg.use_photo}")
+    integ._ensure_runner(var, atm)
 
     # --- runner-carry budget/scheme seeding --------------------------------
     # The termination budget and diffusion blend live on the carry, and state0
@@ -546,7 +519,9 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     nO_per_species = jnp.asarray(np.asarray(compo[:, constants.ATOM_COLS["O"]], dtype=np.float64))
     o_only_mask = jnp.asarray(((compo[:, constants.ATOM_COLS["O"]] > 0)
                                & (compo[:, constants.ATOM_COLS["C"]] == 0)).astype(np.float64))
-    co_mode = str(profile.get("co_mode", "proxy"))
+    # The two modes differ only in a warm continuation's guess; the projection
+    # puts both on the same targets. Cold solves start from the eq seed in both.
+    co_mode = str(profile.get("co_mode", "fixed_O"))
     if co_mode not in ("proxy", "fixed_O"):
         raise ValueError(f"co_mode={co_mode!r}: expected 'proxy' or 'fixed_O'")
     co_fixed_o = co_mode == "fixed_O"
@@ -694,8 +669,11 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         the positional vector [lnZ, c_o, lnKzz, T...]).
 
         Continuation: pass warm_y = a previously-CONVERGED y (with its lnZ_ref /
-        c_o_ref) to warm-start from there. The guess is projected onto the
-        exact theta targets, so the conserved inventory is path-independent."""
+        c_o_ref) to warm-start from there. The projection fixes each layer's
+        total at M and the layer-summed (unweighted) column ratios to H at the
+        theta targets. It does not fix the dz-weighted inventory the element
+        budget tracks (budget_ref), so two starts at one theta can carry
+        different weighted inventories."""
         # One column per solve, always: the batched entry points map this over
         # the leading axis, so warm_i is (nz, ni) there too. Any other trailing
         # shape would BROADCAST silently -- a (1, ni) column would seed every
@@ -1052,8 +1030,6 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         #                                            carry (gate on conv_normal,
         #                                            never longdy alone)
         audit_init=audit_init,
-        baseline_conv_normal=baseline_conv_normal,  # warm-up exit certified?
-        #                                             None = skip_warmup, not evaluated
         conden_spec=conden_spec,   # static conden metadata (None when conden off)
         prep_pv=prep_pv,           # theta -> initial ProfileVars (no solve; tests)
         _integ=integ,              # the OuterLoop (baked statics access)

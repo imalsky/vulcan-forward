@@ -15,7 +15,7 @@ two derivatives are of different functions.
 A second model leaves the endpoint free, so there the tangent certificate
 decides when the run stops.
 
-Cheap profile: nz=20, photochemistry off, no build-time warm-up solve.
+Cheap profile: nz=20, photochemistry off.
 
 Full tier (``VULCAN_FORWARD_RUN_FULL=1``): compiling the tangent runner takes
 ~2 min per tangent shape, and the free-endpoint warm jvp ran to its cap with a
@@ -43,7 +43,6 @@ pytestmark = pytest.mark.skipif(os.environ.get("VULCAN_FORWARD_RUN_FULL") != "1"
 
 K = 40
 PROFILE = {"use_photo": False, "yconv_cri": 1.0e-2, "nz": 20,
-           "skip_warmup": True,
            "count_min": K, "count_max": K, "warm_count_max": K}
 THETA = np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float64)
 # [lnZ, c_o, lnKzz, T-offset]: unit directions in lnZ and in the T offset.
@@ -92,7 +91,6 @@ def test_stacked_directions_reproduce_the_single_direction_tangents(runs):
 # The endpoint is free here: count_min is low enough that the certificate, not
 # the floor, ends a warm continuation, and count_max far above any exit.
 SETTLE_PROFILE = {"use_photo": False, "yconv_cri": 1.0e-2, "nz": 20,
-                  "skip_warmup": True,
                   "count_min": 10, "count_max": 3000}
 THETA_WARM = np.array([0.3, 0.1, 0.5, 40.0], dtype=np.float64)
 
