@@ -2,118 +2,56 @@
 
 What is true about the forward engine and why: the evidence behind each rule in
 `CLAUDE.md`, the design records that still govern the code, retired designs and the
-do-not-retry list. Open, owed and undecided work is in `todo.md`. Retrieval-side studies
-are in vulcan-retrieval's notes; solver findings in VULCAN3's notes.
+do-not-retry register. Open, owed and undecided work is in `todo.md`. Retrieval-side
+studies are in vulcan-retrieval's notes; solver findings in VULCAN3's notes.
 Tags: [M] measured, [E] estimated, [I] inferred.
 
 ## Current state
 
-- Version 0.29.0 (`801f7e7`, tag `v0.29.0`); last code commit `39c2c45`. The
-  2026-10-20 cleanup on `main`: no build-time warm-up solve, `co_mode` default `fixed_O`,
-  the emission anchor a constant, merged docs. One branch, `main`.
+- Version 0.30.0 on `main`, the only branch: 0.29.0 plus the WASP-39b v5 engine options,
+  a sulfur knob (`s_o`) and a Kzz power law as optional entries of the chemistry layout,
+  `lnM` and a grey deck in the RT ("Cold start, abundance map, carbon repair", "Kzz
+  shape", "Geometry and anchors", "Opacity: correlated-k on ExoMolOP"). 0.29.0
+  (`801f7e7`, tag `v0.29.0`): no build-time warm-up solve, `co_mode` default `fixed_O`,
+  the emission anchor a constant.
 - Floors (`pyproject.toml`): `exojax==2.6.0`, `radis<0.17`, `vulcan3>=0.18.0` (first
   release under that name; carries `conv_normal` and `validate_overrides`),
   `jax>=0.6.2`, `numpy>=1.26`, `h5py>=3.9`.
-- Consumers: vulcan-retrieval requires `>=0.28.0`; jwst-transit-authority (the planner)
-  requires `>=0.29.0` and pins `801f7e7` in `deploy/pins.env`.
+- Consumers: vulcan-retrieval floors `>=0.30.0` and its `requirements-hpc.txt` pins
+  `acdf63e`; jwst-transit-authority (the planner) floors `>=0.29.0` and pins `32adc85`
+  in `deploy/pins.env`.
 - Production: the WASP-39b baseline v2 nautilus run used `d26e9d3` (0.28.0, tag
-  `w39b-baseline-v2`). All three W39b production runs carry the 0.27.2 carbon repair.
+  `w39b-baseline-v2`). All three W39b production runs carry the 0.27.2 carbon repair
+  (`a6a1094`).
 - Normal tier: plain `pytest tests`. CI runs it serially on Python 3.10, 3.11 and 3.12,
   single-threaded XLA, numpy<2, vulcan3 from `imalsky/VULCAN3@main`, no exojax (the RT
-  tests skip). Last reading on file: 95 passed / 8 skipped in 189 s at `-n 6` on daw, code
-  of `d26e9d3` [M]. `39c2c45` added one normal-tier test (`test_masked_jobs_take_no_step`);
-  not re-run at HEAD.
+  tests skip). Readings [M]: daw, `-n 6`, code of `d26e9d3`: 95 passed / 8 skipped in
+  189 s; laptop CPU, single-threaded XLA, `-n 4`, the 0.30.0 tree (the v5 options and
+  their five tests): 90 passed / 8 skipped in 75 s.
 - Full tier (`VULCAN_FORWARD_RUN_FULL=1`): the `converged_y_jvp` tests, the five `@FULL`
-  queue/gradient tests and the 8-species pRT case. At `a6a1094`: 100 passed / 3 failed
-  in 20.0 min at `-n 6 --dist worksteal` (the three knife-edge tests in `todo.md`); at
-  `4ca5fa6`: 103 passed in 20.7 min, 23.9 GB peak [M]. After the 2026-10-20 cleanup (`co_mode`
-  default `fixed_O`, no warm-up solve): 95 passed / 2 failed in 31.4 min at `-n 6 --dist
-  worksteal` (after the further cuts; was 102 / 2) [M]; the two failures are the queue-vs-batch knife edge at exactly
-  the recorded 6.874e-2, and the warm jvp case now certifies.
-- Known defect, no shipped number moves: the `ckd.overlap` sort-crossing jumps (see
-  "Opacity").
-
-## RT speed (speed2_rt, 2026-10-17)
-
-- XLA's argsort along the middle axis of `ckd.overlap` was 82% of the RT stage on a GH200,
-  107.4 ms per spectrum [M].
-- The "kv" rewrite (sums on the last axis, one stable two-operand `lax.sort` with the
-  weights as payload) runs at 25.3 ms per spectrum (4.25x); a 2376-row RT pass 256.0 ->
-  60.2 s. Depths bitwise on all 3,920,400 values, log L bitwise on 2376/2376, jvp
-  bitwise, vjp within 1.6e-14 relative [M]. Adopted: `5e8d43a` (`ckd.overlap`).
-- After it the sort is still 51% of the stage (11.7 ms per spectrum). Not adopted: an
-  unrolled searchsorted (24.4 ms, bitwise), index gather (26.9-36.8 ms), compare_all
-  (not bitwise), rt_chunk 8-64 (no gain), a CUDA fold prototype (8.2 ms for the fold) [M].
-- `39c2c45`: `converged_y_queue(active=)` lets the retrieval mask padding rows. A masked
-  job's lane starts done and takes no step; the active jobs keep the unmasked schedule
-  (bitwise on the GPU per the retrieval's check; the CPU test bar is 1e-9).
-
-## Warm starts
-
-- Every warm start begins from the build's pre-loop photo carry, not the warm column's
-  own field: `state0` is packed from the build's RunState and `_prep`'s
-  `state0._replace` does not touch the photo flux fields [I: code]. Whether that
-  pre-loop `dflux_u` is zero was not verified [I]. ad_advice sample: for 27 of 98
-  certified lanes the photo carry was the last gate to clear [M].
-- Weighted vs unweighted inventory: the projection fixes each layer's total and the
-  unweighted (layer-summed) column ratios to H; the element budget tracks the
-  dz-weighted column (`budget_ref`, "Convergence certificate"). So two starts at one
-  theta can carry different weighted inventories: algebraically real. On the shipped
-  HD209 column the weighted and unweighted column ratios agree to 1e-11..2e-10,
-  because the column's atoms sit in the bottom scale heights [M, one column, second
-  referee]; W39b is unchecked. vulcan-retrieval's 97 of 1320 warm-certify, cold-fail
-  rows (baseline_v2) are fixed-point path dependence, a different effect.
-
-## Provenance audit
-
-151 commits are dated before 2026-10-13 [M: `git log`]. They were made on other machines
-and their provenance is not recorded on NAS. The items below are live at HEAD and on by
-default unless noted. The maintainer confirmed the first (2026-10-20: the terms and the
-per-theta re-anchoring stay); the rest stay live.
-
-- `b8cae5c`, `b72b0d2`, `3bb7cab`, `aa79f25`, `dfa2a0f`: `conv_normal` adds geometry and
-  element-budget certificate terms and per-theta re-anchoring. This decides which draws
-  are rejected and goes beyond VULCAN's original criteria. The terms live in vulcan3
-  (VULCAN3 notes "Decided by the maintainer, not to be re-opened").
-- `0ee65a4` + `fb244c7`: chemistry top `P_t` forced to the RT top, now 1e-9 bar
-  (`build_chem_model` sets `cfg.P_t` from `art_ptop_bar`; `constants.ART_PTOP_BAR`). A
-  model choice, not a parity item (evidence: "Geometry and anchors").
-- `3b7654b`, `2838121`, `5018e4d`, `d40211d`: cold start is in-graph equilibrium at the
-  proposal's T-P; the 'baseline' start was deleted.
-- `a6a1094`: carbon repaired through CO+CH4 (used in all three W39b production runs).
-- `2807b9a`, `0250ce0`: elemental abundance map only.
-- `4446e6e`, `e2aacba`: transit radius anchored at 1 mbar (`constants.P_REF_BAR`, a model
-  choice: "Geometry and anchors"); bottom boundary; emission solver linsap.
-- `d26e9d3`, `801f7e7`: fixed planet mass under lnR0. The daw record calls the emission
-  half (0.29.0) the maintainer's choice.
-- `773837e`: hand-written correlated-k random overlap, T/P clamps, `K_FLOOR` 1e-60.
-- `db94d6e`: line-by-line and Mie paths removed (also removed a runtime overwrite of
-  MdbHitran gamma_air/n_air; ExoJAX source itself was never modified).
-- `aedbcbc`: 12 of 27 molecular masses changed. The mass cancels in the line-opacity
-  conversion ("Library and data contract"), so the edit moves no spectrum beyond
-  rounding.
-- `6aa0cb8`: `warm_count_max` defaults to `count_max`. `c63815c`: emission uses g(r).
-  `ccdf92f`: exojax 2.6.0. `879a99c`: the jvp path also needs a tangent certificate.
-  `55613bc`: `eclipse_flux_tau` (opt-in).
-- `5e8d43a` and `39c2c45` were made on NAS on the maintainer's 2026-10-17 instructions;
-  both are bitwise.
+  queue/gradient tests and the 8-species pRT case. Readings at `-n 6 --dist worksteal`
+  [M]: `4ca5fa6` 103 passed in 20.7 min, 23.9 GB peak; the 0.29.0 tree 95 passed /
+  2 failed in 31.4 min, the failures the queue-vs-batch knife edge at the recorded
+  6.874e-2 ("Batched routes") while the eq-seed warm jvp case certifies.
+- Known defect, no shipped number moves: the `ckd.overlap` sort-crossing jumps
+  ("Opacity: correlated-k on ExoMolOP").
 
 ## Library and data contract
 
 - No data at import, no writes to the caller's cwd, no paths from `__file__`: each has a
-  test in `tests/test_contract.py`. The old `__file__`-relative path (`parents[3]` plus a
-  `data/cm24_wasp39b` marker) made the package un-importable elsewhere. A build is
-  cwd-clean because vulcan3 dropped the pre-loop `Output()` (VULCAN-JAX `d8856c6`, in the
-  0.18.0 floor): a build plus one solve in an empty directory left it empty, so the
-  `output_dir` redirect was removed [M]. The test checks imports only.
+  test in `tests/test_contract.py` (imports only). A `__file__`-relative path
+  (`parents[3]` plus a `data/cm24_wasp39b` marker) made the package un-importable
+  elsewhere. A build is cwd-clean because vulcan3 dropped the pre-loop `Output()`
+  (VULCAN-JAX `d8856c6`, in the 0.18.0 floor): a build plus one solve in an empty
+  directory left it empty, so the engine carries no `output_dir` redirect [M].
 - `exomolop`'s path helpers and `provenance()` import without jax or h5py (a subprocess
   test). The planner's `datacheck.exomolop_table_path` re-derives the path; a data-gated
   planner test pins that the two agree.
 - `$VULCAN_FORWARD_DATA` / `paths.set_data_root`, resolved on use: no measurement. A
   library cannot know a data path, and a guessed one fails late or reads other data [I].
-- Planet geometry is required: it used to fall back to WASP-39 b, so a forgotten key
-  silently modeled another planet. `build_rt_model` requires `rp_cm`, `gs_cgs`,
-  `rstar_cm`; `build_emis_model` requires `rp_cm`, `gs_cgs` (`_require_geometry`).
+- Planet geometry is required: `build_rt_model` needs `rp_cm`, `gs_cgs`, `rstar_cm`;
+  `build_emis_model` needs `rp_cm`, `gs_cgs` (`_require_geometry`). The retired WASP-39 b
+  fallback let a forgotten key silently model another planet.
 - Injectable molecule table (`profile['molecule_table']`, passed to
   `exomolop.load_tables`): no measurement; consumers choose their own absorber menus
   (the planner's `EXTRA_MOLECULES_DEFAULT`). `constants.MOLECULES` carries only
@@ -121,7 +59,7 @@ per-theta re-anchoring stay); the rest stay live.
   fixtures bit-unchanged [M]).
 - Bit-identical gate: the extraction of `vulcan_chem`, `exojax_rt` and `interp_map` from
   vulcan-retrieval reproduced the planner's default WASP-39 b case at max|diff| = 0 [M].
-  Deliberate physics changes since (model top, eclipse radius, emission g(r), lnR0)
+  The deliberate physics changes since (model top, eclipse radius, emission g(r), lnR0)
   carried new fixtures.
 - Why a separate distribution: the exact exojax pin is load-bearing, and VULCAN3 is
   standalone with vendored data; an RT stack and an external data path there would widen
@@ -189,8 +127,7 @@ per-theta re-anchoring stay); the rest stay live.
   pairwise sums with unequal weights swap sort order, so k and its derivative jump.
   Largest jump measured (W39b column, one VMR scanned through a crossing): 0.56 ppm
   native, 0.056 ppm at R = 100, rms 0.011 ppm; a 25-molecule fold on the same column is
-  no worse (0.35 ppm native) [M]. The maintainer decided to keep the rebin (see "Do not
-  retry").
+  no worse (0.35 ppm native) [M]. The rebin stays by decision ("Do not retry").
 - Leave-one-out: resort-rebin is not associative, so `ckd._fold_wo` gives each wo output
   the exact op sequence of a naive refold with the zero operand; consumers gate
   max|diff| = 0.
@@ -198,6 +135,24 @@ per-theta re-anchoring stay); the rest stay live.
   on the CPU (rtol 1e-12 elsewhere: a GH200 differed in the last bits). RT vjp per lane,
   12 absorbers, 1650 bands, 67 layers, CPU: loop 13.49 GiB / 11.9 s, scan 4.56 GiB /
   9.8 s [M].
+- Grey deck (`deck`, log10 P_deck in bar, independent of the power-law `cloud`): every
+  layer deeper than the deck gets dtau = `CLOUD_DECK_TAU` (1e3) through a logistic step in
+  ln P of width `CLOUD_DECK_WIDTH_LNP` (0.02, a sixteenth of a production RT layer). Along
+  the chord the deck is ~1e5 optical depths thick, so the effective boundary sits ~13
+  widths (0.26 in ln P, 0.1 dex) above P_deck. `tests/test_cloud_deck.py`: in a gas-free
+  isothermal column the transit radius is within 0.5 H of R(P_deck), band-independent to
+  the last bit, and a deck three decades below the grid reproduces the deck-free spectrum
+  bitwise.
+
+## RT speed (speed2_rt)
+
+- GH200, `ckd.overlap`: XLA's argsort along the middle axis was 82% of the RT stage,
+  107.4 ms per spectrum [M].
+- Adopted (`5e8d43a`): sums on the last axis, one stable two-operand `lax.sort` with the
+  weights as payload. 25.3 ms per spectrum (4.25x); a 2376-row RT pass 256.0 -> 60.2 s.
+  Depths bitwise on all 3,920,400 values, log L bitwise on 2376/2376, jvp bitwise, vjp
+  within 1.6e-14 relative [M]. The sort is then still 51% of the stage (11.7 ms per
+  spectrum); the alternatives measured against it are under "Do not retry".
 
 ## Geometry and anchors
 
@@ -226,6 +181,11 @@ per-theta re-anchoring stay); the rest stay live.
   (fails the 5 ppm gate); 1e-9 vs 1e-10 moved 1.14 ppm, hence `ART_PTOP_BAR = 1e-9` [M].
 - `_check_cia_span`: production caps `nu_max` at the H2-H2 edge (10000 cm^-1); worst case
   +3.30 ppm, unreachable in shipped consumers [M].
+- `lnM` (`transmission_depth_r`, default 0): the gravity at `p_ref_bar` scales e^lnM at
+  the unchanged scaled radius, so GM scales e^lnM while lnR0 keeps its fixed-GM meaning.
+  RT-only: the chemistry column and a consumer's T-P tau keep M0. Pinned against a model
+  rebuilt at the scaled gravity (`tests/test_e2e_rt_reference.py`); lnM = 0 is the lnR0
+  path bit for bit. Transmission only; the emission functions take lnR0 alone.
 
 ## Emission solver and gravity
 
@@ -238,18 +198,18 @@ per-theta re-anchoring stay); the rest stay live.
   quadrature: constant g -102 ppm, exojax's `gravity_profile` (linear in 1/r) -51 ppm,
   inverse-square at layer midpoints +1.5 ppm [M]. The engine keeps its own
   `_gravity_profile_invsq` so an exojax change cannot move it.
-- The emission optical depth uses the same g(r) (`c63815c`). The old single gravity at
-  the 0.1 bar emission anchor put the eclipse flux 0.5-1% high on a W39b-like column, 0.9-2% on a
-  WASP-107b-like one [M]. The pRT emission gate did not move (its large rp holds g
+- The emission optical depth uses the same g(r) (`c63815c`). A single gravity at the
+  0.1 bar emission anchor put the eclipse flux 0.5-1% high on a W39b-like column, 0.9-2%
+  on a WASP-107b-like one [M]. The pRT emission gate did not move (its large rp holds g
   constant).
 
 ## RT validation and the exojax pin
 
 - Committed fixtures `tests/data/prt_ref_*.npz` gate the RT in
   `tests/test_e2e_rt_reference.py`. Meta holds the pRT version (3.4.0, pinned in
-  `tests/test_e2e_fixtures.py`), opacity files, constants,
-  generating script and achieved agreement; tolerances are 3x achieved; pRT ran in a
-  throwaway venv. Both codes read the same k-table file [M]:
+  `tests/test_e2e_fixtures.py`), opacity files, constants, generating script and achieved
+  agreement; tolerances are 3x achieved; pRT ran in a throwaway venv. Both codes read the
+  same k-table file [M]:
   - transmission, isothermal H2O: mean ratio 1.00003, rms 0.0013%; 6 species 1.0010 /
     0.021%; W39b 8 species (Tsai et al. 2023 inputs) 0.986 / 24 ppm on 23,000 ppm.
   - emission, H2O, 900-2200 K, 3-5 um: bias +0.034%, rms 0.020%, worst band 0.091%.
@@ -278,7 +238,7 @@ per-theta re-anchoring stay); the rest stay live.
   grid (`budget_ref`, zeroed `budget_err`/`budget_drift`, `y_prev = y0p`), so the
   certificate charges the solver, not the geometry refresh. Retrieval smoke (nz 30, 6
   draws): `budget_drift_max` 0.13-12.9 (6/6 uncertified) without the `y_prev` seed,
-  2.5e-8 to 1.3e-3 with it [M]. Kept by the maintainer (2026-10-20).
+  2.5e-8 to 1.3e-3 with it [M]. The maintainer decided the seed stays.
 - On the planner's W39b default (C/O 0.55) the loose-branch exit is set by N2O at
   3.5 mbar, VMR 6e-18: one ultratrace cell decides when the solve stops [M].
 - `converged_y_jvp` runs `OuterLoop.run_jvp` and stops only when the column and the
@@ -305,6 +265,9 @@ per-theta re-anchoring stay); the rest stay live.
   1e-20 certifies tight in one compilation, loose in another) and the convergence scale
   (bar 0.1, `yconv_min`), and a plain-jvp tangent only between routes that stop on the
   same accept count (two that stop a step apart differ by 9.9e-1).
+- `converged_y_queue(active=)` (`39c2c45`) lets the retrieval mask padding rows. A masked
+  job's lane starts done and takes no step; the active jobs keep the unmasked schedule
+  (bitwise on the GPU per the retrieval's check; the CPU test bar is 1e-9).
 - Warm-started stage 2: every theta certifies in both arms at different relaxation
   depths; the worst cells are floor sulfur; H2O, CO, H2, He <= 2.8e-4 rel, CO2 and CH4 up
   to 2.0e-2 [M]. The transit-depth effect is unmeasured.
@@ -346,6 +309,43 @@ per-theta re-anchoring stay); the rest stay live.
   the fix rescued no draw there.
 - `co_bz_margin(y)` is the fixed-O seed map's positivity margin; the planner gates its AD
   dlnCO on it.
+- `s_o`, ln of the S/O multiple, is an optional entry of the positional layout
+  (`CHEM_EXTRAS`; `build_chem_model(chem_extras=...)`, `params_from_vector(extras=...)`):
+  sulfur's target ratio scales by e^(lnZ + s_o) while O and N keep e^lnZ, the warm guess
+  scales the S-bearing species by the s_o increment and the projection repairs the oxygen
+  they carry (SO, SO2, OCS, HSO) through H2O; a continuation carries `s_o_ref` beside
+  `lnZ_ref` / `c_o_ref`. Without the entry every layout and consumer is unchanged (the
+  planner's `ChemParams` has s_o = 0). Gate: `tests/test_converged_y_batch.py`, the
+  built column's ratios exact to 1e-9 with positive repair factors from the seed and from a
+  warm guess at another sulfur reference. How solves behave at |s_o| = ln 10 is
+  unmeasured; the retrieval's v5 smoke is the first measurement [I].
+
+## Warm starts
+
+- Every warm start begins from the build's pre-loop photo carry, not the warm column's
+  own field: `state0` is packed from the build's RunState and `_prep`'s
+  `state0._replace` does not touch the photo flux fields [I: code]. Whether that
+  pre-loop `dflux_u` is zero was not verified [I]. ad_advice sample: for 27 of 98
+  certified lanes the photo carry was the last gate to clear [M].
+- Weighted vs unweighted inventory: the projection fixes each layer's total and the
+  unweighted (layer-summed) column ratios to H; the element budget tracks the
+  dz-weighted column (`budget_ref`, "Convergence certificate"). So two starts at one
+  theta can carry different weighted inventories: algebraically real. On the shipped
+  HD209 column the weighted and unweighted column ratios agree to 1e-11..2e-10,
+  because the column's atoms sit in the bottom scale heights [M, one column, external
+  review]; W39b is unchecked. vulcan-retrieval's 97 of 1320 warm-certify, cold-fail
+  rows (baseline_v2) are fixed-point path dependence, a different effect.
+
+## Kzz shape
+
+- `kzz_mode` "scale" (the default) multiplies the config's Kzz profile by e^lnKzz;
+  "powerlaw" anchors Kzz0 at `kzz_p_ref_bar` (1 mbar by default, log-log interpolated
+  on the config profile at the interior interfaces pico[1:-1], where the runner reads
+  Kzz) and tilts it by (P / P_ref)^-kzz_slope, the slope an optional layout entry
+  (`CHEM_EXTRAS`). Slope 0 is a constant Kzz equal to the profile's value at the
+  reference level, so lnKzz keeps its meaning; a slope entry with the scale mode is
+  refused at build (a silent no-op otherwise). Pinned by `tests/test_converged_y_batch.py`
+  on the prepped `pv.Kzz` (no solve).
 
 ## Photolysis refresh cadence
 
@@ -354,7 +354,7 @@ per-theta re-anchoring stay); the rest stay live.
   upstream VULCAN 2); a caller overrides per column through `cfg_overrides`.
 - Cadence 1 fixes the planner's TOI-7169 b stall (at cadence 5 one step is rejected 23
   times every cycle against a stale water column; cadence 1 certified at 3422 steps) and
-  moves the planner's six presets by <= 3.8 ppm native [M]. It was tried engine-wide and
+  moves the planner's six presets by <= 3.8 ppm native [M]. Engine-wide cadence 1 was
   reverted: the planner's transmission FD/FD and emission AD/FD closure tests pass at
   cadence 5 and fail at cadence 1 (emission warm AD row corr 0.9976 -> 0.558;
   transmission Tirr row corr 0.998 -> 0.981 against a 0.99 gate) [M]. The consumer
@@ -376,99 +376,44 @@ per-theta re-anchoring stay); the rest stay live.
   daw [M]. With the workspace env's CUDA jax and a busy GPU the suite runs out of memory
   [M].
 
-## Superseded designs
+## Provenance audit
 
-- Sampled line-by-line opacity and the Mie cloud deck: wrong contrast below
-  R = 700,000 (see "Opacity"). Removed in 0.11.0, `db94d6e`.
-- Interim HITRAN-built correlated-k mode (`opacity_mode="ckd"`, 0.6.0-0.7.x): right
-  machinery (32 ppm rms vs R = 700,000), wrong line data. Removed in 0.8.0, `773837e`.
-- Radius anchored at the 7 bar RT grid bottom: depth 26,754 vs 21,381 ppm on W39b.
-  Replaced by `p_ref_bar`, `4446e6e` / `e2aacba`.
-- `cold_seed` (baseline / eq) and the masks abundance map with `reanchor_atom_ini`: one
-  cold start and one exact elemental map replaced them (see "Cold start"). Removed in
-  0.27.0, `5018e4d`, `d40211d`, `2807b9a`.
-- A local copy of the runner's certificate terms in `ConvDiag`: replaced by
-  `vulcan3.conv_normal` with an exact switch. `dfa2a0f`.
-- `warm_dt`, an exit-dt step seed for warm solves: a wash (stage-2 steps 756 -> 750,
-  977 -> 1316, 876 -> 653) [M]. Added `3d43367`, reverted exactly in `7e5ea47`.
-- Band tiling of the correlated-k fold (`rt_band_tiles`): 2.5% of the per-lane gradient
-  peak; the unrolled molecule loop held the memory. Added `faa580a`, removed in 0.25.0
-  `fd88866` for `ckd.fold`'s scan; `integ_warm` went in the same commit.
-- `converged_ymix`: no caller. Deleted `a5d2190`.
-- `warm_cap` / `warm_count_max`, a step cap for the SMC sampler's mutation solves (it
-  rode the carry's `count_max_dyn`): no caller after the SMC removal, both retrieval call
-  sites passed `warm_cap=False`. Removed with the unread `ConvDiag` fields
-  (`count_since_new_min`, `budget_drift_max`, `budget_drift_atom`) and `atom_order`.
-- One gravity in the emission optical depth: replaced by g(r), `c63815c`.
-- Consumer-side e^(2 lnR0) eclipse prefactor at fixed g: replaced by lnR0 at fixed GM in
-  the engine, `d26e9d3` (transmission) and `801f7e7` (emission).
-- CO-only carbon repair: replaced by the (CO, CH4) group, `a6a1094`.
-- Middle-axis argsort in `ckd.overlap`: replaced by the last-axis two-operand sort,
-  `5e8d43a`.
-- The `speed` branch (0.21.0-0.27.0, from `43e895d`): merged; `main` is the only line.
-- The build-time warm-up solve (`baseline_conv_normal`, `skip_warmup`): a full solve at
-  build whose column was never the returned seed and whose bit nothing gated on (every
-  solve certifies itself). Removed in the 2026-10-20 cleanup; the first real solve now
-  compiles the runner. `p_ref_emission_bar` as a profile key went in the same pass.
+The commits that moved the engine away from VULCAN 2's defaults, each live at HEAD and
+on by default unless noted. The maintainer decided the certificate terms and the
+per-theta re-anchoring stay; the other items stay live as model choices.
 
-## Do not retry
-
-- Sampled line-by-line below R = 700,000: wrong contrast, non-convergent with more points
-  (see "Opacity"); its keys (`nu_pts`, `broadening`, `dit_grid_resolution`, `mie_*`)
-  raise.
-- HITRAN line data in any mode; `broadening="h2he"` cannot fix H2O (no H2/He widths).
-- Guessing ExoMolOP URLs: 404s; walk the page levels (the site also 403s a default urllib
-  user agent).
-- First sorted isotopologue or first `.h5` on a page: wrong products (see "Opacity").
-- Trusting header DOIs or `mol_mass`: placeholders and an inert mass (see "Opacity").
-- A network error printed as SKIP: SKIP means a page with no k-table link, nothing else.
-- `ArtEmisPure.run_ckd` or `ibased`: they lose the interior source or flux at admitted
-  depths (see "Emission solver and gravity").
-- exojax `gravity_profile` or constant g: biased depths (see "Emission solver and
-  gravity").
-- Anchoring at the bottom layer centre: depth depends on `art_nlayer` (+1.02% at 20
-  layers).
-- A transit radius with emission gravity, or a single eclipse radius for the whole band
-  (see "Geometry and anchors").
-- The `R_ref^2 + col2` gCMCRT decode: halves the amplitude, a fake 2.2x discrepancy.
-- Dividing pRT flux by c: wrong by ~1e18.
-- Separate `emission_flux` / `tau_bottom` calls: dtau built twice; `emission_flux_tau`
-  builds it once.
-- `jit(overlap)`: 2-7%, below the 10% adoption bar. (The last-axis sort layout read ~10%
-  on the CPU and was set aside, then adopted after the GH200 measurement: 4.25x.)
-- Skipping the dropped molecule instead of folding its zero: not guaranteed bitwise.
-- A conservative rebin in `ckd.overlap` to remove the sort-crossing jumps: <= 0.06 ppm at
-  R = 100 against data sigmas of tens of ppm, and it would move every spectrum, fixture
-  and cache. Maintainer decision: keep the rebin.
-- Truncating the RT grid at the chemistry top: worse than the clamp it replaced (see
-  "Geometry and anchors").
-- `art.change_temperature_range`: dead in both modes (exojax reads Tlow/Thigh only in its
-  own T-P constructors).
-- A `conftest.py` for the test preamble: reorders `vulcan_chem` ahead of the jax-free
-  contract test.
-- Comparing the ERS CO2 model-grid case without the bundle's exact inputs (T-P source,
-  radius anchor, v30 grid): rms 155/199 vs 106/149, not reproducible; the inputs are not
-  on daw.
-- `np.trapezoid` on numpy 1.x or `np.trapz` on 2.x: use
-  `getattr(np, "trapezoid", None) or np.trapz`.
-- Photolysis cadence 1 as the engine default: the planner's closure tests fail (see
-  "Photolysis refresh cadence"). Reconsider only with both closures and the
-  reference-accuracy gate satisfied.
-- A checkpointed body for `ckd.fold`'s scan: 3.48 vs 4.56 GiB per lane but 14.4 vs 9.8 s
-  per RT vjp. Take it only if GPU memory, not time, binds.
-- Sharing the opacity tables across CPU lanes: the W39b tables are 1.4 GiB against
-  ~17.4 GiB per gradient lane, so ~10%; production runs on the GPU.
-- Queue tests uncapped (see "Batched routes"), or an uncapped tight reference: the
-  40000-step one never certified (element-budget drift 13-55%).
-- An exact accept-count check between the cold queue and the cold batch: each builds its
-  own seed (see "Batched routes"); start both from one column.
-- Shrinking the photo-on gradient tests by nz, directions or thetas: still 362-406 s and
-  15.9-18 GB, since compile is ~3/4 of it; split by route instead.
-- A tangent-tail mode for `converged_y_jvp`: VULCAN3 rejected the tail; the derivative
-  stays `run_jvp`.
+- `b8cae5c`, `b72b0d2`, `3bb7cab`, `aa79f25`, `dfa2a0f`: `conv_normal` adds geometry and
+  element-budget certificate terms and per-theta re-anchoring. This decides which draws
+  are rejected and goes beyond VULCAN's original criteria. The terms live in vulcan3
+  (VULCAN3 notes "Decided by the maintainer, not to be re-opened").
+- `0ee65a4` + `fb244c7`: chemistry top `P_t` forced to the RT top, now 1e-9 bar
+  (`build_chem_model` sets `cfg.P_t` from `art_ptop_bar`; `constants.ART_PTOP_BAR`). A
+  model choice, not a parity item (evidence: "Geometry and anchors").
+- `3b7654b`, `2838121`, `5018e4d`, `d40211d`: cold start is in-graph equilibrium at the
+  proposal's T-P; the 'baseline' start was deleted.
+- `a6a1094`: carbon repaired through CO+CH4 (used in all three W39b production runs).
+- `2807b9a`, `0250ce0`: elemental abundance map only.
+- `4446e6e`, `e2aacba`: transit radius anchored at 1 mbar (`constants.P_REF_BAR`, a model
+  choice: "Geometry and anchors"); bottom boundary; emission solver linsap.
+- `d26e9d3`, `801f7e7`: fixed planet mass under lnR0; the emission half (0.29.0) is the
+  maintainer's choice.
+- `773837e`: hand-written correlated-k random overlap, T/P clamps, `K_FLOOR` 1e-60.
+- `db94d6e`: line-by-line and Mie paths removed (also removed a runtime overwrite of
+  MdbHitran gamma_air/n_air; ExoJAX source itself was never modified).
+- `aedbcbc`: 12 of 27 molecular masses changed. The mass cancels in the line-opacity
+  conversion ("Library and data contract"), so the edit moves no spectrum beyond
+  rounding.
+- `6aa0cb8`: `warm_count_max` defaults to `count_max` (the cap is since removed,
+  "Superseded designs"). `c63815c`: emission uses g(r). `ccdf92f`: exojax 2.6.0.
+  `879a99c`: the jvp path also needs a tangent certificate. `55613bc`: `eclipse_flux_tau`
+  (opt-in).
+- `5e8d43a`, `39c2c45`: the last-axis overlap sort and the queue `active=` mask, both
+  bitwise ("RT speed (speed2_rt)", "Batched routes").
 
 ## Known and deliberately untracked
 
+- The 151 commits dated before 2026-10-13 were made on other machines; NAS holds no
+  provenance for them beyond "Provenance audit" [M: `git log`].
 - `test_batched_lanes_are_their_own_solves_and_agree_with_the_vmap` (bitwise lane vs
   batch-of-one) passes on daw and CI; an outside x86 container reported lane 1 differing
   (124 vs 121 steps), so bitwise lane independence may depend on the CPU [I].
@@ -497,3 +442,97 @@ per-theta re-anchoring stay); the rest stay live.
   `tests/unit/test_engine_api_contract.py` pins the names.
 - The observed-cell comparison (mix floor, max rel) is written out in each converged_y
   test module; one shared copy needs a shared test file.
+
+## Superseded designs
+
+- Sampled line-by-line opacity and the Mie cloud deck: wrong contrast below
+  R = 700,000 ("Opacity: correlated-k on ExoMolOP"). Removed in 0.11.0, `db94d6e`.
+- Interim HITRAN-built correlated-k mode (`opacity_mode="ckd"`, 0.6.0-0.7.x): right
+  machinery (32 ppm rms vs R = 700,000), wrong line data. Removed in 0.8.0, `773837e`.
+- Radius anchored at the 7 bar RT grid bottom: depth 26,754 vs 21,381 ppm on W39b.
+  Replaced by `p_ref_bar`, `4446e6e` / `e2aacba`.
+- `cold_seed` (baseline / eq) and the masks abundance map with `reanchor_atom_ini`: one
+  cold start and one exact elemental map replaced them ("Cold start, abundance map,
+  carbon repair"). Removed in 0.27.0, `5018e4d`, `d40211d`, `2807b9a`.
+- A local copy of the runner's certificate terms in `ConvDiag`: replaced by
+  `vulcan3.conv_normal` with an exact switch, `dfa2a0f`.
+- `warm_dt`, an exit-dt step seed for warm solves: a wash (stage-2 steps 756 -> 750,
+  977 -> 1316, 876 -> 653) [M]. Added `3d43367`, reverted exactly in `7e5ea47`.
+- Band tiling of the correlated-k fold (`rt_band_tiles`): 2.5% of the per-lane gradient
+  peak; the unrolled molecule loop held the memory. Added `faa580a`, removed in 0.25.0
+  `fd88866` for `ckd.fold`'s scan; `integ_warm` went in the same commit.
+- `converged_ymix`: no caller. Deleted `a5d2190`.
+- `warm_cap` / `warm_count_max`, a step cap for the SMC sampler's mutation solves (it
+  rode the carry's `count_max_dyn`): no caller after the SMC removal, both retrieval call
+  sites passed `warm_cap=False`. Removed in `19fa8a9` with the unread `ConvDiag` fields
+  (`count_since_new_min`, `budget_drift_max`, `budget_drift_atom`) and `atom_order`.
+- One gravity in the emission optical depth: replaced by g(r), `c63815c`.
+- Consumer-side e^(2 lnR0) eclipse prefactor at fixed g: replaced by lnR0 at fixed GM in
+  the engine, `d26e9d3` (transmission) and `801f7e7` (emission).
+- CO-only carbon repair: replaced by the (CO, CH4) group, `a6a1094`.
+- Middle-axis argsort in `ckd.overlap`: replaced by the last-axis two-operand sort,
+  `5e8d43a`.
+- The `speed` branch (0.21.0-0.27.0, from `43e895d`): merged; `main` is the only line.
+- The build-time warm-up solve (`baseline_conv_normal`, `skip_warmup`): a full solve at
+  build whose column was never the returned seed and whose bit nothing gated on (every
+  solve certifies itself). Removed in 0.29.0 (`1c68022`); the first real solve compiles
+  the runner. `p_ref_emission_bar` as a profile key went in the same commit.
+
+## Do not retry
+
+- RT-stage sort alternatives on the GH200, against the adopted 25.3 ms per spectrum: an
+  unrolled searchsorted (24.4 ms, bitwise), index gather (26.9-36.8 ms), compare_all (not
+  bitwise), rt_chunk 8-64 (no gain), a CUDA fold prototype (8.2 ms for the fold) [M].
+- `jit(overlap)`: 2-7%, below the 10% adoption bar. The last-axis sort layout reads ~10%
+  on the CPU and was set aside on that reading; its GH200 gain (4.25x) adopted it.
+- A checkpointed body for `ckd.fold`'s scan: 3.48 vs 4.56 GiB per lane but 14.4 vs 9.8 s
+  per RT vjp. Take it only if GPU memory, not time, binds.
+- Sharing the opacity tables across CPU lanes: the W39b tables are 1.4 GiB against
+  ~17.4 GiB per gradient lane, so ~10%; production runs on the GPU.
+
+- Sampled line-by-line below R = 700,000: wrong contrast, non-convergent with more points
+  ("Opacity: correlated-k on ExoMolOP"); its keys (`nu_pts`, `broadening`,
+  `dit_grid_resolution`, `mie_*`) raise.
+- HITRAN line data in any mode; `broadening="h2he"` cannot fix H2O (no H2/He widths).
+- Guessing ExoMolOP URLs: 404s; walk the page levels (the site also 403s a default urllib
+  user agent).
+- First sorted isotopologue or first `.h5` on a page: wrong products.
+- Trusting header DOIs or `mol_mass`: placeholders and an inert mass.
+- A network error printed as SKIP: SKIP means a page with no k-table link, nothing else.
+- `ArtEmisPure.run_ckd` or `ibased`: they lose the interior source or flux at admitted
+  depths ("Emission solver and gravity").
+- exojax `gravity_profile` or constant g: biased depths ("Emission solver and gravity").
+- Anchoring at the bottom layer centre: depth depends on `art_nlayer` (+1.02% at 20
+  layers).
+- A transit radius with emission gravity, or a single eclipse radius for the whole band
+  ("Geometry and anchors").
+- The `R_ref^2 + col2` gCMCRT decode: halves the amplitude, a fake 2.2x discrepancy.
+- Dividing pRT flux by c: wrong by ~1e18.
+- Separate `emission_flux` / `tau_bottom` calls: dtau built twice; `emission_flux_tau`
+  builds it once.
+- Skipping the dropped molecule instead of folding its zero: not guaranteed bitwise.
+- A conservative rebin in `ckd.overlap` to remove the sort-crossing jumps: <= 0.06 ppm at
+  R = 100 against data sigmas of tens of ppm, and it would move every spectrum, fixture
+  and cache. The maintainer decided to keep the rebin.
+- Truncating the RT grid at the chemistry top: worse than the clamp it replaced
+  ("Geometry and anchors").
+- `art.change_temperature_range`: dead in both modes (exojax reads Tlow/Thigh only in its
+  own T-P constructors).
+- A `conftest.py` for the test preamble: reorders `vulcan_chem` ahead of the jax-free
+  contract test.
+- Comparing the ERS CO2 model-grid case without the bundle's exact inputs (T-P source,
+  radius anchor, v30 grid): rms 155/199 vs 106/149, not reproducible; the inputs are not
+  on daw.
+- `np.trapezoid` on numpy 1.x or `np.trapz` on 2.x: use
+  `getattr(np, "trapezoid", None) or np.trapz`.
+- Photolysis cadence 1 as the engine default: the planner's closure tests fail
+  ("Photolysis refresh cadence"). Reconsider only with both closures and the
+  reference-accuracy gate satisfied.
+- Queue tests uncapped ("Batched routes"), or an uncapped tight reference: the
+  40000-step one never certified (element-budget drift 13-55%).
+- An exact accept-count check between the cold queue and the cold batch: each builds its
+  own seed ("Batched routes"); start both from one column.
+- Shrinking the photo-on gradient tests by nz, directions or thetas: still 362-406 s and
+  15.9-18 GB, since compile is ~3/4 of it; split by route instead.
+- A tangent-tail mode for `converged_y_jvp`: VULCAN3 rejected the tail; the derivative
+  stays `run_jvp`.

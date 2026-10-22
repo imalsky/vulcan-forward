@@ -75,6 +75,62 @@ def test_initial_column_carries_the_theta_elemental_ratios(runs):
                                    rtol=1e-10, err_msg=e)
 
 
+@pytest.fixture(scope="module")
+def chem_x():
+    """The model with both optional entries, [lnZ, c_o, lnKzz, s_o, kzz_slope,
+    T-offset], and Kzz as a power law about the reference level. No solve: the
+    tests below read the built initial column and its Kzz."""
+    return vulcan_chem.build_chem_model({**PROFILE, "kzz_mode": "powerlaw"},
+                                        chem_extras=vulcan_chem.CHEM_EXTRAS)
+
+
+def test_sulfur_knob_moves_only_sulfur(chem_x):
+    """s_o scales sulfur's ratio to H by e^s_o on top of e^lnZ and nothing
+    else, from the cold seed and from a warm guess at another sulfur
+    reference, with every repair factor positive."""
+    lnZ, c_o, s_o = 0.3, 0.1, -0.8
+    th = jnp.asarray([lnZ, c_o, 0.0, s_o, 0.0, 0.0])
+    audit = chem_x.audit_init(th)
+    got, base = audit["ratios_to_H"], audit["baseline_ratios_to_H"]
+    want = {"He": 1.0, "C": np.exp(lnZ + c_o), "S": np.exp(lnZ + s_o)}
+    for e in got:
+        np.testing.assert_allclose(got[e] / base[e], want.get(e, np.exp(lnZ)),
+                                   rtol=1e-10, err_msg=e)
+    assert abs(audit["dln_SO_achieved"] - s_o) < 1e-10
+    assert audit["min_repair_factor"] > 0 and audit["ratio_max_rel_err"] < 1e-9
+    warm = chem_x.audit_init(th, warm_y=jnp.asarray(chem_x.y0), lnZ_ref=0.0,
+                             c_o_ref=0.0, s_o_ref=0.4)
+    assert warm["min_repair_factor"] > 0 and warm["ratio_max_rel_err"] < 1e-9
+    assert abs(warm["dln_SO_achieved"] - s_o) < 1e-10
+
+
+def test_kzz_power_law_is_anchored_on_the_profile_at_the_reference_level(runs, chem_x):
+    """kzz_mode="powerlaw": slope 0 is a constant Kzz equal to the config
+    profile's value at the reference level (log-log interpolated), and a slope
+    tilts it as (P / P_ref)^-slope times e^lnKzz; the default mode is the
+    profile times e^lnKzz."""
+    from vulcan3.atm_setup import compute_pico
+    from vulcan_forward import constants
+    chem = runs[0]
+    p_int = (np.asarray(compute_pico(jnp.asarray(chem.p_bar * constants.BAR_CGS)))[1:-1]
+             / constants.BAR_CGS)
+    kzz_prof = np.asarray(chem.prep_pv(jnp.asarray([0.0, 0.0, 0.0, 0.0])).Kzz)
+    np.testing.assert_allclose(
+        np.asarray(chem.prep_pv(jnp.asarray([0.0, 0.0, np.log(3.0), 0.0])).Kzz),
+        3.0 * kzz_prof, rtol=1e-12)
+    flat = np.asarray(chem_x.prep_pv(jnp.zeros(6)).Kzz)
+    assert np.ptp(flat) == 0.0
+    o = np.argsort(p_int)
+    ref = np.exp(np.interp(np.log(constants.KZZ_P_REF_BAR), np.log(p_int[o]),
+                           np.log(kzz_prof[o])))
+    np.testing.assert_allclose(flat[0], ref, rtol=1e-12)
+    slope = 0.5
+    tilted = np.asarray(chem_x.prep_pv(
+        jnp.asarray([0.0, 0.0, np.log(2.0), 0.0, slope, 0.0])).Kzz)
+    np.testing.assert_allclose(
+        tilted, 2.0 * ref * (p_int / constants.KZZ_P_REF_BAR) ** (-slope), rtol=1e-12)
+
+
 def test_batched_lanes_are_their_own_solves_and_agree_with_the_vmap(runs):
     _chem, y_b, cd_b, y_v, cd_v, y_one = runs
     for k in range(THETAS.shape[0]):

@@ -7,9 +7,10 @@ runner closure (XLA compiles it on the first solve), then returns a model whose
 
 Abundance knobs: the initial column is renormalized to sum_i n_i = M per layer
 and repaired (fixed Newton-style iterations on He/H2O/CO/N2/H2S) so the column
-elemental ratios hit the theta targets exactly (He/H fixed; O/N/S x Z; C x Z
-e^{c_o}). ``pv.atom_ini`` is rebuilt from the repaired column. Residuals ~1e-15
-relative (machine precision); measure with ``audit_init``.
+elemental ratios hit the theta targets exactly (He/H fixed; O/N x Z; C x Z
+e^{c_o}; S x Z e^{s_o}, with s_o an optional entry of the layout,
+``CHEM_EXTRAS``). ``pv.atom_ini`` is rebuilt from the repaired column.
+Residuals ~1e-15 relative (machine precision); measure with ``audit_init``.
 
 Rate constants and the T/composition-dependent structure (Dzz + vm/vs, pv.Kzz,
 the initial carry geometry) are rebuilt on-graph per proposal. Condensation
@@ -152,6 +153,25 @@ def _assert_composition_tables(composition) -> None:
                 "the hardcoded mass.")
 
 
+# Optional chemistry parameters beyond [lnZ, c_o, lnKzz], in the order they
+# take in the positional vector when a model is built with them
+# (``build_chem_model(chem_extras=...)``). ``s_o`` is ln of the S/O multiple
+# of the baseline (sulfur freed from the metallicity scaling); ``kzz_slope`` is
+# the power-law slope of Kzz in pressure (``kzz_mode="powerlaw"``).
+CHEM_EXTRAS = ("s_o", "kzz_slope")
+
+
+def _check_extras(extras) -> tuple:
+    extras = tuple(extras)
+    bad = [e for e in extras if e not in CHEM_EXTRAS]
+    if bad or len(set(extras)) != len(extras):
+        raise ValueError(f"chem_extras {extras!r}: expected a subset of "
+                         f"{CHEM_EXTRAS} with no repeats")
+    if list(extras) != [e for e in CHEM_EXTRAS if e in extras]:
+        raise ValueError(f"chem_extras {extras!r} must keep the order {CHEM_EXTRAS}")
+    return extras
+
+
 class ChemParams(NamedTuple):
     """Named chemistry parameters -- the engine's primitive.
 
@@ -161,6 +181,9 @@ class ChemParams(NamedTuple):
     parameters. What ``tp`` MEANS is fixed when the model is built: with a
     ``tp_eval`` hook it is that hook's parameter block; without one it is a
     single uniform temperature offset in K, added to the structural profile.
+    ``s_o`` moves sulfur on top of lnZ (ln of the S/O multiple) and
+    ``kzz_slope`` is the Kzz power-law slope; both default to 0, the model
+    without them.
 
     The positional vector form (``params_from_vector``) is also accepted; a
     sampler or forward-mode AD needs the vector. A NamedTuple, so a JAX pytree.
@@ -169,24 +192,35 @@ class ChemParams(NamedTuple):
     c_o: float = 0.0
     lnKzz: float = 0.0
     tp: tuple = ()
+    s_o: float = 0.0
+    kzz_slope: float = 0.0
 
-    def to_vector(self):
-        """The equivalent positional vector ``[lnZ, c_o, lnKzz, *tp]``."""
-        return jnp.asarray([self.lnZ, self.c_o, self.lnKzz, *self.tp],
+    def to_vector(self, extras=()):
+        """The equivalent positional vector ``[lnZ, c_o, lnKzz, *extras, *tp]``:
+        ``extras`` names the optional entries the layout carries (the model's
+        ``chem_extras``; none by default, so the vector is ``[lnZ, c_o, lnKzz,
+        *tp]``)."""
+        extras = _check_extras(extras)
+        return jnp.asarray([self.lnZ, self.c_o, self.lnKzz,
+                            *(getattr(self, e) for e in extras), *self.tp],
                            dtype=jnp.float64)
 
 
-def params_from_vector(theta, n_tp_params: int, *, has_tp_eval: bool):
+def params_from_vector(theta, n_tp_params: int, *, has_tp_eval: bool, extras=()):
     """Read a positional ``theta`` into named :class:`ChemParams`.
 
     The layout is the retrieval framework's, kept for compatibility:
-    ``theta[0:3]`` is ``[lnZ, c_o, lnKzz]`` and the tail is the temperature
-    block -- ``theta[3:3+n_tp_params]`` when the model was built with a
-    ``tp_eval`` hook, else the single element ``theta[3]``.
+    ``theta[0:3]`` is ``[lnZ, c_o, lnKzz]``, then the optional entries named
+    by ``extras`` (in ``CHEM_EXTRAS`` order), then the temperature block --
+    ``n_tp_params`` entries when the model was built with a ``tp_eval`` hook,
+    else a single element (the uniform T offset).
     """
+    extras = _check_extras(extras)
     v = jnp.asarray(theta, dtype=jnp.float64)
-    tp = v[3:3 + n_tp_params] if has_tp_eval else v[3:4]
-    return ChemParams(lnZ=v[0], c_o=v[1], lnKzz=v[2], tp=tp)
+    k = 3 + len(extras)
+    tp = v[k:k + n_tp_params] if has_tp_eval else v[k:k + 1]
+    kw = {e: v[3 + i] for i, e in enumerate(extras)}
+    return ChemParams(lnZ=v[0], c_o=v[1], lnKzz=v[2], tp=tp, **kw)
 
 
 def bz_margin(y, n_o, carbon_mask, o_only_mask) -> float:
@@ -242,7 +276,8 @@ class ConvDiag(NamedTuple):
     #                                               longdy at exit (NaN on the primal path)
 
 
-def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> SimpleNamespace:
+def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0,
+                     chem_extras=()) -> SimpleNamespace:
     """Build the chemistry model and the differentiable converged_y(theta).
 
     Parameters
@@ -250,12 +285,21 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     profile : dict
         A caller-owned settings dict (keys: ``constants.PROFILE_KEYS``; an
         unknown key raises). ``use_photo`` and ``yconv_cri`` are required.
+        ``kzz_mode`` ("scale", the default: Kzz0(P) e^lnKzz on the config's
+        profile; "powerlaw": Kzz0(P_ref) e^lnKzz (P / P_ref)^-kzz_slope with
+        ``kzz_p_ref_bar`` the reference level, default 1 mbar).
     tp_eval : callable or None, optional
-        Temperature-profile hook. ``None`` (default): ``T = T_base + theta[3]``,
-        a uniform offset in K. Otherwise ``tp_eval(theta[3:3+n_tp_params], p_bar)``
-        returns the full (nz,) T(P) on the bar grid.
+        Temperature-profile hook. ``None`` (default): ``T = T_base + theta[k]``,
+        a uniform offset in K, with ``k = 3 + len(chem_extras)``. Otherwise
+        ``tp_eval(theta[k:k+n_tp_params], p_bar)`` returns the full (nz,) T(P)
+        on the bar grid.
     n_tp_params : int, optional
-        Number of T-P parameters consumed from ``theta[3:]`` when ``tp_eval`` is given.
+        Number of T-P parameters consumed from ``theta[k:]`` when ``tp_eval`` is given.
+    chem_extras : tuple of str, optional
+        The optional chemistry entries the positional vector carries between
+        ``lnKzz`` and the temperature block, a subset of ``CHEM_EXTRAS`` in that
+        order: ``"s_o"`` (ln of the S/O multiple) and/or ``"kzz_slope"``. The
+        default (none) keeps the ``[lnZ, c_o, lnKzz, *tp]`` layout.
 
     Returns
     -------
@@ -270,6 +314,14 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     """
     t0 = time.time()
     constants.check_profile_keys(profile)
+    chem_extras = _check_extras(chem_extras)
+    kzz_mode = str(profile.get("kzz_mode", "scale"))
+    if kzz_mode not in ("scale", "powerlaw"):
+        raise ValueError(f"kzz_mode={kzz_mode!r}: expected 'scale' or 'powerlaw'")
+    if "kzz_slope" in chem_extras and kzz_mode != "powerlaw":
+        raise ValueError("chem_extras carries 'kzz_slope' but kzz_mode is "
+                         f"{kzz_mode!r}: the slope is read only by the power law, so "
+                         "it would be a silent no-op")
     import vulcan3
 
     # Baseline VULCAN config by name (vulcan3/configs/*.yaml).
@@ -394,10 +446,11 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     logger.info(f"[chem] diffusion scheme: use_vm_mol={use_vm_mol_v} "
                 f"hybrid={hybrid_v}{_warm_note}")
 
-    def _seeded_prep(theta, warm_y=None, lnZ_ref=0.0, c_o_ref=0.0):
+    def _seeded_prep(theta, warm_y=None, lnZ_ref=0.0, c_o_ref=0.0, s_o_ref=0.0):
         """``_prep`` with the carry's live termination budget + diffusion blend
         re-seeded for the runner (see the block comment above)."""
-        init, atm_T = _prep(theta, warm_y=warm_y, lnZ_ref=lnZ_ref, c_o_ref=c_o_ref)
+        init, atm_T = _prep(theta, warm_y=warm_y, lnZ_ref=lnZ_ref, c_o_ref=c_o_ref,
+                            s_o_ref=s_o_ref)
         blend = 1.0 if use_vm_mol_v else 0.0
         if warm_y is not None and hybrid_v:
             blend = 0.0   # continue on the converged (phase-1, central) operator
@@ -445,6 +498,35 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     pv0 = state0.pv
     T_base = jnp.asarray(np.asarray(atm.Tco, dtype=np.float64))
 
+    # --- Kzz(P) at the interior interfaces pico[1:-1], where the runner reads
+    # Kzz ((nz-1,); vulcan3.atm_setup.kzz_profile_jax). "scale" keeps the
+    # config's profile shape; "powerlaw" anchors Kzz0 at kzz_p_ref_bar
+    # (log-log interpolated on the config's profile, so lnKzz = 0, slope = 0
+    # is a constant Kzz equal to the profile's value there) and tilts it by
+    # (P / P_ref)^-slope.
+    from vulcan3.atm_setup import compute_pico
+    _p_int_bar = (np.asarray(compute_pico(np.asarray(atm.pco, dtype=np.float64)),
+                             dtype=np.float64)[1:-1] / constants.BAR_CGS)
+    _kzz_ref0 = _p_over_ref = None
+    if kzz_mode == "powerlaw":
+        kzz_p_ref_bar = float(profile.get("kzz_p_ref_bar", constants.KZZ_P_REF_BAR))
+        if not (_p_int_bar.min() <= kzz_p_ref_bar <= _p_int_bar.max()):
+            raise ValueError(
+                f"kzz_p_ref_bar={kzz_p_ref_bar:g} lies outside the Kzz grid "
+                f"[{_p_int_bar.min():.3g}, {_p_int_bar.max():.3g}] bar")
+        _order = np.argsort(_p_int_bar)
+        _kzz_ref0 = float(np.exp(np.interp(
+            np.log(kzz_p_ref_bar), np.log(_p_int_bar[_order]),
+            np.log(np.asarray(Kzz0, dtype=np.float64)[_order]))))
+        _p_over_ref = jnp.asarray(_p_int_bar / kzz_p_ref_bar)
+        logger.info(f"[chem] kzz_mode=powerlaw: Kzz0({kzz_p_ref_bar:g} bar) = "
+                    f"{_kzz_ref0:.3e} cm^2/s, slope from theta")
+
+    def _kzz_eff(lnKzz, kzz_slope):
+        if kzz_mode == "powerlaw":
+            return _kzz_ref0 * jnp.exp(lnKzz) * _p_over_ref ** (-kzz_slope)
+        return Kzz0 * jnp.exp(lnKzz)
+
     # --- on-graph atmosphere rebuild inputs -------------------------------
     # refresh_static: inputs of the runner's own hydrostatic-refresh kernel
     # (pico, gs, Rp, pref anchor, species masses).
@@ -465,6 +547,11 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     metal_mask = jnp.asarray((compo[:, metal_cols].sum(axis=1) > 0).astype(np.float64))
     carbon_mask = jnp.asarray(                                   # C/O proxy
         (compo[:, constants.ATOM_COLS["C"]] > 0).astype(np.float64))
+    # S-bearing species: the s_o knob's guess scales them by e^s_o on top of
+    # the metal scaling; the O they drag along (SO, SO2, OCS, HSO) is repaired
+    # by the projection, which fixes every element's column ratio exactly.
+    sulfur_mask = jnp.asarray(
+        (compo[:, constants.ATOM_COLS["S"]] > 0).astype(np.float64))
     # fixed-O C/O mode ("co_mode": "fixed_O"): every C atom lives in a C-bearing species,
     # and the O-carriers holding no C (H2O, OH, O2, SO, SO2, NO, ...) are disjoint from
     # them -- the two masks partition all O between "dragged along by C-carriers" and
@@ -509,16 +596,18 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     if not elem_pairs:
         raise RuntimeError("elemental mode: no repair species found in the network")
     R0_ratios = A0[1:] / A0[0]
-    # per-element theta-scaling kind: He fixed; O/N/S x Z; C x Z e^{c_o}
+    # per-element theta-scaling kind: He fixed; O/N x Z; C x Z e^{c_o}; S x Z e^{s_o}
     _zk = np.asarray([0.0 if e == "He" else 1.0 for e, _ in elem_pairs])
     _ck = np.asarray([1.0 if e == "C" else 0.0 for e, _ in elem_pairs])
+    _sk = np.asarray([1.0 if e == "S" else 0.0 for e, _ in elem_pairs])
     zscale_kind = jnp.asarray(_zk)
     cscale_kind = jnp.asarray(_ck)
+    sscale_kind = jnp.asarray(_sk)
     R0_j = jnp.asarray(R0_ratios)
     _names = [e for e, _ in elem_pairs]
 
-    def _targets(lnZ, c_o):
-        return R0_j * jnp.exp(lnZ * zscale_kind + c_o * cscale_kind)
+    def _targets(lnZ, c_o, s_o):
+        return R0_j * jnp.exp(lnZ * zscale_kind + c_o * cscale_kind + s_o * sscale_kind)
 
     logger.info("[chem] elemental mode: exact column ratios to H via repair species "
                 f"{[sp for _, sp in elem_pairs]}"
@@ -554,7 +643,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     rep_cols_j = jnp.asarray(rep_cols)
     rep_group_j = jnp.asarray(rep_group)
 
-    def _elemental_project(y_in, M, lnZ, c_o):
+    def _elemental_project(y_in, M, lnZ, c_o, s_o):
         """Renormalize to sum_i n_i = M and repair the column elemental ratios exactly.
 
         y_in : (nz, ni) guessed absolute densities. Returns (y_out, min_adj) where
@@ -563,7 +652,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         the smallest per-group repair factor (must stay > 0 for a physical column;
         it is ~1 +/- the mask-leakage scale everywhere in the shipped prior boxes).
         """
-        targets = _targets(lnZ, c_o)                            # (nrep,)
+        targets = _targets(lnZ, c_o, s_o)                       # (nrep,)
         y = y_in * (M / jnp.sum(y_in, axis=1))[:, None]
         min_adj = jnp.asarray(1.0, dtype=jnp.float64)
         for _ in range(_ELEMENTAL_REPAIR_ITERS):
@@ -587,13 +676,15 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
             y = y * (M / jnp.sum(y, axis=1))[:, None]
         return y, min_adj
 
-    def _guess_y0(lnZ, c_o, warm_y, lnZ_ref, c_o_ref):
+    def _guess_y0(lnZ, c_o, s_o, warm_y, lnZ_ref, c_o_ref, s_o_ref):
         """Mask-scaled continuation GUESS from the converged column ``warm_y``
         (shared by _prep and audit_init): only the increments (lnZ - lnZ_ref,
-        c_o - c_o_ref) are applied, so a large absolute perturbation is reached
-        by small steps from a nearby converged state."""
+        c_o - c_o_ref, s_o - s_o_ref) are applied, so a large absolute
+        perturbation is reached by small steps from a nearby converged state.
+        The sulfur increment scales the S-bearing species; the projection
+        repairs the oxygen they carry."""
         c_o_inc = c_o - c_o_ref     # incremental C/O relative to the warm state
-        base = warm_y
+        base = warm_y * jnp.exp((s_o - s_o_ref) * sulfur_mask)[None, :]
         if co_fixed_o:
             # c_o == delta ln(C/O) at fixed O, exactly, layer by layer: scale
             # C-bearing species by e^c; compensate the O they drag along by
@@ -615,14 +706,15 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         """Accept named :class:`ChemParams` or a positional vector."""
         if isinstance(p, ChemParams):
             return p
-        return params_from_vector(p, n_tp_params, has_tp_eval=tp_eval is not None)
+        return params_from_vector(p, n_tp_params, has_tp_eval=tp_eval is not None,
+                                  extras=chem_extras)
 
-    def _prep(theta, warm_y=None, lnZ_ref=0.0, c_o_ref=0.0):
+    def _prep(theta, warm_y=None, lnZ_ref=0.0, c_o_ref=0.0, s_o_ref=0.0):
         """Build the perturbed initial runner state + atm from ChemParams (or
-        the positional vector [lnZ, c_o, lnKzz, T...]).
+        the positional vector [lnZ, c_o, lnKzz, *chem_extras, T...]).
 
         Continuation: pass warm_y = a previously-CONVERGED y (with its lnZ_ref /
-        c_o_ref) to warm-start from there. The projection fixes each layer's
+        c_o_ref / s_o_ref) to warm-start from there. The projection fixes each layer's
         total at M and the layer-summed (unweighted) column ratios to H at the
         theta targets. It does not fix the dz-weighted inventory the element
         budget tracks (budget_ref), so two starts at one theta can carry
@@ -639,8 +731,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
                 f"(batched callers pass ({nz}, {ni}) per lane, i.e. "
                 f"(N, {nz}, {ni}) stacked).")
         _p = _as_params(theta)
-        lnZ, c_o, lnKzz = _p.lnZ, _p.c_o, _p.lnKzz
-
+        lnZ, c_o, lnKzz, s_o = _p.lnZ, _p.c_o, _p.lnKzz, _p.s_o
 
         if tp_eval is None:
             T = T_base + _p.tp[0]
@@ -652,17 +743,17 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
             network, T, M, nasa9, remove_list,
             use_lowT_caps=bool(cfg.use_lowT_limit_rates))
         Ti = 0.5 * (T[:-1] + T[1:])
-        Kzz_eff = Kzz0 * jnp.exp(lnKzz)
+        Kzz_eff = _kzz_eff(lnKzz, _p.kzz_slope)
 
         if warm_y is None:
-            y0p = _eq_seed(T, _targets(lnZ, c_o), M)
+            y0p = _eq_seed(T, _targets(lnZ, c_o, s_o), M)
         else:
-            y0p = _guess_y0(lnZ, c_o, warm_y, lnZ_ref, c_o_ref)
+            y0p = _guess_y0(lnZ, c_o, s_o, warm_y, lnZ_ref, c_o_ref, s_o_ref)
 
         # Exact construction: sum_i n_i = M per layer AND exact column elemental
         # ratios; atom_ini rebuilt from the repaired column so the conservation
         # anchor matches the actual initial gas.
-        y0p, _min_adj = _elemental_project(y0p, M, lnZ, c_o)
+        y0p, _min_adj = _elemental_project(y0p, M, lnZ, c_o, s_o)
         ymix0 = y0p / M[:, None]
         atom_ini_new = jnp.einsum("zi,ia->a", y0p, compo_run)  # runner atom order
         pv_T = pv0._replace(n_0=M, r_Tco=T, Kzz=Kzz_eff, atom_ini=atom_ini_new)
@@ -719,7 +810,8 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
                                budget_drift=jnp.zeros_like(state0.budget_drift))
         return init, atm_T
 
-    def run_diag(theta, return_atm=False, warm_y=None, lnZ_ref=0.0, c_o_ref=0.0):
+    def run_diag(theta, return_atm=False, warm_y=None, lnZ_ref=0.0, c_o_ref=0.0,
+                 s_o_ref=0.0):
         """Diagnostic solve: returns (final_runner_state, init_state).
 
         Lets a caller inspect convergence and conserved-total drift. Not on any
@@ -727,9 +819,9 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         AtmStatic the runner was actually driven with -- the operating point a
         reverse-mode adjoint must linearize around (the setup-time baseline is
         WRONG whenever theta carries a T-P or Kzz offset). Cold by default;
-        ``warm_y`` / ``lnZ_ref`` / ``c_o_ref`` start it as ``converged_y``'s
-        continuation does."""
-        init, atm_T = _seeded_prep(theta, warm_y, lnZ_ref, c_o_ref)
+        ``warm_y`` / ``lnZ_ref`` / ``c_o_ref`` / ``s_o_ref`` start it as
+        ``converged_y``'s continuation does."""
+        init, atm_T = _seeded_prep(theta, warm_y, lnZ_ref, c_o_ref, s_o_ref)
         final = integ._runner(init, atm_T)
         return (final, init, atm_T) if return_atm else (final, init)
 
@@ -742,10 +834,10 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         return init.pv
 
     def converged_y(theta, warm_y=None, lnZ_ref=0.0, c_o_ref=0.0,
-                    return_conv_diag=False):
+                    return_conv_diag=False, s_o_ref=0.0):
         """Converged ABSOLUTE number densities y (nz, ni), with optional
-        continuation warm-start (warm_y at lnZ_ref / c_o_ref). Forward-mode
-        differentiable w.r.t. theta.
+        continuation warm-start (warm_y at lnZ_ref / c_o_ref / s_o_ref).
+        Forward-mode differentiable w.r.t. theta.
 
         The carry's termination budget + diffusion blend are re-seeded per
         solve; under the hybrid vm_mol scheme a warm continuation runs on the
@@ -756,23 +848,23 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         certification recomputed at the exit, so a budget exit reads
         False even when ``longdy < yconv_min``. ConvDiag's float fields
         carry a tangent -- AD callers stop_gradient them."""
-        init, atm_T = _seeded_prep(theta, warm_y, lnZ_ref, c_o_ref)
+        init, atm_T = _seeded_prep(theta, warm_y, lnZ_ref, c_o_ref, s_o_ref)
         final = integ._runner(init, atm_T)
         if return_conv_diag:
             return final.y, _conv_diag(final)
         return final.y
 
-    def _ref_leaves(n, lnZ_ref, c_o_ref):
+    def _ref_leaves(n, lnZ_ref, c_o_ref, s_o_ref):
         """The reference composition as PER-LANE (n,) leaves for the vmapped
         prep. A scalar broadcasts, so a shared reference still works; the
-        retrieval's warm starts pass each row its OWN anchor's (lnZ, c_o).
+        retrieval's warm starts pass each row its OWN anchor's (lnZ, c_o, s_o).
         References are CONSTANTS of the map -- a caller
         differentiates with respect to theta, never to these."""
-        return (jnp.broadcast_to(jnp.asarray(lnZ_ref, dtype=jnp.float64), (n,)),
-                jnp.broadcast_to(jnp.asarray(c_o_ref, dtype=jnp.float64), (n,)))
+        return tuple(jnp.broadcast_to(jnp.asarray(r, dtype=jnp.float64), (n,))
+                     for r in (lnZ_ref, c_o_ref, s_o_ref))
 
     def converged_y_batch(thetas, warm_y=None, lnZ_ref=0.0, c_o_ref=0.0,
-                          return_conv_diag=False):
+                          return_conv_diag=False, s_o_ref=0.0):
         """Converged ABSOLUTE number densities for a STACK of thetas (N, n_theta)
         -> y (N, nz, ni), with the optional per-lane continuation warm-start
         ``warm_y`` (N, nz, ni) at lnZ_ref / c_o_ref and, with
@@ -787,11 +879,11 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         stop test reads the primal only); a tangent-CERTIFIED derivative is
         ``converged_y_jvp``.
 
-        ``lnZ_ref`` / ``c_o_ref`` may be scalars or ``(N,)`` arrays: a warm
-        batch gives every lane the reference its carried column was converged
-        at.
+        ``lnZ_ref`` / ``c_o_ref`` / ``s_o_ref`` may be scalars or ``(N,)``
+        arrays: a warm batch gives every lane the reference its carried column
+        was converged at.
         """
-        lnZ_r, c_o_r = _ref_leaves(int(jnp.shape(thetas)[0]), lnZ_ref, c_o_ref)
+        refs = _ref_leaves(int(jnp.shape(thetas)[0]), lnZ_ref, c_o_ref, s_o_ref)
 
         # The AtmStatic toggles are unbatched Python bools (the runner's own
         # lane vmap broadcasts them), so they take out_axes None and every
@@ -800,7 +892,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         init_b, atm_b = jax.vmap(
             _seeded_prep,
             out_axes=(0, outer_loop._ATM_STATIC_BATCH_AXES),
-        )(thetas, warm_y, lnZ_r, c_o_r)
+        )(thetas, warm_y, *refs)
         final_b = integ.run_batch(init_b, atm_b)
         if return_conv_diag:
             return final_b.y, jax.vmap(_conv_diag)(final_b)
@@ -814,7 +906,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     _queue_fns = {}
 
     def converged_y_queue(thetas, n_lanes, *, chunk=None, warm_y=None,
-                          lnZ_ref=0.0, c_o_ref=0.0, active=None):
+                          lnZ_ref=0.0, c_o_ref=0.0, active=None, s_o_ref=0.0):
         """``converged_y_batch`` on ``n_lanes`` lanes with refill from the job
         queue (vulcan3 ``OuterLoop.run_queue``): a lane that certifies is
         written out and takes the next theta inside the same while loop, so
@@ -829,10 +921,10 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         ``(y (N, nz, ni), ConvDiag stacked over N)``; the ConvDiag is not
         optional here (it rides the per-job write-out).
 
-        ``lnZ_ref`` / ``c_o_ref`` (scalar or ``(N,)``) mean what they mean on
-        ``converged_y_batch``: the references ride the jobs pytree, so each
-        job is prepped at its own. ``chunk=None`` keeps vulcan3's own refill
-        chunk.
+        ``lnZ_ref`` / ``c_o_ref`` / ``s_o_ref`` (scalar or ``(N,)``) mean what
+        they mean on ``converged_y_batch``: the references ride the jobs
+        pytree, so each job is prepped at its own. ``chunk=None`` keeps
+        vulcan3's own refill chunk.
 
         ``active`` (optional ``(N,)`` bool): a job with ``active[i]`` False is
         a placeholder (a padded row). Its lane starts done, so it takes no
@@ -868,8 +960,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         # warm_y=None is an empty pytree node, so the same jobs pytree covers
         # the cold seed.
         n = int(jnp.shape(thetas)[0])
-        lnZ_r, c_o_r = _ref_leaves(n, lnZ_ref, c_o_ref)
-        jobs = (thetas, warm_y, lnZ_r, c_o_r)
+        jobs = (thetas, warm_y, *_ref_leaves(n, lnZ_ref, c_o_ref, s_o_ref))
         if masked:
             act = jnp.asarray(active, dtype=bool)
             if act.shape != (n,):
@@ -881,7 +972,8 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
             init_fn, jobs, int(n_lanes), out_fn, **chunk_kw)
         return y, cd
 
-    def converged_y_jvp(theta, tangent, warm_y=None, lnZ_ref=0.0, c_o_ref=0.0):
+    def converged_y_jvp(theta, tangent, warm_y=None, lnZ_ref=0.0, c_o_ref=0.0,
+                        s_o_ref=0.0):
         """Forward-mode sensitivity certified by the solver: ``(y, dy, ConvDiag)``.
 
         ``dy`` is the tangent of ``converged_y`` along ``tangent`` (same shape
@@ -903,7 +995,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         the run stops only when EVERY direction has settled, so ``tangent_ok``
         is the AND over directions and ``tangent_longdy`` the worst of them."""
         def _seeded(th):
-            return _seeded_prep(th, warm_y, lnZ_ref, c_o_ref)
+            return _seeded_prep(th, warm_y, lnZ_ref, c_o_ref, s_o_ref)
         def _leaves(p):   # named or positional, like converged_y
             if isinstance(p, ChemParams):
                 return jax.tree_util.tree_map(
@@ -928,23 +1020,25 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         return final.y, dfinal.y, _conv_diag(final, tangent_ok=ok,
                                              tangent_longdy=jnp.max(tl))
 
-    def audit_init(theta, warm_y=None, lnZ_ref=0.0, c_o_ref=0.0):
+    def audit_init(theta, warm_y=None, lnZ_ref=0.0, c_o_ref=0.0, s_o_ref=0.0):
         """Host-side audit of the initial column built for ``theta`` (not on any AD path).
 
         Returns a dict of initial-column residuals: relative density-closure
         error max_z |sum_i n_i - M|/M, the achieved-vs-target column elemental
-        ratios, the achieved dln(C/O) vs theta, the smallest elemental-repair
-        factor (must be > 0), and the atom_ini consistency
+        ratios, the achieved dln(C/O) and dln(S/O) vs theta, the smallest
+        elemental-repair factor (must be > 0), and the atom_ini consistency
         |atoms(y_init) - atom_ini|/atom_ini in the runner's atom basis.
         """
-        th = _as_params(theta).to_vector()
-        init, _atm_T = _prep(theta, warm_y=warm_y, lnZ_ref=lnZ_ref, c_o_ref=c_o_ref)
+        _p = _as_params(theta)
+        lnZ, c_o, s_o = float(_p.lnZ), float(_p.c_o), float(_p.s_o)
+        init, _atm_T = _prep(theta, warm_y=warm_y, lnZ_ref=lnZ_ref, c_o_ref=c_o_ref,
+                             s_o_ref=s_o_ref)
         y = np.asarray(init.y, dtype=np.float64)
         Mn = np.asarray(init.pv.n_0, dtype=np.float64)
         A = (y @ E_np).sum(axis=0)
         ratios = A[1:] / A[0]
         iC, iO = _names.index("C"), _names.index("O")
-        tg = R0_ratios * np.exp(float(th[0]) * _zk + float(th[1]) * _ck)
+        tg = R0_ratios * np.exp(lnZ * _zk + c_o * _ck + s_o * _sk)
         out = {
             "density_closure_max_rel": float(np.max(np.abs(y.sum(axis=1) - Mn) / Mn)),
             "ratios_to_H": dict(zip(_names, ratios.tolist())),
@@ -954,14 +1048,18 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
             "target_ratios_to_H": dict(zip(_names, tg.tolist())),
             "ratio_max_rel_err": float(np.max(np.abs(ratios / tg - 1.0))),
         }
+        if "S" in _names:
+            iS = _names.index("S")
+            out["dln_SO_achieved"] = float(np.log((ratios[iS] / ratios[iO])
+                                                  / (R0_ratios[iS] / R0_ratios[iO])))
         # Re-run the projection from the raw GUESS to expose the actual repair
         # magnitude (projecting the already-repaired y would always report ~1).
         if warm_y is None:
             y_guess = _eq_seed(init.pv.r_Tco, jnp.asarray(tg),
                                jnp.asarray(Mn))
         else:
-            y_guess = _guess_y0(th[0], th[1], warm_y, lnZ_ref, c_o_ref)
-        _yg, min_adj = _elemental_project(y_guess, jnp.asarray(Mn), th[0], th[1])
+            y_guess = _guess_y0(lnZ, c_o, s_o, warm_y, lnZ_ref, c_o_ref, s_o_ref)
+        _yg, min_adj = _elemental_project(y_guess, jnp.asarray(Mn), lnZ, c_o, s_o)
         out["min_repair_factor"] = float(min_adj)
         ai = np.asarray(init.pv.atom_ini, dtype=np.float64)
         a_run = y @ np.asarray(integ._compo_arr, dtype=np.float64)
@@ -993,6 +1091,9 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
         sidx=sidx,
         species_masses=species_masses,
         nz=nz, ni=ni,
+        chem_extras=chem_extras,        # the optional entries of the positional layout
+        n_chem_params=3 + len(chem_extras),   # entries before the temperature block
+        kzz_mode=kzz_mode,
         count_max=int(cfg.count_max),   # the resolved (profile-overridden or YAML-config) cap
         yconv_min=float(cfg.yconv_min), # loose convergence gate: a converged solve has longdy<this
     )

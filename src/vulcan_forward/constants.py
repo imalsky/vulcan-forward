@@ -43,6 +43,22 @@ ATOMIC_MASSES = [
 # sedimentation, or patchiness.
 CLOUD_NUC0 = 2857.0
 
+# Grey cloud deck (the alternative to the power law, profile-selected by the
+# consumer): every layer deeper than the deck pressure gets an opaque grey
+# optical depth CLOUD_DECK_TAU, switched on by a logistic step in ln P of
+# width CLOUD_DECK_WIDTH_LNP (0.02 in ln P is 0.009 dex, a sixteenth of a
+# production 67-layer RT layer) so the deck pressure stays differentiable.
+# Along the chord the deck is ~1e5 optical depths thick, so the effective
+# boundary sits ~13 widths (0.1 dex) above the deck pressure
+# (vulcan-forward tests/test_cloud_deck.py measures it).
+CLOUD_DECK_TAU = 1.0e3
+CLOUD_DECK_WIDTH_LNP = 0.02
+
+# Reference pressure (bar) of the Kzz power law (vulcan_chem kzz_mode
+# "powerlaw"): Kzz0 is read off the config's profile there and tilted by
+# (P / P_ref)^-slope. 1 mbar is where the WASP-39 b profile value is quoted.
+KZZ_P_REF_BAR = 1.0e-3
+
 # ART pressure bounds (bar). Chemistry and RT share the model top (vulcan_chem
 # sets P_t from art_ptop_bar; interp_map refuses an uncovered ART grid). At
 # 1e-9 bar the top is converged: one decade higher moves the R=100 depth by
@@ -158,7 +174,7 @@ PROFILE_KEYS = frozenset({
     # build_chem_model
     "vulcan_cfg_name", "use_photo", "yconv_cri", "yconv_min", "nz",
     "count_min", "count_max", "dt_max", "cfg_overrides",
-    "co_mode",
+    "co_mode", "kzz_mode", "kzz_p_ref_bar",
     # build_rt_model / build_emis_model (art_ptop_bar also sets the chemistry top)
     "molecules", "molecule_table", "nu_min", "nu_max", "opacity_mode",
     "art_nlayer", "art_ptop_bar", "art_pbtm_bar", "rt_integration",

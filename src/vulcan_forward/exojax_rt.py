@@ -172,16 +172,16 @@ def _radius_at(lnp_art, T_art, mmw_art, r_ref, g_ref, p_ref_bar, p_target_bar):
 
 def _accumulate_dtau_ckd(art, pack, mols, molmass, opacia, opacia_he,
                          vmr, vmr_h2, vmr_he, T_art, mmw_art, g_btm,
-                         cloud=None, rayleigh_xs=None):
+                         cloud=None, rayleigh_xs=None, deck=None):
     """Per-layer, per-g-ordinate, per-band optical depth ``(nlayer, ng, nband)``.
 
     The line opacity of each molecule comes from its k-table, interpolated to
     the layer (T, P) and combined across molecules by random-overlap
     resort-rebin (``ckd.fold``, one scan over the molecules). The
-    continua -- CIA, Rayleigh, the power-law cloud -- are smooth across a band,
-    so their band value adds identically to every g-ordinate; that is exact,
-    not an approximation, to the accuracy of a smooth function over one R=1000
-    band.
+    continua -- CIA, Rayleigh, the power-law cloud, the grey deck -- are smooth
+    across a band, so their band value adds identically to every g-ordinate;
+    that is exact, not an approximation, to the accuracy of a smooth function
+    over one R=1000 band.
 
     Shared by the transmission and emission models. Rayleigh is
     transmission-only: it is scattering, not absorption, and the
@@ -194,7 +194,7 @@ def _accumulate_dtau_ckd(art, pack, mols, molmass, opacia, opacia_he,
     dts = jnp.stack([_ckd_dt_one(art, pack, key, molmass, vmr[key], T_art,
                                  mmw_art, g_btm, P) for key in mols])
     cont = _ckd_continuum(art, pack, opacia, opacia_he, vmr_h2, vmr_he,
-                          T_art, mmw_art, g_btm, cloud, rayleigh_xs)
+                          T_art, mmw_art, g_btm, cloud, rayleigh_xs, deck)
     return _ckd.fold(dts, pack.gg, pack.gw) + cont[:, None, :]
 
 
@@ -213,8 +213,8 @@ def _ckd_dt_one(art, pack, key, molmass, vmr_key, T_art, mmw_art, g_btm, P):
 
 
 def _ckd_continuum(art, pack, opacia, opacia_he, vmr_h2, vmr_he,
-                   T_art, mmw_art, g_btm, cloud, rayleigh_xs):
-    """Band continuum (nlayer, nband): CIA + Rayleigh + power-law cloud.
+                   T_art, mmw_art, g_btm, cloud, rayleigh_xs, deck=None):
+    """Band continuum (nlayer, nband): CIA + Rayleigh + power-law cloud + grey deck.
 
     ``cloud`` is the optional (2,) array [log10 kappac0 (cm^2/g at
     constants.CLOUD_NUC0), alphac] for ``exojax.atm.simple_clouds.powerlaw_clouds``
@@ -222,6 +222,11 @@ def _ckd_continuum(art, pack, opacia, opacia_he, vmr_h2, vmr_he,
     dtau = kappa(nu)*dP_cgs/g). ``rayleigh_xs`` = (xs_h2, xs_he), each (nband,)
     from exojax ``xsvector_rayleigh_gas`` -- zero-free-parameter known physics
     that matters short of ~1.5 um; omitting it would bias a retrieved haze slope.
+    ``deck`` is the optional log10 deck pressure (bar): layers deeper than it
+    get the opaque grey ``constants.CLOUD_DECK_TAU``, through a logistic step
+    of width ``constants.CLOUD_DECK_WIDTH_LNP`` in ln P (differentiable in
+    ``deck``). The two cloud terms are independent: a consumer passes one or
+    both.
     """
     def _cia(opa_, va, vb):
         # opacity_profile_cia divides a (nlayer, nband) matrix by mmw, so mmw
@@ -247,12 +252,17 @@ def _ckd_continuum(art, pack, opacia, opacia_he, vmr_h2, vmr_he,
         # 1/m_u (exojax folds bar_cgs/m_u into its per-molecule opacity_factor).
         dP = jnp.asarray(art.dParr)
         cont = cont + kappa_c[None, :] * (dP[:, None] * constants.BAR_CGS / g_btm)
+    if deck is not None:
+        lnp = jnp.log(jnp.asarray(art.pressure))
+        step = jax.nn.sigmoid((lnp - jnp.asarray(deck) * jnp.log(10.0))
+                              / constants.CLOUD_DECK_WIDTH_LNP)           # (nlayer,)
+        cont = cont + constants.CLOUD_DECK_TAU * step[:, None]
     return cont
 
 
 def _ckd_dtau_batch(art, pack, mols, molmass, opacia, opacia_he,
                     vmr, vmr_h2, vmr_he, T_art, mmw_art, g_btm,
-                    wo_mols, finish, cloud=None, rayleigh_xs=None):
+                    wo_mols, finish, cloud=None, rayleigh_xs=None, deck=None):
     """Full + leave-one-out observables in one pass over the k-fold.
 
     ``finish(dtau_g)`` maps a (nlayer, ng, nband) optical depth to its
@@ -277,7 +287,7 @@ def _ckd_dtau_batch(art, pack, mols, molmass, opacia, opacia_he,
            for k in mols]
     cont3 = _ckd_continuum(art, pack, opacia, opacia_he, vmr_h2, vmr_he,
                            T_art, mmw_art, g_btm, cloud,
-                           rayleigh_xs)[:, None, :]
+                           rayleigh_xs, deck)[:, None, :]
 
     def zero_of(i):
         return _ckd_dt_one(art, pack, mols[i], molmass,
@@ -501,13 +511,15 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
             "gs_cgs are defined, so it must be a level the grid actually covers.")
 
     def transmission_depth(vmr, vmr_h2, T_art, mmw_art, vmr_he=None,
-                           cloud=None):
+                           cloud=None, deck=None):
         """Transit depth (R_p(lambda)/R_star)^2 from ART-grid profiles.
 
         vmr : dict molecule -> (nlayer,) VMR; vmr_h2 : (nlayer,) H2 VMR (for CIA);
         vmr_he : (nlayer,) He VMR (H2-He CIA partner; REQUIRED -- the None default
         exists only so an omission raises the explanatory ValueError, not TypeError).
-        Optional: cloud=[log10 kappac0, alphac] (ExoJax powerlaw_clouds).
+        Optional: cloud=[log10 kappac0, alphac] (ExoJax powerlaw_clouds);
+        deck=log10 P_deck (bar), an opaque grey deck below that pressure
+        (_ckd_continuum).
         """
         _require_he(vmr_he)
         # rp_cm/gs_cgs are quoted at p_ref_bar (the transit radius, ~mbar), not at
@@ -520,13 +532,13 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
         dtau_g = _accumulate_dtau_ckd(
             art, ckd_pack, mols, molmass, opacia, opacia_he,
             vmr, vmr_h2, vmr_he, T_art, mmw_art, g_prof,
-            cloud=cloud, rayleigh_xs=rayleigh_xs)
+            cloud=cloud, rayleigh_xs=rayleigh_xs, deck=deck)
         Rp2 = art.run_ckd(dtau_g, T_art, mmw_art, Rp_btm, g_btm,
                           ckd_pack.gw)
         return Rp2 * (Rp_btm / rstar_cm) ** 2
 
     def transmission_depth_r(vmr, vmr_h2, T_art, mmw_art, lnR0, vmr_he=None,
-                             cloud=None, wo_mols=None):
+                             cloud=None, wo_mols=None, lnM=0.0, deck=None):
         """transmission_depth with a reference-radius scaling at fixed planet mass:
         the radius at p_ref_bar is Rp_ref * e^lnR0 and the gravity there
         g_ref * e^(-2 lnR0), so GM = g_ref Rp_ref^2 is unchanged and the column
@@ -538,6 +550,14 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
         every scale height at its lnR0 = 0 value, not e^(2 lnR0) times it as at
         fixed mass, which the retrieval pays for in T and mu.
 
+        lnM (default 0): ln of the planet-mass multiple. The gravity at p_ref_bar
+        becomes g_ref * e^(lnM - 2 lnR0) at the unchanged radius Rp_ref * e^lnR0,
+        so GM scales by e^lnM; lnR0 keeps its fixed-GM meaning. RT-only, like
+        lnR0: the chemistry's hydrostatic column is not re-solved.
+
+        deck (default None): log10 P_deck (bar) of an opaque grey deck
+        (_ckd_continuum), independent of ``cloud``.
+
         wo_mols: None (default) returns the depth (n_nu,).
         A list of molecule names returns ``(depth, depth_wo)`` with one row per
         entry, each the depth with that molecule's VMR zeroed -- bit-identical
@@ -547,7 +567,7 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
         _require_he(vmr_he)
         Rp_btm, g_btm = _anchor_to_grid_bottom(
             lnp_art, T_art, mmw_art, Rp_ref * jnp.exp(lnR0),
-            g_ref * jnp.exp(-2.0 * lnR0), p_ref_bar)
+            g_ref * jnp.exp(lnM - 2.0 * lnR0), p_ref_bar)
         # Inverse-square g(r); see transmission_depth.
         g_prof = _gravity_profile_invsq(art, T_art, mmw_art, Rp_btm, g_btm)  # (nlayer,1)
 
@@ -564,12 +584,13 @@ def build_rt_model(profile: dict) -> SimpleNamespace:
             dtau_g = _accumulate_dtau_ckd(
                 art, ckd_pack, mols, molmass, opacia, opacia_he,
                 vmr, vmr_h2, vmr_he, T_art, mmw_art, g_prof,
-                cloud=cloud, rayleigh_xs=rayleigh_xs)
+                cloud=cloud, rayleigh_xs=rayleigh_xs, deck=deck)
             return _finish(dtau_g)
         depth, rows = _ckd_dtau_batch(
             art, ckd_pack, mols, molmass, opacia, opacia_he,
             vmr, vmr_h2, vmr_he, T_art, mmw_art, g_prof,
-            list(wo_mols), _finish, cloud=cloud, rayleigh_xs=rayleigh_xs)
+            list(wo_mols), _finish, cloud=cloud, rayleigh_xs=rayleigh_xs,
+            deck=deck)
         return depth, (jnp.stack(rows) if rows
                        else jnp.zeros((0,) + depth.shape))
 

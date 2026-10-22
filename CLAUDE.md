@@ -7,10 +7,34 @@ build on it, in the chain `vulcan3 <- vulcan-forward <- {vulcan-retrieval,
 jwst-transit-authority}`. A forward-model change usually belongs here, not in a consumer
 (notes "Library and data contract").
 
+## Maintainer rules (all repos)
+
+These four rules are identical in the project-root CLAUDE.md and every repo's; change
+them together.
+
+- **Layout.** Keep code, data and generated files apart. Shipped code, tests, inputs,
+  fixtures and validation assets stay where the repo's CLAUDE.md puts them. Work asked
+  for outside the product (analysis, one-off scripts and checks, their figures and
+  results) goes to `scratch/<topic>/`, one folder per question; run results go to
+  `output/`, and vulcan3's own figures to `plot/`. Keep these three top-level folders
+  gitignored and never commit their contents; never put such work in `src/`, `tests/`,
+  `tools/`, `validation/`, `data/` or the repo root. A durable conclusion goes to
+  notes.md; a reusable check becomes a tracked test or validation script.
+- **Figures.** An ad hoc plot request gets 1 to 3 figures, more only when asked, from one
+  script in `scratch/<topic>/`: no helper module, style layer or extra variants.
+- **Branches.** Work in the existing checkout on `main`. Create no branch, worktree or
+  copy of the repo, and switch no branch, unless the maintainer asks.
+- **Behind main.** At the start of work in a checkout, `git fetch origin`, then
+  `git rev-list --count HEAD..origin/main`. If the count is above 0, tell the
+  maintainer at once; if the fetch fails, say the state is unknown. This alerts and does
+  not block; never pull, rebase or reset unasked. Check again before a commit, a push or
+  a job on daw or NAS.
+
 ## Docs
 
 - `README.md` is hand-written by the maintainer: never edit it unless asked for that edit.
-- `notes.md`: what is true and why, by section; the evidence behind each rule below.
+- `notes.md`: the results of past experiments and the ideas tried, by section, never a
+  dated history; the evidence behind each rule below.
 - `todo.md`: open, owed and undecided work. Read it first; open or close items in the
   same pass.
 - `CLAUDE.md`: directions only, no results.
@@ -82,12 +106,15 @@ jwst-transit-authority}`. A forward-model change usually belongs here, not in a 
 
 ### Chemistry solve and derivatives
 
-- `ChemParams(lnZ, c_o, lnKzz, tp)` is the primitive; `params_from_vector` /
-  `ChemParams.to_vector` convert to and from the positional `[lnZ, c_o, lnKzz, *tp]`
-  layout every entry point accepts. Keep the vector path: consumers pass and
-  differentiate that array. `_as_params` is the single normalization point; `_prep`
-  reads fields by name; without a `tp_eval` hook the tail is `theta[3:4]` (a uniform T
-  offset).
+- `ChemParams(lnZ, c_o, lnKzz, tp, s_o, kzz_slope)` is the primitive; `params_from_vector`
+  / `ChemParams.to_vector` convert to and from the positional `[lnZ, c_o, lnKzz,
+  *extras, *tp]` layout every entry point accepts, where the extras are the
+  `chem_extras` the model was built with (a subset of `CHEM_EXTRAS`, in its order;
+  none by default, so the classic `[lnZ, c_o, lnKzz, *tp]`). Keep the vector path:
+  consumers pass and differentiate that array. `_as_params` is the single
+  normalization point; `_prep` reads fields by name; without a `tp_eval` hook the
+  tail is one entry after the chemistry block (a uniform T offset). A warm
+  continuation carries three references (`lnZ_ref`, `c_o_ref`, `s_o_ref`).
 - Every cold solve starts from vulcan3's in-graph equilibrium seed at the proposal's own
   T-P and column ratios. To start from the build's column, pass it as a continuation:
   `warm_y=chem.y0, lnZ_ref=0, c_o_ref=0` (`run_diag` takes the same arguments) (notes

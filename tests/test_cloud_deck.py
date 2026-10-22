@@ -76,8 +76,8 @@ H_SCALE = KB * CASE["T"] / (CASE["mmw"] * M_U * CASE["g"])
 
 
 @pytest.fixture(scope="module")
-def rt_cloud_only():
-    """(depth_fn, nu_grid): cloud-only model over a band straddling 3.5 um."""
+def rt_ins():
+    """(rt model, gas-free isothermal inputs) over a band straddling 3.5 um."""
     rt = build_rt_model({
         "molecules": ["H2O"], "nu_min": 1e4 / 4.2, "nu_max": 1e4 / 2.9,
         "art_nlayer": CASE["nlayer"], "art_ptop_bar": CASE["ptop"],
@@ -89,8 +89,38 @@ def rt_cloud_only():
     ins = dict(vmr={"H2O": z}, vmr_h2=z, vmr_he=z,
                T_art=jnp.full(z.size, CASE["T"]),
                mmw_art=jnp.full(z.size, CASE["mmw"]))
+    return rt, ins
+
+
+@pytest.fixture(scope="module")
+def rt_cloud_only(rt_ins):
+    """(depth_fn, nu_grid): the power-law cloud alone."""
+    rt, ins = rt_ins
     return (lambda c: rt.transmission_depth(cloud=c, **ins),
             np.asarray(rt.nu_grid))
+
+
+def test_grey_deck_puts_the_transit_radius_at_the_deck(rt_ins):
+    """An opaque grey deck at P_deck in a gas-free isothermal column is
+    band-independent to the last bit and puts the transit radius at the
+    deck's hydrostatic radius R0 + H ln(P0 / P_deck), above it by the switch
+    width times the ~13 e-folds the deck is thick along the chord (0.26 H at
+    the shipped width), within half a scale height. A deck three decades
+    below the grid bottom leaves the deck-free spectrum unchanged."""
+    rt, ins = rt_ins
+    base = np.asarray(rt.transmission_depth(**ins))
+    far = np.asarray(rt.transmission_depth(deck=np.log10(CASE["pbtm"]) + 3.0, **ins))
+    np.testing.assert_allclose(far, base, rtol=1e-12, atol=0.0)
+    for lgp in (-3.0, -1.0):
+        depth = np.asarray(rt.transmission_depth(deck=lgp, **ins))
+        assert np.ptp(depth) == 0.0
+        reff = np.sqrt(depth[0]) * CASE["rstar_cm"]
+        r_deck = CASE["rp_cm"] + H_SCALE * np.log(CASE["p_ref_bar"] / 10.0 ** lgp)
+        above = (reff - r_deck) / H_SCALE
+        assert -0.1 < above < 0.5, above
+    # both cloud terms together: the deck below a thin power-law haze adds to it
+    both = np.asarray(rt.transmission_depth(cloud=jnp.array([-4.0, 0.0]), deck=-1.0, **ins))
+    assert np.all(both >= np.asarray(rt.transmission_depth(deck=-1.0, **ins)))
 
 
 def _tau0(kappa):

@@ -259,6 +259,19 @@ def test_wo_batch_is_bit_identical_to_separate_solves():
     np.testing.assert_allclose(
         d_h, np.asarray(trt_h.transmission_depth(vmr, zeros, T, mmw, vmr_he=zeros)),
         rtol=ROUND_TOL, atol=0.0)
+    # lnM is a mass change at the scaled radius: the depth of a model quoted at
+    # rp_cm * e^h with gravity gs_cgs * e^(m - 2h); lnM = 0 is the lnR0 path
+    # bit for bit.
+    m = 0.1
+    d_hm = np.asarray(trt.transmission_depth_r(vmr, zeros, T, mmw, h, vmr_he=zeros,
+                                               lnM=m))
+    trt_hm = exojax_rt.build_rt_model({**prof, "rp_cm": prof["rp_cm"] * np.exp(h),
+                                       "gs_cgs": prof["gs_cgs"] * np.exp(m - 2.0 * h)})
+    np.testing.assert_allclose(
+        d_hm, np.asarray(trt_hm.transmission_depth(vmr, zeros, T, mmw, vmr_he=zeros)),
+        rtol=ROUND_TOL, atol=0.0)
+    assert np.array_equal(d_h, np.asarray(trt.transmission_depth_r(
+        vmr, zeros, T, mmw, h, vmr_he=zeros, lnM=0.0)))
     # Emission follows the same fixed-mass convention: the eclipse flux, its
     # bottom optical depth and the prefactor radius at lnR0 = h are those of
     # the model built at rp_cm * e^h, gs_cgs * e^(-2h).
