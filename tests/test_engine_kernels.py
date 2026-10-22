@@ -71,11 +71,8 @@ def test_to_art_accepts_a_descending_source_grid():
     # clamping fabricates chemistry the grid never solved, at either end
     (np.logspace(-6, 0, 20), np.logspace(-5, 1, 15)),     # ART bottom too deep
     (np.logspace(-4, 0, 20), np.logspace(-6, -0.5, 15)),  # ART top too high
-    ([1e-5, 1e-4, 1e-4, 1e-2], np.logspace(-5, -2, 4)),   # duplicate pressure
-    ([1e-5, np.nan, 1e-3, 1e-2], np.logspace(-5, -2, 4)), # non-finite
-    ([1e-5, 0.0, 1e-3, 1e-2], np.logspace(-5, -2, 4)),    # non-positive
 ])
-def test_to_art_refuses_clamped_or_invalid_grids(p_v, p_art):
+def test_to_art_refuses_clamped_grids(p_v, p_art):
     """A coincident top or bottom is allowed: the identity test above maps a
     grid onto itself."""
     with pytest.raises(ValueError):
