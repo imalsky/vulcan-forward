@@ -13,7 +13,7 @@ from __future__ import annotations
 # These must be in the environment BEFORE the first ``import vulcan3``
 # (VULCAN-JAX freezes network/atom_list at first import). ``vulcan_chem``
 # applies them; the package docstring states the import-order contract.
-DEFAULT_NETWORK = "thermo/SNCHO_photo_network.txt"
+DEFAULT_NETWORK = "thermo/SNCHO_photo_network_2025.txt"
 DEFAULT_ATOM_LIST = "H,O,C,N,S"
 # Default ``vulcan3.load_config`` name. A caller normally passes
 # ``profile["vulcan_cfg_name"]`` instead; this is only the fallback.

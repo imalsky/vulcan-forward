@@ -23,16 +23,20 @@ Tags: [M] measured, [E] estimated, [I] inferred.
 - Production: the WASP-39b baseline v2 nautilus run used `d26e9d3` (0.28.0, tag
   `w39b-baseline-v2`). All three W39b production runs carry the 0.27.2 carbon repair
   (`a6a1094`).
+- Default network (`constants.DEFAULT_NETWORK`): `thermo/SNCHO_photo_network_2025.txt`
+  (93 species), upstream's WASP-39b network. Every run before it, v5 included, solved
+  the 2021 `SNCHO_photo_network.txt` (89 species).
 - Normal tier: plain `pytest tests`. CI runs it serially on Python 3.10, 3.11 and 3.12,
   single-threaded XLA, numpy<2, vulcan3 from `imalsky/VULCAN3@main`, no exojax (the RT
-  tests skip). Readings [M]: daw, `-n 6`, code of `d26e9d3`: 95 passed / 8 skipped in
-  189 s; laptop CPU, single-threaded XLA, `-n 4`, the 0.30.0 tree (the v5 options and
-  their five tests): 90 passed / 8 skipped in 75 s.
+  tests skip). Readings [M]: daw, `-n 6` on 12 pinned cores, the 2025-network tree: 90
+  passed / 8 skipped in 161 s; laptop CPU, single-threaded XLA, `-n 4`, the 0.30.0 tree:
+  90 passed / 8 skipped in 75 s.
 - Full tier (`VULCAN_FORWARD_RUN_FULL=1`): the `converged_y_jvp` tests, the five `@FULL`
   queue/gradient tests and the 8-species pRT case. Readings at `-n 6 --dist worksteal`
   [M]: `4ca5fa6` 103 passed in 20.7 min, 23.9 GB peak; the 0.29.0 tree 95 passed /
   2 failed in 31.4 min, the failures the queue-vs-batch knife edge at the recorded
-  6.874e-2 ("Batched routes") while the eq-seed warm jvp case certifies.
+  6.874e-2 ("Batched routes") while the eq-seed warm jvp case certifies; the
+  2025-network tree 98 passed in 35.1 min on daw.
 - Known defect, no shipped number moves: the `ckd.overlap` sort-crossing jumps
   ("Opacity: correlated-k on ExoMolOP").
 
