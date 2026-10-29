@@ -258,8 +258,16 @@ Tags: [M] measured, [E] estimated, [I] inferred.
 ## Batched routes (`converged_y_batch`, `converged_y_queue`)
 
 - Both agree with the solo solve at the convergence scale only (batch vs per-lane vmap max
-  rel 7.2e-3) [M]. A batch lane is bitwise a batch of one since VULCAN-JAX `dd2c7a0`
-  (before, a lane's eq seed moved ~4e-15 with the batch width).
+  rel 7.2e-3) [M]. A lane is bitwise independent of its neighbours and its position:
+  theta 1 of `test_converged_y_batch` at widths 2, 3, 4 and 8, beside itself or theta 0,
+  2025 network, arm64 [M] (before VULCAN-JAX `dd2c7a0` a lane's eq seed moved ~4e-15 with
+  the width). A batch of ONE is a different XLA program: on arm64 it splits from width 2
+  by one ulp in three H2S cells at accept 115 and ends 1758 cells apart, at the
+  convergence scale; with the geometry refresh off (`update_frq` 1e6) the two stay bitwise
+  for 400 steps [M]. The op is not identified (not the refresh's mu sum, not the
+  stage-repair defect sum, each tried as a fixed-order sum). Which CPUs show the split
+  varies (arm64 and one CI x86 runner do, daw does not): tests compare a lane against the
+  same theta at the batch's width, never a batch of one.
 - The cold queue is not bitwise the batch: `run_queue` builds the seed inside its jitted
   loop, and the two compilations of `_prep` differ by 1.1e-15 in `y_ini`, amplified until
   accept counts split (queue [121,122,121,121] vs batch [121,121,121,166]) [M]. Started
@@ -418,9 +426,6 @@ per-theta re-anchoring stay; the other items stay live as model choices.
 
 - The 151 commits dated before 2026-10-13 were made on other machines; NAS holds no
   provenance for them beyond "Provenance audit" [M: `git log`].
-- `test_batched_lanes_are_their_own_solves_and_agree_with_the_vmap` (bitwise lane vs
-  batch-of-one) passes on daw and CI; an outside x86 container reported lane 1 differing
-  (124 vs 121 steps), so bitwise lane independence may depend on the CPU [I].
 - The photolysis-cadence switch threshold stays at VULCAN3's derived 1.0 when a profile
   overrides `yconv_min`: only the refresh timing moves, the certificate does not.
 - `co_mode` defaults to `fixed_O`, which both consumers pass; `proxy` is kept and no test

@@ -4,8 +4,10 @@ production per-lane ``jax.vmap(converged_y)``.
 Two properties, and they pull in opposite directions:
 
 * a lane must be its OWN solve -- lanes freeze at their own exits, so lane k of
-  an N-lane batch is BIT-IDENTICAL to the same theta run as a batch of one.
-  Without this the batch would be a different physical model at every width;
+  an N-lane batch is BIT-IDENTICAL to the same theta run beside other lanes.
+  Without this a lane's result would depend on its neighbours. The reference
+  keeps the width: a batch of ONE compiles to a different XLA program and can
+  split from it by one ulp (notes "Batched routes");
 * against the route it replaces (a vmap of the per-lane solve) the agreement is
   at the CONVERGENCE scale, not bitwise, and that is by design: the batched
   runner's while loop sits above the lane vmap, so photolysis and the geometry
@@ -50,15 +52,16 @@ REL_MAX = 1.0e-1
 
 @pytest.fixture(scope="module")
 def runs():
-    """The three routes, solved once: batched, per-lane vmap, batch-of-one."""
+    """The three routes, solved once: batched, per-lane vmap, and each theta
+    beside a copy of itself (the batch's width, another neighbour)."""
     chem = vulcan_chem.build_chem_model(PROFILE)
     th = jnp.asarray(THETAS)
     y_b, cd_b = chem.converged_y_batch(th, return_conv_diag=True)
     y_v, cd_v = jax.vmap(
         lambda t: chem.converged_y(t, return_conv_diag=True))(th)
-    y_one = [np.asarray(chem.converged_y_batch(th[k:k + 1]))[0]
-             for k in range(THETAS.shape[0])]
-    return chem, np.asarray(y_b), cd_b, np.asarray(y_v), cd_v, y_one
+    y_pair = [np.asarray(chem.converged_y_batch(th[jnp.array([k, k])]))[0]
+              for k in range(THETAS.shape[0])]
+    return chem, np.asarray(y_b), cd_b, np.asarray(y_v), cd_v, y_pair
 
 
 def test_initial_column_carries_the_theta_elemental_ratios(runs):
@@ -132,7 +135,7 @@ def test_kzz_power_law_is_anchored_on_the_profile_at_the_reference_level(runs, c
 
 
 def test_batched_lanes_are_their_own_solves_and_agree_with_the_vmap(runs):
-    _chem, y_b, cd_b, y_v, cd_v, y_one = runs
+    _chem, y_b, cd_b, y_v, cd_v, y_pair = runs
     for k in range(THETAS.shape[0]):
         acc_b = int(np.asarray(cd_b.accept_count)[k])
         acc_v = int(np.asarray(cd_v.accept_count)[k])
@@ -142,9 +145,9 @@ def test_batched_lanes_are_their_own_solves_and_agree_with_the_vmap(runs):
         print(f"[lane {k}] batch-vs-vmap over {int(obs.sum())} cells > {MIX_FLOOR:g} "
               f"VMR: max rel {rel[obs].max():.3e}, median {np.median(rel[obs]):.3e}; "
               f"accept_count batched={acc_b} vmap={acc_v}", flush=True)
-        assert np.array_equal(y_b[k], y_one[k]), (
+        assert np.array_equal(y_b[k], y_pair[k]), (
             "lane is not independent of the batch: lane k of the N-lane batch "
-            "differs from the same theta as a batch of one")
+            "differs from the same theta beside a copy of itself")
         assert bool(np.asarray(cd_b.conv_normal)[k]) == bool(
             np.asarray(cd_v.conv_normal)[k])
         assert rel[obs].max() < REL_MAX
@@ -160,7 +163,7 @@ def test_per_lane_references_match_the_scalar_calls(runs):
     folded constant of the scalar call) with the certificate lane for lane; the
     measured difference is 0 -- subtracting a reference that rides the carry is
     the same arithmetic as subtracting the constant."""
-    chem, y_conv, _cd_b, _y_v, _cd_v, _y_one = runs
+    chem, y_conv, _cd_b, _y_v, _cd_v, _y_pair = runs
     th0 = jnp.asarray(THETAS)
     th1 = jnp.asarray(THETAS + np.array([0.05, 0.02, 0.1, 5.0])[None, :])
     yw = jnp.asarray(y_conv)
