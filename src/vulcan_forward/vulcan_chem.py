@@ -64,7 +64,7 @@ if "vulcan3" in sys.modules:
     # With the env vars unset, read the network vulcan3 actually froze.
     if not _conflict:
         _frozen = getattr(sys.modules["vulcan3"], "chem_funs", None)
-        _frozen = getattr(getattr(_frozen, "_NETWORK", None), "network_path", None)
+        _frozen = getattr(getattr(_frozen, "NETWORK", None), "network_path", None)
         if _frozen and os.path.basename(_frozen) != os.path.basename(
                 constants.DEFAULT_NETWORK):
             _conflict = {"VULCAN3_NETWORK": (_frozen,
@@ -362,12 +362,12 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0,
     from vulcan3 import network as net_mod, composition, rates_jax
     from vulcan3 import atm_jax, atm_refresh as atm_refresh_mod
     from vulcan3 import conden as conden_mod
-    from vulcan3.atm_setup import _VISCOSITY_TABLE, settling_velocity_jax
+    from vulcan3.atm_setup import VISCOSITY_TABLE, settling_velocity_jax
     from vulcan3.jax_step import make_atm_static
     from vulcan3.gibbs import load_nasa9
     from vulcan3.ini_abun import (column_atoms, element_vector, eq_seed,
                                      ratio_indices)
-    from vulcan3._paths import resolve_data_path
+    from vulcan3.paths import resolve_data_path
     from vulcan3.phy_const import kb
     import vulcan3.legacy_io as op
     import vulcan3.op_jax as op_jax
@@ -421,14 +421,14 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0,
     nasa9, _ = load_nasa9(network.species, thermo_dir)
     remove_list = cfg.remove_list
 
-    # --- runner closure: XLA compiles integ._runner on the first solve
+    # --- runner closure: XLA compiles integ.runner on the first solve
     solver = op_jax.Ros2JAX()
     if rs.photo_static is not None:
-        solver._photo_static = rs.photo_static
+        solver.photo_static = rs.photo_static
     integ = outer_loop.OuterLoop(solver, op.Output(cfg=cfg), cfg=cfg)
     solver.naming_solver(para)
     logger.info(f"[chem] setup {time.time() - t0:.1f}s; nz={nz} ni={ni} photo={cfg.use_photo}")
-    integ._ensure_runner(var, atm)
+    integ.ensure_runner(var, atm)
 
     # --- runner-carry budget/scheme seeding --------------------------------
     # The termination budget and diffusion blend live on the carry, and state0
@@ -491,8 +491,8 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0,
         """The canonical certification alone (see ``_conv_diag``)."""
         return _conv_diag(final).conv_normal
 
-    atm_static = make_atm_static(atm, ni, nz, cfg=integ._cfg)
-    state0 = integ._pack_state_from_runstate(rs)
+    atm_static = make_atm_static(atm, ni, nz, cfg=integ.config)
+    state0 = integ.pack_state(rs)
     y0 = state0.y
     Kzz0 = atm_static.Kzz
     pv0 = state0.pv
@@ -530,10 +530,10 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0,
     # --- on-graph atmosphere rebuild inputs -------------------------------
     # refresh_static: inputs of the runner's own hydrostatic-refresh kernel
     # (pico, gs, Rp, pref anchor, species masses).
-    # phys0/spec_atm: inputs of atm_jax._mol_diff, the on-graph Dzz(T, M)
+    # phys0/spec_atm: inputs of atm_jax.mol_diff, the on-graph Dzz(T, M)
     # builder (field-for-field equal to the host make_atm_static for this
     # atm_type; VULCAN-JAX tests/test_atm_jax.py).
-    refresh_static = integ._build_refresh_static(atm)
+    refresh_static = integ.build_refresh_static(atm)
     phys0, spec_atm = atm_jax.make_physical_inputs(cfg, var, atm, list(network.species))
     use_vm = bool(spec_atm.use_vm_mol and spec_atm.use_moldiff)
     use_set = bool(spec_atm.use_settling and spec_atm.use_moldiff)
@@ -569,7 +569,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0,
     species_masses = jnp.asarray(np.asarray(compo, dtype=np.float64)) @ atomic_masses  # (ni,)
     # runner's own (ni, n_atoms) composition table, columns in its internal _atom_order --
     # used to rebuild the conserved atom totals (atom_ini) in the runner's exact basis.
-    compo_run = jnp.asarray(np.asarray(integ._compo_arr, dtype=np.float64))
+    compo_run = jnp.asarray(np.asarray(integ.compo_arr, dtype=np.float64))
 
     # --- exact-elemental targets + repair tables ----------------------------
     # Baseline elemental totals (layer sums, no dz weight) from the pristine y0 (which sums to
@@ -767,12 +767,12 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0,
         refresh_lane = refresh_static._replace(Tco=T)
         mu_i, g_i, Hp_i, dz_i, zco_i, dzi_i, Hpi_i = atm_refresh_mod.update_mu_dz_jax(
             ymix0, refresh_lane)
-        Dzz_new, _Dzz_cen, vm_new = atm_jax._mol_diff(
+        Dzz_new, _Dzz_cen, vm_new = atm_jax.mol_diff(
             phys0._replace(Tco=T), spec_atm, M, g_i, Hp_i, dz_i)
         if not use_vm:
             vm_new = jnp.zeros((nz - 1, ni), dtype=jnp.float64)
         if use_set:
-            _na, _a, _b = _VISCOSITY_TABLE[spec_atm.atm_base]
+            _na, _a, _b = VISCOSITY_TABLE[spec_atm.atm_base]
             vs_new = settling_velocity_jax(_na, _a, _b, T, g_i, spec_atm.settle_coeff)
         else:
             vs_new = jnp.zeros((nz - 1, ni), dtype=jnp.float64)
@@ -822,7 +822,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0,
         ``warm_y`` / ``lnZ_ref`` / ``c_o_ref`` / ``s_o_ref`` start it as
         ``converged_y``'s continuation does."""
         init, atm_T = _seeded_prep(theta, warm_y, lnZ_ref, c_o_ref, s_o_ref)
-        final = integ._runner(init, atm_T)
+        final = integ.runner(init, atm_T)
         return (final, init, atm_T) if return_atm else (final, init)
 
     def prep_pv(theta):
@@ -849,7 +849,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0,
         False even when ``longdy < yconv_min``. ConvDiag's float fields
         carry a tangent -- AD callers stop_gradient them."""
         init, atm_T = _seeded_prep(theta, warm_y, lnZ_ref, c_o_ref, s_o_ref)
-        final = integ._runner(init, atm_T)
+        final = integ.runner(init, atm_T)
         if return_conv_diag:
             return final.y, _conv_diag(final)
         return final.y
@@ -887,11 +887,11 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0,
 
         # The AtmStatic toggles are unbatched Python bools (the runner's own
         # lane vmap broadcasts them), so they take out_axes None and every
-        # array leaf takes 0 -- exactly `_ATM_STATIC_BATCH_AXES`. warm_y=None
+        # array leaf takes 0 -- exactly `ATM_STATIC_BATCH_AXES`. warm_y=None
         # is an empty pytree node, so the same vmap covers the cold seed.
         init_b, atm_b = jax.vmap(
             _seeded_prep,
-            out_axes=(0, outer_loop._ATM_STATIC_BATCH_AXES),
+            out_axes=(0, outer_loop.ATM_STATIC_BATCH_AXES),
         )(thetas, warm_y, *refs)
         final_b = integ.run_batch(init_b, atm_b)
         if return_conv_diag:
@@ -1062,7 +1062,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0,
         _yg, min_adj = _elemental_project(y_guess, jnp.asarray(Mn), lnZ, c_o, s_o)
         out["min_repair_factor"] = float(min_adj)
         ai = np.asarray(init.pv.atom_ini, dtype=np.float64)
-        a_run = y @ np.asarray(integ._compo_arr, dtype=np.float64)
+        a_run = y @ np.asarray(integ.compo_arr, dtype=np.float64)
         out["atom_ini_max_rel_err"] = float(np.max(np.abs(a_run.sum(axis=0) - ai) / ai))
         return out
 

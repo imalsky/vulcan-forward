@@ -65,11 +65,13 @@ MIX_FLOOR = 1.0e-10   # cells below this carry no observable and no certificate
 # bit-level input changes on every job (a 1e-12 lnZ nudge spans 0.4e-2 to
 # 7e-2), so no theta has margin under a tighter bar; a lane-mixing bug is O(1).
 REL_MAX = 1.0e-1
-# The queued tangent vs the batched one, for a job both routes stop on the same
-# accept count. A plain jvp's tangent is not relaxed at the stop, so two routes
-# that stop a step apart give unrelated tangents (job 3 here: 9.9e-1); the
-# certified tangent is converged_y_jvp's.
+# The queued tangent vs the batched one, on every job.
 QUEUE_DY_MAX = 1.0e-2
+# dt_max for the tangent comparison. At the production cap a plain jvp's tangent has
+# no stable value: a 1e-14 lnZ nudge moves queue-vs-batch by up to O(1) on any job, so
+# the 1e-2 bar judges a bit pattern (notes "Batched routes"). At this cap 19 nudges
+# read <= 1.5e-5 on every job, also on the refilled jobs, which stop a step apart.
+TANGENT_DT_MAX = 1.0e7
 # Two-stage check: the species a W39b spectrum reads, split into the ones that
 # are PINNED and the ones only PRINTED, which carry the slow chemistry the two
 # arms disagree on.
@@ -252,8 +254,14 @@ def _dy_rel(dy, dy_ref, mix):
     return float(np.abs(dy - dy_ref)[obs].max() / np.abs(dy_ref[obs]).max())
 
 
+# Function scope: a model keeps every program compiled on it.
+@pytest.fixture
+def chem_tangent():
+    return vulcan_chem.build_chem_model({**PROFILE, "dt_max": TANGENT_DT_MAX})
+
+
 @FULL
-def test_queue_is_differentiable(chem, ref):
+def test_queue_is_differentiable(chem_tangent):
     """A plain ``jax.jvp`` runs through the queue, and through the batch.
 
     This is what lets a consumer take the WHOLE cold gradient on the batched
@@ -268,8 +276,10 @@ def test_queue_is_differentiable(chem, ref):
     ``converged_y_jvp``; this test pins the plain-jvp route the retrieval's
     cold gradient uses.
     """
-    y_b_ref, cd_b_ref = ref
+    chem = chem_tangent
     th = jnp.asarray(THETAS)
+    y_b_ref, cd_b_ref = chem.converged_y_batch(th, return_conv_diag=True)
+    y_b_ref = np.asarray(y_b_ref)
     # one direction (lnZ), the same for every theta in the stack
     v = jnp.zeros_like(th).at[:, 0].set(1.0)
 
@@ -285,16 +295,13 @@ def test_queue_is_differentiable(chem, ref):
                           np.asarray(cd_b_ref.conv_normal))
     _report("jvp lanes=2 chunk=1", y_q, cd_q, y_b, cd_b)
     acc_q, acc_b = np.asarray(cd_q.accept_count), np.asarray(cd_b.accept_count)
-    same_stop = [k for k in range(THETAS.shape[0]) if acc_q[k] == acc_b[k]]
-    assert same_stop, (acc_q, acc_b)
     for k in range(THETAS.shape[0]):
         mix = y_b[k] / y_b[k].sum(axis=1, keepdims=True)
         rel = _dy_rel(dy_q[k], dy_b[k], mix)
         print(f"[jvp lanes=2 chunk=1 job {k}] queue-vs-batch tangent "
               f"max|ddy|/max|dy| {rel:.3e}; accept_count queue {acc_q[k]} "
               f"batch {acc_b[k]}", flush=True)
-        if k in same_stop:
-            assert rel < QUEUE_DY_MAX
+        assert rel < QUEUE_DY_MAX
 
     # The contract a batched-gradient consumer relies on: one jvp through the
     # batch is the per-theta jvp through the solo runner, at the convergence

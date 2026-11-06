@@ -74,7 +74,7 @@ Tags: [M] measured, [E] estimated, [I] inferred.
 
 - `vulcan_chem` sets `VULCAN3_NETWORK` / `VULCAN3_ATOM_LIST` (vulcan3 freezes them at
   import) with `setdefault`, and jax x64, before any exojax import. A late arrival raises;
-  so does a prior `vulcan3` import whose frozen network (`chem_funs._NETWORK.network_path`,
+  so does a prior `vulcan3` import whose frozen network (`chem_funs.NETWORK.network_path`,
   not an env var) conflicts. No measurement: the values freeze at import, so a wrong
   order fails much later [I]. `test_import_order_guard_is_documented_and_live` pins it.
 - `pytest.importorskip("exojax")` imports exojax ahead of `vulcan_chem` for every later
@@ -275,8 +275,7 @@ Tags: [M] measured, [E] estimated, [I] inferred.
   carbon repair, and a 1e-12 lnZ nudge moves the queue-vs-batch max rel from 0.4e-2 to
   7e-2 on every job [M]: tests compare `conv_normal` (not `conv_branch`: an S4 cell at
   1e-20 certifies tight in one compilation, loose in another) and the convergence scale
-  (bar 0.1, `yconv_min`), and a plain-jvp tangent only between routes that stop on the
-  same accept count (two that stop a step apart differ by 9.9e-1).
+  (bar 0.1, `yconv_min`), and a plain-jvp tangent only at `dt_max` 1e7 (below).
 - `converged_y_queue(active=)` (`39c2c45`) lets the retrieval mask padding rows. A masked
   job's lane starts done and takes no step; the active jobs keep the unmasked schedule
   (bitwise on the GPU per the retrieval's check; the CPU test bar is 1e-9).
@@ -287,6 +286,18 @@ Tags: [M] measured, [E] estimated, [I] inferred.
   CO read 1.06e-3 (over the 1e-3 bar); capped, 1.26e-4. A tight capped reference puts
   every route 1.2e-3 to 8.4e-3 off in CO: the routes differ by less than their
   convergence error [M].
+- A plain tangent at the production cap has no stable value [M, 41 draws, lnZ nudged by
+  1e-15 to 7e-12, daw, `run_queue` deterministic on repeats]: queue-vs-batch median 6.7e-5 /
+  2.1e-3 / 2.5e-4 / 2.0e-2 on jobs 0-3, max 3.3e-1 / 4.0 / 1.0 / 5.4; the batch moves
+  against itself as much (job 1 5.1e-1 under 1e-14), stop counts scatter (121 to 245 on a
+  job), and vulcan3 `e91db66`, before the data fixes, shows the same tail, so its earlier
+  pass was its bit pattern. CPU count picks the pattern: job 0 reads 8.1e-2 on three CPUs, and
+  job 3 reads 2.1e-2 with job 0 at 5.7e-5 on two. At that 8.1e-2 draw the certified tangent
+  (1.4e-5) and central FD (2.6e-4 at h 1e-2) side with the batch; the gap is layer 0 (H, H2,
+  H2S, SH). `dt_max` 1e9 still reads up to 1.4e-1; `yconv_min` 1e-2 does not help (up to
+  3e7). At `dt_max` 1e7, 19 draws read <= 1.5e-5, stops fixed at 146, 127, 155, 124 (the
+  queue's refilled jobs 156, 125) [M]. The AD path is capped lower (the planner's
+  `AD_BUILD_OVERRIDES`, 1e5 s).
 - A plain `jax.jvp` runs through both (batch jvp vs per-theta `jax.jvp(converged_y)`
   1.0e-4). The gradient tests assert column max rel 4e-1, median 1e-3, tangent
   stack-relative 2e-4; measured cold 1.70e-1 / 2.08e-4 / 1.73e-5, warm 1.16e-1 /
@@ -294,11 +305,10 @@ Tags: [M] measured, [E] estimated, [I] inferred.
 - Per-lane `lnZ_ref` / `c_o_ref` are bitwise the scalar path [M].
 - Test bars, calibrated on daw (Xeon 8462Y+): queue-vs-batch primal 0.05 (`REL_MAX`);
   batch-vs-solo 0.1 (6e-2 and 8e-2 measured across Python 3.10-3.12 and numpy
-  1.26-2.x); queued tangent 1e-2 on the settled thetas (<= 4.6e-4 measured) and a 1.0
-  wiring bound on theta 2, whose queued tangent is undetermined (a 1e-12 lnZ nudge moves
-  it 6.8e-2) [M]. GitHub runner run 36254404095 (`bdbf2d1`): queue-vs-batch primal
-  6.87e-2, queued tangent 3.47e-2, and the eq-seed warm jvp ran to its 3001 cap with the
-  tangent diverged; those three tests are in the full tier. GH200 is unverified; the
+  1.26-2.x); queued tangent 1e-2 on every job at `dt_max` 1e7 (<= 1.5e-5 measured; a refill
+  that drops a job's tangent reads 1.0, one that takes the next job's 3.9e-1) [M]. GitHub
+  runner run 36254404095 (`bdbf2d1`): queue-vs-batch primal 6.87e-2, and the eq-seed warm jvp
+  ran to its 3001 cap with the tangent diverged; those tests are in the full tier. GH200 is unverified; the
   maintainer decided no run is planned (nautilus is primal-only).
 
 ## Cold start, abundance map, carbon repair
@@ -537,6 +547,8 @@ per-theta re-anchoring stay; the other items stay live as model choices.
 - Photolysis cadence 1 as the engine default: the planner's closure tests fail
   ("Photolysis refresh cadence"). Reconsider only with both closures and the
   reference-accuracy gate satisfied.
+- Comparing plain tangents at `dt_max` 1e11, on the same accept count or not: bit-level
+  noise reaches O(1) ("Batched routes").
 - Queue tests uncapped ("Batched routes"), or an uncapped tight reference: the
   40000-step one never certified (element-budget drift 13-55%).
 - An exact accept-count check between the cold queue and the cold batch: each builds its
