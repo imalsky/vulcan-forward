@@ -4,6 +4,7 @@ build/
 dist/
 *.egg-info/
 .pytest_cache/
+.coverage*
 .DS_Store
 
 # One-off scripts, tests and figures made on top of the code: never tracked.

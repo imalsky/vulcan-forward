@@ -7,6 +7,7 @@ EQUAL to the values hardcoded here (the one permitted duplication), the
 tolerances at 3x those stats (a [2, 4] ratio so neither side can drift), and
 the arrays finite.
 """
+
 from __future__ import annotations
 
 import json
@@ -20,24 +21,44 @@ DATA = Path(__file__).parent / "data"
 # One authoritative measurement (build_prt_fixtures), duplicated here:
 # fixture meta and this table must agree exactly.
 PINNED_STATS = {
-    "prt_ref_isothermal_h2o_trans.npz": dict(
-        n_wl=1610, arrays=("wl_um", "prt_radius_cm"),
-        mean_ratio=1.0000341406917026, rms_pct=0.0012825771808827554,
-        max_dev_pct=0.004962960960619434),
-    "prt_ref_w39b_8species_trans.npz": dict(
-        n_wl=511, arrays=("wl_um", "prt_depth_ppm"),
-        mean_ratio=0.9982884571858963, rms_pct=0.09576590862575744,
-        max_dev_pct=0.3406240168612462),
-    "prt_ref_emission_h2o.npz": dict(
-        n_wl=511, arrays=("wl_um", "prt_flux_per_cm1", "prt_flux_lambda"),
-        mean_ratio=1.0004052868780968, rms_pct=0.020925888022426987,
-        max_dev_pct=0.05851848060187681),
+    "prt_ref_isothermal_h2o_trans.npz": {
+        "n_wl": 1610,
+        "arrays": ("wl_um", "prt_radius_cm"),
+        "mean_ratio": 1.0000341406917026,
+        "rms_pct": 0.0012825771808827554,
+        "max_dev_pct": 0.004962960960619434,
+    },
+    "prt_ref_w39b_8species_trans.npz": {
+        "n_wl": 511,
+        "arrays": ("wl_um", "prt_depth_ppm"),
+        "mean_ratio": 0.9982884571858963,
+        "rms_pct": 0.09576590862575744,
+        "max_dev_pct": 0.3406240168612462,
+    },
+    "prt_ref_emission_h2o.npz": {
+        "n_wl": 511,
+        "arrays": ("wl_um", "prt_flux_per_cm1", "prt_flux_lambda"),
+        "mean_ratio": 1.0004052868780968,
+        "rms_pct": 0.020925888022426987,
+        "max_dev_pct": 0.05851848060187681,
+    },
 }
 # The provenance every pRT fixture carries: the generating script (path and
 # text), the configuration, the opacity files and the estimator behind it.
-META_KEYS = ("case", "prt_version", "generated", "opacity", "config",
-             "estimator", "prt_script", "prt_script_text", "exo_method",
-             "bundle_record", "stats", "tol")
+META_KEYS = (
+    "case",
+    "prt_version",
+    "generated",
+    "opacity",
+    "config",
+    "estimator",
+    "prt_script",
+    "prt_script_text",
+    "exo_method",
+    "bundle_record",
+    "stats",
+    "tol",
+)
 
 
 @pytest.mark.parametrize("name", sorted(PINNED_STATS))
@@ -63,10 +84,11 @@ def test_fixture_is_the_pinned_verification(name):
 def test_emission_fixture_unit_conversion_is_recorded_and_consistent():
     """The pRT flux is stored BOTH ways; the per-cm^-1 array must equal the
     per-cm-wavelength array divided by nu_tilde^2 (the documented unit trap:
-    dividing by c instead is wrong by ~1e18)."""
+    dividing by c instead is wrong by ~1e18).
+    """
     z = np.load(DATA / "prt_ref_emission_h2o.npz")
     nutilde = 1.0e4 / np.asarray(z["wl_um"])
-    want = np.asarray(z["prt_flux_lambda"]) / nutilde ** 2
+    want = np.asarray(z["prt_flux_lambda"]) / nutilde**2
     assert np.allclose(np.asarray(z["prt_flux_per_cm1"]), want, rtol=1e-12)
     meta = json.loads(bytes(np.asarray(z["meta"])))
     assert "nu_tilde^2" in meta["units"]
@@ -74,9 +96,11 @@ def test_emission_fixture_unit_conversion_is_recorded_and_consistent():
 
 def test_exok_fixture_carries_its_provenance():
     """The exo_k oracle fixture (asserted against the real tables in
-    test_exomolop) keeps its version pin and its generating script."""
+    test_exomolop) keeps its version pin and its generating script.
+    """
     meta = json.loads(bytes(np.asarray(np.load(DATA / "exok_ref_overlap.npz")["meta"])))
     assert meta["exo_k_version"] == "1.3.1"
-    assert meta["script_text"].strip() and "RandOverlap" in meta["script_text"]
+    assert meta["script_text"].strip()
+    assert "RandOverlap" in meta["script_text"]
     assert meta["molecules"] == ["H2O", "CO2", "CH4"]
     assert set(meta["vmr"]) == set(meta["tables"]) == set(meta["molecules"])

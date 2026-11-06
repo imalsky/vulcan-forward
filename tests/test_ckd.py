@@ -6,6 +6,7 @@ environment. The one exojax-backed test (the interpolation oracle) skips via
 ``find_spec``, never ``pytest.importorskip("exojax")``, which poisons the
 import-order contract for every later module in the session.
 """
+
 from __future__ import annotations
 
 import importlib.util
@@ -23,16 +24,17 @@ jax.config.update("jax_enable_x64", True)
 HAVE_EXOJAX = importlib.util.find_spec("exojax") is not None
 if HAVE_EXOJAX and importlib.util.find_spec("vulcan3") is not None:
     # Import order: vulcan_chem before exojax, in every collection order.
-    from vulcan_forward import vulcan_chem  # noqa: F401
+    from vulcan_forward import vulcan_chem  # noqa: F401  # vulcan_chem first: the import order is the contract
 
-from vulcan_forward import ckd  # noqa: E402
+from vulcan_forward import ckd
 
-ROUND_TOL = 1e-12   # float64 rounding bar
+ROUND_TOL = 1e-12  # float64 rounding bar
 
 
 def gauss_legendre(ng):
     """g-ordinates and weights on [0, 1]: a synthetic quadrature for these
-    unit tests (the engine takes the tables' own)."""
+    unit tests (the engine takes the tables' own).
+    """
     g, w = np.polynomial.legendre.leggauss(int(ng))
     return 0.5 * (g + 1.0), 0.5 * w
 
@@ -44,8 +46,7 @@ def _mean_conservation_error(ng, sigma, seed):
     g, w = gauss_legendre(ng)
     a = np.sort(rng.lognormal(-2.0, sigma, size=(nl, ng, nb)), axis=1)
     b = np.sort(rng.lognormal(-1.0, sigma, size=(nl, ng, nb)), axis=1)
-    out = np.asarray(ckd.overlap(jnp.asarray(a), jnp.asarray(b),
-                                 jnp.asarray(g), jnp.asarray(w)))
+    out = np.asarray(ckd.overlap(jnp.asarray(a), jnp.asarray(b), jnp.asarray(g), jnp.asarray(w)))
     got = np.einsum("g,lgb->lb", w, out)
     want = np.einsum("g,lgb->lb", w, a) + np.einsum("g,lgb->lb", w, b)
     return np.abs(got / want - 1.0)
@@ -71,21 +72,20 @@ def test_overlap_nearly_conserves_the_band_mean_and_converges_in_ng():
 
 
 def test_overlap_returns_a_monotone_g_ordering():
-    """k(g) is a sorted distribution by construction; a non-monotone result
-    would break the quadrature."""
+    """k(g) is a sorted distribution by construction; a non-monotone result would break the quadrature."""
     rng = np.random.default_rng(1)
     ng = 16
     g, w = gauss_legendre(ng)
     a = np.sort(rng.lognormal(0.0, 2.0, size=(2, ng, 3)), axis=1)
     b = np.sort(rng.lognormal(0.0, 2.0, size=(2, ng, 3)), axis=1)
-    out = np.asarray(ckd.overlap(jnp.asarray(a), jnp.asarray(b),
-                                 jnp.asarray(g), jnp.asarray(w)))
+    out = np.asarray(ckd.overlap(jnp.asarray(a), jnp.asarray(b), jnp.asarray(g), jnp.asarray(w)))
     assert np.all(np.diff(out, axis=1) >= -ROUND_TOL)
 
 
 def test_overlap_is_differentiable():
     """The retrieval and the Fisher forecast push forward-mode tangents through
-    the whole opacity path, so the sort and the rebin must carry them."""
+    the whole opacity path, so the sort and the rebin must carry them.
+    """
     ng = 8
     g, w = gauss_legendre(ng)
     gg, gw = jnp.asarray(g), jnp.asarray(w)
@@ -96,7 +96,8 @@ def test_overlap_is_differentiable():
         return jnp.sum(ckd.overlap(a * scale, b, gg, gw))
 
     val, tan = jax.jvp(f, (1.0,), (1.0,))
-    assert np.isfinite(float(val)) and np.isfinite(float(tan))
+    assert np.isfinite(float(val))
+    assert np.isfinite(float(tan))
     assert float(tan) > 0.0
 
 
@@ -107,13 +108,13 @@ def test_fold_wo_is_bit_identical_to_naive_refolds():
     exact identity; any reordering would move the spectrum at the rebin-error
     scale the pRT verification tolerances live at. Grouped contract: full ==
     naive fold, every wo row == naive refold with the zero operand, order
-    matters, empty wo_idx returns the full fold only."""
+    matters, empty wo_idx returns the full fold only.
+    """
     rng = np.random.default_rng(3)
     nl, ng, nb, n = 3, 8, 4, 5
     g, w = gauss_legendre(ng)
     gg, gw = jnp.asarray(g), jnp.asarray(w)
-    dts = [jnp.asarray(np.sort(rng.lognormal(-1.0, 1.0, size=(nl, ng, nb)),
-                               axis=1)) for _ in range(n)]
+    dts = [jnp.asarray(np.sort(rng.lognormal(-1.0, 1.0, size=(nl, ng, nb)), axis=1)) for _ in range(n)]
     zero = jnp.zeros((nl, ng, nb))
 
     def naive(seq):
@@ -123,23 +124,20 @@ def test_fold_wo_is_bit_identical_to_naive_refolds():
         return tot
 
     wo_idx = [0, 2, 4]
-    full, wo = ckd._fold_wo(dts, lambda i: zero, gg, gw, wo_idx,
-                             finish=lambda t: t)
+    full, wo = ckd._fold_wo(dts, lambda _i: zero, gg, gw, wo_idx, finish=lambda t: t)
     assert np.array_equal(np.asarray(full), np.asarray(naive(dts)))
     assert [i for i, _ in wo] == wo_idx
     for i, got in wo:
         want = naive([zero if j == i else dts[j] for j in range(n)])
         assert np.array_equal(np.asarray(got), np.asarray(want)), i
     # order matters: permuting the operands changes bits
-    perm, _ = ckd._fold_wo(dts[::-1], lambda i: zero, gg, gw, [],
-                           finish=lambda t: t)
+    perm, _ = ckd._fold_wo(dts[::-1], lambda _i: zero, gg, gw, [], finish=lambda t: t)
     assert not np.array_equal(np.asarray(perm), np.asarray(full))
     # empty wo_idx: full only; finish is applied per wo row
-    full2, none = ckd._fold_wo(dts, lambda i: zero, gg, gw, [],
-                                finish=lambda t: t)
-    assert none == [] and np.array_equal(np.asarray(full2), np.asarray(full))
-    _, summed = ckd._fold_wo(dts, lambda i: zero, gg, gw, [1],
-                             finish=lambda t: float(jnp.sum(t)))
+    full2, none = ckd._fold_wo(dts, lambda _i: zero, gg, gw, [], finish=lambda t: t)
+    assert none == []
+    assert np.array_equal(np.asarray(full2), np.asarray(full))
+    _, summed = ckd._fold_wo(dts, lambda _i: zero, gg, gw, [1], finish=lambda t: float(jnp.sum(t)))
     assert isinstance(summed[0][1], float)
 
 
@@ -150,13 +148,13 @@ def test_fold_is_bit_identical_to_the_python_loop_fold():
     jitted, as production runs them), with enough molecules for several scan
     steps. Bitwise on the CPU; on GPU the two differ in the last bits
     (XLA fuses a scan body and straight-line code differently and rounds
-    inside a fusion accordingly), so there the bar is rounding."""
+    inside a fusion accordingly), so there the bar is rounding.
+    """
     rng = np.random.default_rng(4)
     nl, ng, nb, n = 3, 8, 4, 5
     g, w = gauss_legendre(ng)
     gg, gw = jnp.asarray(g), jnp.asarray(w)
-    dts = jnp.asarray(np.sort(rng.lognormal(-1.0, 1.0, size=(n, nl, ng, nb)),
-                              axis=2))
+    dts = jnp.asarray(np.sort(rng.lognormal(-1.0, 1.0, size=(n, nl, ng, nb)), axis=2))
     tan = jnp.asarray(rng.normal(size=dts.shape))
     cot = jnp.asarray(rng.normal(size=(nl, ng, nb)))
 
@@ -175,36 +173,34 @@ def test_fold_is_bit_identical_to_the_python_loop_fold():
         return p, t, v
 
     rtol = 0.0 if jax.default_backend() == "cpu" else ROUND_TOL
-    for got, want in zip(jvp_vjp(scan), jvp_vjp(naive)):
-        np.testing.assert_allclose(np.asarray(got), np.asarray(want),
-                                   rtol=rtol, atol=0.0, equal_nan=False)
+    for got, want in zip(jvp_vjp(scan), jvp_vjp(naive), strict=True):
+        np.testing.assert_allclose(np.asarray(got), np.asarray(want), rtol=rtol, atol=0.0, equal_nan=False)
     # a single molecule is its own fold
-    assert np.array_equal(np.asarray(ckd.fold(dts[:1], gg, gw)),
-                          np.asarray(dts[0]))
+    assert np.array_equal(np.asarray(ckd.fold(dts[:1], gg, gw)), np.asarray(dts[0]))
 
 
 def test_interp_logk_clamps_outside_the_table_rather_than_extrapolating():
     """Extrapolating log k off the end of a k-table produces nonsense opacity;
-    clamping is the documented behaviour and the caller validates the span."""
+    clamping is the documented behaviour and the caller validates the span.
+    """
     t = jnp.asarray(np.linspace(500.0, 2000.0, 4))
     p = jnp.asarray(np.logspace(-6, 1, 3))
     logk = jnp.asarray(np.arange(4 * 3 * 2 * 1, dtype=float).reshape(4, 3, 2, 1))
-    lo = np.asarray(ckd._interp_logk(logk, t, p, jnp.asarray([100.0]),
-                                     jnp.asarray([1e-9])))
-    hi = np.asarray(ckd._interp_logk(logk, t, p, jnp.asarray([9000.0]),
-                                     jnp.asarray([1e3])))
+    lo = np.asarray(ckd._interp_logk(logk, t, p, jnp.asarray([100.0]), jnp.asarray([1e-9])))
+    hi = np.asarray(ckd._interp_logk(logk, t, p, jnp.asarray([9000.0]), jnp.asarray([1e3])))
     assert np.allclose(lo[0], np.asarray(logk)[0, 0])
     assert np.allclose(hi[0], np.asarray(logk)[-1, -1])
 
 
 @pytest.mark.skipif(not HAVE_EXOJAX, reason="exojax not installed (light CI)")
 def test_interp_logk_matches_exojax_interpolate_log_k_2d():
-    """Independent implementation of the same algorithm. exojax's
-    ``interpolate_log_k_2d`` (opacity/ckd/core.py) is bilinear in (T, log P)
-    on log k with jnp.interp clamping, on the same (nT, nP, ng, nband)
-    layout, but interpolates over T per P-column and then over log P, where
-    ours forms fractional indices and blends four corners. Agreement is
-    float64 rounding (measured 2.8e-14; the 1e-12 bar is 35x that)."""
+    """Independent implementation of the same algorithm.
+
+    exojax's ``interpolate_log_k_2d`` (opacity/ckd/core.py) is bilinear in (T, log P) on log k with jnp.interp clamping,
+    on the same (nT, nP, ng, nband) layout, but interpolates over T per P-column and then over log P, where ours forms
+    fractional indices and blends four corners. Agreement is float64 rounding (measured 2.8e-14; the 1e-12 bar is 35x
+    that).
+    """
     from exojax.opacity.ckd.core import interpolate_log_k_2d
 
     rng = np.random.default_rng(0)
@@ -214,7 +210,6 @@ def test_interp_logk_matches_exojax_interpolate_log_k_2d():
     T = jnp.asarray([100.0, 350.0, 1234.5, 2999.0, 3000.0, 5000.0])
     P = jnp.asarray([1e-9, 1e-5, 3.3e-3, 0.7, 99.9, 1e3])
     ours = np.asarray(ckd._interp_logk(logk, t, p, T, P))
-    ref = np.stack([np.asarray(interpolate_log_k_2d(logk, t, p, T[i], P[i]))
-                    for i in range(6)])
+    ref = np.stack([np.asarray(interpolate_log_k_2d(logk, t, p, T[i], P[i])) for i in range(6)])
     assert ours.dtype == np.float64
     assert np.allclose(ours, ref, rtol=0.0, atol=ROUND_TOL)

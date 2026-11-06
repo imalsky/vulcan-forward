@@ -9,6 +9,7 @@ Dependency-light -- no jax, no exojax, no vulcan3 -- so this
 file runs anywhere. The physics itself is validated by the consumers' suites
 against real spectra.
 """
+
 from __future__ import annotations
 
 import importlib.util
@@ -19,9 +20,10 @@ import pytest
 
 
 def test_every_molmass_matches_its_own_formula():
-    """molmass is the only mass the engine uses; it must equal the formula
-    mass. It cancels out of the optical depth, so no other test would catch a
-    wrong one."""
+    """Molmass is the only mass the engine uses; it must equal the formula mass.
+
+    It cancels out of the optical depth, so no other test would catch a wrong one.
+    """
     import re
 
     from vulcan_forward import constants
@@ -31,18 +33,15 @@ def test_every_molmass_matches_its_own_formula():
         # the two fields the correlated-k path reads; what each table is lives
         # in the k-table tree's provenance.json
         assert set(entry) == {"vulcan", "molmass"}, name
-        want = sum(
-            weights[el] * (int(n) if n else 1)
-            for el, n in re.findall(r"([A-Z][a-z]?)(\d*)", name)
-            if el
-        )
+        want = sum(weights[el] * (int(n) if n else 1) for el, n in re.findall(r"([A-Z][a-z]?)(\d*)", name) if el)
         assert entry["molmass"] == pytest.approx(want, abs=5e-4), name
 
 
-@pytest.fixture()
+@pytest.fixture
 def paths(monkeypatch):
     """vulcan_forward.paths with no data root, cache override or
-    set_data_root in effect; monkeypatch restores all three afterwards."""
+    set_data_root in effect; monkeypatch restores all three afterwards.
+    """
     from vulcan_forward import paths
 
     monkeypatch.delenv(paths.ENV_ROOT, raising=False)
@@ -52,7 +51,7 @@ def paths(monkeypatch):
 
 
 def test_paths_module_imports_clean_and_fails_loudly(paths, monkeypatch):
-    """paths must import with nothing configured, then raise with a remedy."""
+    """Paths must import with nothing configured, then raise with a remedy."""
     with pytest.raises(RuntimeError, match=paths.ENV_ROOT):
         paths.data_root()
 
@@ -98,12 +97,9 @@ def test_geometry_is_required_not_wasp39b():
     from vulcan_forward import exojax_rt
 
     with pytest.raises(ValueError, match="required planet geometry"):
-        exojax_rt._require_geometry({"gs_cgs": 422.0}, "rp_cm", "gs_cgs",
-                                    "rstar_cm")
+        exojax_rt._require_geometry({"gs_cgs": 422.0}, "rp_cm", "gs_cgs", "rstar_cm")
     # a complete profile passes
-    exojax_rt._require_geometry(
-        {"rp_cm": 9.1e9, "gs_cgs": 422.0, "rstar_cm": 6.5e10},
-        "rp_cm", "gs_cgs", "rstar_cm")
+    exojax_rt._require_geometry({"rp_cm": 9.1e9, "gs_cgs": 422.0, "rstar_cm": 6.5e10}, "rp_cm", "gs_cgs", "rstar_cm")
 
 
 def test_import_order_guard_is_documented_and_live():
@@ -116,10 +112,8 @@ def test_import_order_guard_is_documented_and_live():
         pytest.skip("exojax not installed (light-CI environment)")
     import subprocess
 
-    code = ("import exojax\n"
-            "import vulcan_forward.vulcan_chem\n")
-    proc = subprocess.run([sys.executable, "-c", code], capture_output=True,
-                          text=True, timeout=600)
+    code = "import exojax\nimport vulcan_forward.vulcan_chem\n"
+    proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=600, check=False)
     assert proc.returncode != 0, "importing after exojax must fail"
     assert "must be imported BEFORE exojax" in proc.stderr, proc.stderr
 
@@ -155,14 +149,16 @@ def _import_in_clean_cwd(modules, tmp_path):
     this pytest session would appear clean no matter what it does.
     """
     import subprocess
+
     work = tmp_path / "cleanroom"
     work.mkdir()
     env = dict(os.environ)
     env.pop("VULCAN_FORWARD_DATA", None)
     env.pop("VULCAN_FORWARD_OPACITY_CACHE", None)
     code = "import " + ", ".join(modules)
-    r = subprocess.run([sys.executable, "-c", code], cwd=str(work),
-                       capture_output=True, text=True, env=env, timeout=600)
+    r = subprocess.run(
+        [sys.executable, "-c", code], cwd=str(work), capture_output=True, text=True, env=env, timeout=600, check=False
+    )
     return work, r
 
 
@@ -173,39 +169,52 @@ def test_importing_the_engine_writes_nothing_to_the_callers_cwd(tmp_path):
     imports merely to read a constant or resolve a path.
     """
     work, r = _import_in_clean_cwd(
-        ["vulcan_forward.constants", "vulcan_forward.paths",
-         "vulcan_forward.interp_map"], tmp_path)
-    assert r.returncode == 0, (
-        f"importing the light engine modules failed:\n{r.stderr}")
+        ["vulcan_forward.constants", "vulcan_forward.paths", "vulcan_forward.interp_map"], tmp_path
+    )
+    assert r.returncode == 0, f"importing the light engine modules failed:\n{r.stderr}"
     leftovers = sorted(p.name for p in work.iterdir())
     assert leftovers == [], (
         f"importing vulcan_forward wrote {leftovers} into the caller's "
         f"working directory. The engine is a library: it must write only "
-        f"where the caller points it.")
+        f"where the caller points it."
+    )
 
 
 def test_exomolop_helpers_and_provenance_import_without_jax_or_h5py(tmp_path):
     """jwst_tool.datacheck reads the table paths and the provenance record
     stdlib-side, so neither jax nor h5py may be needed to reach them. Run
-    out-of-process with both blocked: this session has already imported jax."""
+    out-of-process with both blocked: this session has already imported jax.
+    """
     import json
     import subprocess
+
     root = tmp_path / "data"
     (root / "exomolop").mkdir(parents=True)
-    (root / "exomolop" / "provenance.json").write_text(json.dumps(
-        {"H2O": {"dataset": "POKAZATEL", "iso": "1H2-16O", "file": "f.h5",
-                 "natural_abundance": False, "url": "https://example"}}))
+    (root / "exomolop" / "provenance.json").write_text(
+        json.dumps(
+            {
+                "H2O": {
+                    "dataset": "POKAZATEL",
+                    "iso": "1H2-16O",
+                    "file": "f.h5",
+                    "natural_abundance": False,
+                    "url": "https://example",
+                }
+            }
+        )
+    )
     code = (
         "import sys; sys.modules['jax'] = None; sys.modules['h5py'] = None\n"
         "from vulcan_forward import exomolop\n"
         "assert exomolop.table_path('H2O').name == 'H2O.ktable.h5'\n"
         "assert exomolop.available() == []\n"
         "assert exomolop.provenance()['H2O']['dataset'] == 'POKAZATEL'\n"
-        "print('ok')")
+        "print('ok')"
+    )
     env = dict(os.environ, VULCAN_FORWARD_DATA=str(root))
-    r = subprocess.run([sys.executable, "-c", code], capture_output=True,
-                       text=True, env=env, timeout=600)
-    assert r.returncode == 0 and r.stdout.strip() == "ok", r.stderr
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env, timeout=600, check=False)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == "ok"
 
 
 def test_the_engine_never_resolves_its_data_root_from___file__():
@@ -217,9 +226,10 @@ def test_the_engine_never_resolves_its_data_root_from___file__():
     thermo data, which is a different thing and is allowed.
     """
     import ast
-    from pathlib import Path as _P
+    from pathlib import Path
     import vulcan_forward
-    pkg = _P(vulcan_forward.__file__).parent
+
+    pkg = Path(vulcan_forward.__file__).parent
     offenders = []
     for src in sorted(pkg.glob("*.py")):
         tree = ast.parse(src.read_text(), str(src))
@@ -231,4 +241,5 @@ def test_the_engine_never_resolves_its_data_root_from___file__():
     # so it does not appear above; a bare __file__ would.
     assert offenders == [], (
         f"bare __file__ used in {offenders}: the engine must not resolve its "
-        f"own location. Use $VULCAN_FORWARD_DATA or paths.set_data_root.")
+        f"own location. Use $VULCAN_FORWARD_DATA or paths.set_data_root."
+    )

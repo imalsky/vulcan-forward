@@ -16,21 +16,22 @@ jnp = pytest.importorskip("jax.numpy", reason="make_to_art returns a jnp interpo
 
 # x64 on before the first jnp array, as vulcan_chem does in production;
 # make_to_art inherits the process precision (float32 agrees only to ~1e-7).
-import jax  # noqa: E402
+import jax
 
 jax.config.update("jax_enable_x64", True)
 
-ROUND_TOL = 1e-12   # float64 rounding bar
+ROUND_TOL = 1e-12  # float64 rounding bar
 
 
 def _to_art(p_vulcan, p_art):
     from vulcan_forward.interp_map import make_to_art
+
     return make_to_art(np.asarray(p_vulcan, float), np.asarray(p_art, float))
 
 
 def test_to_art_is_exact_on_the_source_grid():
     """Interpolating a profile onto its OWN pressures must return it."""
-    p = np.logspace(-6, 1, 40)               # bar, ascending
+    p = np.logspace(-6, 1, 40)  # bar, ascending
     prof = jnp.asarray(np.linspace(-3.0, -8.0, 40))
     out = np.asarray(_to_art(p, p)(prof))
     assert np.allclose(out, np.asarray(prof), rtol=0, atol=ROUND_TOL)
@@ -62,18 +63,19 @@ def test_to_art_accepts_a_descending_source_grid():
     p_art = np.logspace(-5.0, 0.0, 11)
     out_up = np.asarray(_to_art(p_up, p_art)(jnp.asarray(prof_up)))
     # same physical profile, handed over in the opposite order
-    out_down = np.asarray(
-        _to_art(p_up[::-1], p_art)(jnp.asarray(prof_up[::-1])))
+    out_down = np.asarray(_to_art(p_up[::-1], p_art)(jnp.asarray(prof_up[::-1])))
     assert np.allclose(out_up, out_down, rtol=0, atol=ROUND_TOL)
 
 
-@pytest.mark.parametrize("p_v,p_art", [
-    # clamping fabricates chemistry the grid never solved, at either end
-    (np.logspace(-6, 0, 20), np.logspace(-5, 1, 15)),     # ART bottom too deep
-    (np.logspace(-4, 0, 20), np.logspace(-6, -0.5, 15)),  # ART top too high
-])
+@pytest.mark.parametrize(
+    ("p_v", "p_art"),
+    [
+        # clamping fabricates chemistry the grid never solved, at either end
+        (np.logspace(-6, 0, 20), np.logspace(-5, 1, 15)),  # ART bottom too deep
+        (np.logspace(-4, 0, 20), np.logspace(-6, -0.5, 15)),  # ART top too high
+    ],
+)
 def test_to_art_refuses_clamped_grids(p_v, p_art):
-    """A coincident top or bottom is allowed: the identity test above maps a
-    grid onto itself."""
+    """A coincident top or bottom is allowed: the identity test above maps a grid onto itself."""
     with pytest.raises(ValueError):
         _to_art(p_v, p_art)

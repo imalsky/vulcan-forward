@@ -1,61 +1,55 @@
-"""Differentiable bridge: VULCAN-JAX (nz) pressure grid -> ExoJax ART (nlayer) grid.
+"""Differentiable map from the VULCAN pressure grid to the ExoJAX ART grid, linear in log pressure.
 
-The chemistry runs on VULCAN's vertical grid; ExoJax's ``ArtTransPure`` has its own
-log-spaced pressure grid. We map per-layer profiles (T, VMR, mean molecular weight)
-between them with a log-pressure linear interpolation that is pure JAX (``jnp.interp``)
-and therefore differentiable -- so forward-mode tangents pass cleanly across the bridge.
-
-``jnp.interp`` requires ascending sample points, so we sort the VULCAN grid by log10(P)
-once (static index array). ``jnp.interp`` CLAMPS outside the sample range, so the ART
-grid must lie INSIDE the chemistry grid: both edges are refused at build time
-(vulcan_chem sets the chemistry P_t from the profile's art_ptop_bar).
-
-Interpolation caveats: linear-in-log-P is not column- or
-mass-conservative and can smear photochemical transitions sharper than the ART layer
-spacing; the consumers' vertical-grid ladders (vulcan-retrieval
-validation/resolution_ladder.py) check that neither matters at the quoted precision.
+``jnp.interp`` clamps outside its samples, so the ART grid must lie inside the chemistry grid; both edges are refused at
+build. docs/method.md states the limits of this interpolation.
 """
+
 from __future__ import annotations
 
-import numpy as np
-import jax.numpy as jnp
+from typing import TYPE_CHECKING
 
-# Relative slack on the chemistry top: an ART top that equals it up to
-# rounding is not a clamp.
+import jax.numpy as jnp
+import numpy as np
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from jax import Array
+
+__all__ = ["make_to_art"]
+
+# Relative slack on the chemistry top: an ART top that equals it up to rounding is not a clamp.
 _TOP_MATCH_RTOL = 1.0e-9
 
 
-def make_to_art(p_bar_vulcan: np.ndarray, p_bar_art: np.ndarray):
-    """Build a differentiable ``to_art(profile_nz) -> profile_nlayer`` interpolator.
+def make_to_art(p_bar_vulcan: np.ndarray, p_bar_art: np.ndarray) -> Callable[[Array], Array]:
+    """Build the interpolator from the chemistry grid to the ART grid.
 
     Parameters
     ----------
-    p_bar_vulcan : (nz,) np.ndarray
-        VULCAN cell-center pressures in bar (any monotonic order).
-    p_bar_art : (nlayer,) np.ndarray
-        ExoJax ART layer pressures in bar (top-to-bottom).
+    p_bar_vulcan : numpy.ndarray [nz]
+        VULCAN cell-centre pressures, bar, in either monotonic order.
+    p_bar_art : numpy.ndarray [nlayer]
+        ART layer pressures, bar.
 
     Returns
     -------
     callable
-        ``to_art(profile)`` where ``profile`` is a JAX array of shape (nz,);
-        returns a JAX array of shape (nlayer,) interpolated in log-pressure.
+        ``to_art(profile)``, from an array of shape [nz] to an array of shape [nlayer].
 
     Raises
     ------
     ValueError
-        If the ART grid extends outside the VULCAN grid at either end (clamping
-        would silently fabricate chemistry there; fix the grids instead).
+        If the ART grid reaches outside the VULCAN grid at either end.
     """
     p_bar_vulcan = np.asarray(p_bar_vulcan, dtype=np.float64)
     p_bar_art = np.asarray(p_bar_art, dtype=np.float64)
 
-    order = np.argsort(p_bar_vulcan)                       # static
+    order = np.argsort(p_bar_vulcan)
     logP_v_sorted = jnp.asarray(np.log10(p_bar_vulcan[order]))
     logP_art = jnp.asarray(np.log10(p_bar_art))
     order_j = jnp.asarray(order)
 
-    # Loud, host-side accounting of the clamped span (runs once at build).
     p_top_v, p_btm_v = float(np.min(p_bar_vulcan)), float(np.max(p_bar_vulcan))
     n_top_clamp = int(np.sum(np.asarray(p_bar_art) < p_top_v * (1.0 - _TOP_MATCH_RTOL)))
     n_btm_clamp = int(np.sum(np.asarray(p_bar_art) > p_btm_v))
@@ -64,18 +58,22 @@ def make_to_art(p_bar_vulcan: np.ndarray, p_bar_art: np.ndarray):
             f"ART grid bottom ({np.max(p_bar_art):.3e} bar) lies below the VULCAN "
             f"chemistry bottom ({p_btm_v:.3e} bar): {n_btm_clamp} layers would clamp "
             "to the deepest chemistry value. Shrink ART_PBTM_BAR or extend the "
-            "chemistry grid.")
+            "chemistry grid."
+        )
     if n_top_clamp:
         raise ValueError(
             f"ART grid top ({np.min(p_bar_art):.3e} bar) lies above the VULCAN chemistry "
             f"top ({p_top_v:.3e} bar): {n_top_clamp} layers would clamp to the topmost "
-            "chemistry value. Extend the chemistry grid (cfg P_t) to the ART top.")
+            "chemistry value. Extend the chemistry grid (cfg P_t) to the ART top."
+        )
 
-    def to_art(profile_nz):
+    def to_art(profile_nz: Array) -> Array:
+        """Interpolate one profile of shape [nz] onto the ART grid."""
         if getattr(profile_nz, "ndim", None) != 1 or profile_nz.shape[0] != order.size:
             raise ValueError(
                 f"profile must be 1-D with {order.size} values on the VULCAN "
-                f"chemistry grid; got shape {getattr(profile_nz, 'shape', None)}")
+                f"chemistry grid; got shape {getattr(profile_nz, 'shape', None)}"
+            )
         fp = profile_nz[order_j]
         return jnp.interp(logP_art, logP_v_sorted, fp)
 

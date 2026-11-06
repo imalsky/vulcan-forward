@@ -1,34 +1,17 @@
-"""``converged_y_queue``: the batched cold solve on a fixed number of lanes fed
-from a queue of thetas (vulcan3 ``OuterLoop.run_queue``).
+"""``converged_y_queue``: the batched cold solve on a fixed number of lanes fed from a queue of thetas.
 
-Three properties:
+With at least as many lanes as thetas nothing is refilled, so every lane runs the plain batch's ticks: from one starting
+column, the same accept_count and certificate. Cold, the y's agree at the convergence scale only: the seed is built
+inside the loop here and outside it in ``converged_y_batch``, and the two compilations of ``_prep`` can differ by a ulp.
+With fewer lanes a theta enters at the tick its lane was freed at, so agreement is again at the convergence scale, and
+the certificate must match theta for theta. The warm stage 2 of a two-stage cold solve keeps every theta certified. The
+acceptance tests at the bottom pin a consumer's batched gradient against the per-theta solve.
 
-* with at least as many lanes as thetas nothing is ever refilled, so every lane
-  runs the ticks the plain batch gives it: from one identical starting column,
-  the same accept_count and certificate. Cold, the y's agree at the
-  convergence scale only -- ``run_queue`` builds the seed inside its jitted
-  loop while ``converged_y_batch`` builds it outside, and the two compilations
-  of ``_prep`` can differ by a ulp in y_ini, which the trajectory amplifies;
-* with fewer lanes a theta enters the loop at the tick its lane was freed at,
-  which moves the photolysis / geometry cadence exactly as the batch already
-  moves it against the solo solve: agreement is again at the CONVERGENCE
-  scale, and the certificate must still match theta for theta;
-* the warm-started stage 2 of a two-stage cold solve -- the shape
-  vulcan-retrieval's cold path runs -- keeps every theta certified and leaves
-  the species the spectrum reads alone.
-
-The acceptance tests at the bottom pin a consumer's batched GRADIENT against
-the per-theta solve: the cold two-stage map (batch and queue, one test each),
-and the WARM continuation map with a per-lane reference composition.
-
-The measured differences are printed (``pytest -s``).
-
-Cheap profile: nz=20, photochemistry off.
-
-Full tier (``VULCAN_FORWARD_RUN_FULL=1``): the gradient tests (minutes of
-compile and ~16 GB per route) and the two convergence-scale comparisons
-calibrated on daw that failed on the GitHub runner's CPU.
+The measured differences are printed (``pytest -s``). Cheap profile: nz=20, photochemistry off. Full tier
+(``VULCAN_FORWARD_RUN_FULL=1``): the gradient tests (minutes of compile and 16 GB per route) and the two
+convergence-scale comparisons calibrated on daw that failed on the GitHub runner's CPU.
 """
+
 from __future__ import annotations
 
 import importlib.util
@@ -38,28 +21,26 @@ import numpy as np
 import pytest
 
 # Import order: skip via find_spec, never importorskip("exojax"); vulcan_chem before jax.
-if importlib.util.find_spec("vulcan3") is None:           # pragma: no cover
-    pytest.skip("vulcan3 not installed (light-CI environment)",
-                allow_module_level=True)
+if importlib.util.find_spec("vulcan3") is None:
+    pytest.skip("vulcan3 not installed (light-CI environment)", allow_module_level=True)
 
-from vulcan_forward import vulcan_chem                       # noqa: E402
+from vulcan_forward import vulcan_chem
 
-import jax                                                   # noqa: E402
-import jax.numpy as jnp                                      # noqa: E402
+import jax
+import jax.numpy as jnp
 
-FULL = pytest.mark.skipif(os.environ.get("VULCAN_FORWARD_RUN_FULL") != "1",
-                          reason="full tier: set VULCAN_FORWARD_RUN_FULL=1")
+FULL = pytest.mark.skipif(
+    os.environ.get("VULCAN_FORWARD_RUN_FULL") != "1", reason="full tier: set VULCAN_FORWARD_RUN_FULL=1"
+)
 
 # dt_max: the production step cap (vulcan-retrieval's case sets 1e11 s).
-PROFILE = {"use_photo": False, "yconv_cri": 1.0e-2, "nz": 20,
-           "dt_max": 1.0e11}
+PROFILE = {"use_photo": False, "yconv_cri": 1.0e-2, "nz": 20, "dt_max": 1.0e11}
 # [lnZ, c_o, lnKzz, T-offset]: the baseline column and three perturbed ones,
 # heterogeneous enough that they do not all converge at the same tick.
-THETAS = np.array([[0.0, 0.0, 0.0, 0.0],
-                   [0.3, 0.1, 0.5, 40.0],
-                   [-0.3, -0.1, 0.0, -40.0],
-                   [0.1, 0.0, 0.2, 80.0]], dtype=np.float64)
-MIX_FLOOR = 1.0e-10   # cells below this carry no observable and no certificate
+THETAS = np.array(
+    [[0.0, 0.0, 0.0, 0.0], [0.3, 0.1, 0.5, 40.0], [-0.3, -0.1, 0.0, -40.0], [0.1, 0.0, 0.2, 80.0]], dtype=np.float64
+)
+MIX_FLOOR = 1.0e-10  # cells below this carry no observable and no certificate
 # Queue against batch: two certified solves agree at the convergence scale
 # (yconv_min 0.1), as in test_converged_y_batch. The difference moves with
 # bit-level input changes on every job (a 1e-12 lnZ nudge spans 0.4e-2 to
@@ -77,7 +58,7 @@ TANGENT_DT_MAX = 1.0e7
 # arms disagree on.
 PINNED_SPECIES = ("H2O", "CO", "H2", "He")
 PRINTED_SPECIES = ("CO2", "CH4", "SO2")
-SPECIES_FLOOR = 1.0e-6   # layers below this carry no opacity
+SPECIES_FLOOR = 1.0e-6  # layers below this carry no opacity
 SPECIES_MAX = 1.0e-3
 
 
@@ -100,32 +81,33 @@ def _report(tag, y_q, cd_q, y_b, cd_b):
     # arms uncertified.
     assert bool(np.all(np.asarray(cd_q.conv_normal)))
     assert bool(np.all(np.asarray(cd_b.conv_normal)))
-    assert np.array_equal(np.asarray(cd_q.conv_normal),
-                          np.asarray(cd_b.conv_normal))
+    assert np.array_equal(np.asarray(cd_q.conv_normal), np.asarray(cd_b.conv_normal))
     # conv_branch is not compared: with an ultratrace controlling cell the same
     # accept count can certify tight in one compilation and loose in another.
     for k in range(THETAS.shape[0]):
         mix_b = y_b[k] / y_b[k].sum(axis=1, keepdims=True)
         obs = mix_b > MIX_FLOOR
         rel = np.abs(y_q[k] - y_b[k]) / np.maximum(np.abs(y_b[k]), 1e-300)
-        print(f"[{tag} job {k}] queue-vs-batch over {int(obs.sum())} cells > "
-              f"{MIX_FLOOR:g} VMR: max rel {rel[obs].max():.3e}, median "
-              f"{np.median(rel[obs]):.3e}; accept_count queue="
-              f"{int(np.asarray(cd_q.accept_count)[k])} batch="
-              f"{int(np.asarray(cd_b.accept_count)[k])}", flush=True)
+        print(
+            f"[{tag} job {k}] queue-vs-batch over {int(obs.sum())} cells > "
+            f"{MIX_FLOOR:g} VMR: max rel {rel[obs].max():.3e}, median "
+            f"{np.median(rel[obs]):.3e}; accept_count queue="
+            f"{int(np.asarray(cd_q.accept_count)[k])} batch="
+            f"{int(np.asarray(cd_b.accept_count)[k])}",
+            flush=True,
+        )
         assert rel[obs].max() < REL_MAX
 
 
 @FULL
 def test_queue_agrees_with_the_batch_with_and_without_refill(chem, ref):
-    """Four lanes for four thetas: nothing refills, so every job runs the
-    plain batch's ticks. The queue and the batch are separate compiled
-    programs that round in the last bit differently, which can move an accept
-    count by a step or two even from one identical column (the model's y0, as
-    a continuation). So every arm (from y0; cold, each route building its own
-    seed; refilled on two lanes, a theta entering at the tick its lane was
-    freed at) is held to the same certificate theta for theta and to the
-    convergence scale, never to bytes or accept counts."""
+    """Four lanes for four thetas: nothing refills, so every job runs the plain batch's ticks.
+
+    The queue and the batch are separate compiled programs that round in the last bit differently, which can move an
+    accept count by a step or two even from one identical column (the model's y0, as a continuation). So every arm (from
+    y0; cold, each route building its own seed; refilled on two lanes, a theta entering at the tick its lane was freed
+    at) is held to the same certificate theta for theta and to the convergence scale, never to bytes or accept counts.
+    """
     y_b, cd_b = ref
     th = jnp.asarray(THETAS)
     y_q, cd_q = chem.converged_y_queue(th, n_lanes=THETAS.shape[0])
@@ -138,19 +120,20 @@ def test_queue_agrees_with_the_batch_with_and_without_refill(chem, ref):
     n_programs = len(chem._integ._vrunner_queue)
     y_q2, cd_q2 = chem.converged_y_queue(th[::-1], n_lanes=THETAS.shape[0])
     y_q2, y_q = np.asarray(y_q2), np.asarray(y_q)
-    print(f"[lanes=4 reversed] accept_count {np.asarray(cd_q2.accept_count).tolist()}"
-          f" vs first call reversed {np.asarray(cd_q.accept_count)[::-1].tolist()};"
-          f" max|y2 - y1[::-1]| {np.abs(y_q2 - y_q[::-1]).max():.3e}", flush=True)
+    print(
+        f"[lanes=4 reversed] accept_count {np.asarray(cd_q2.accept_count).tolist()}"
+        f" vs first call reversed {np.asarray(cd_q.accept_count)[::-1].tolist()};"
+        f" max|y2 - y1[::-1]| {np.abs(y_q2 - y_q[::-1]).max():.3e}",
+        flush=True,
+    )
     assert len(chem._integ._vrunner_queue) == n_programs
     assert np.array_equal(y_q2, y_q[::-1])
-    assert np.array_equal(np.asarray(cd_q2.accept_count),
-                          np.asarray(cd_q.accept_count)[::-1])
-    assert np.array_equal(np.asarray(cd_q2.conv_normal),
-                          np.asarray(cd_q.conv_normal)[::-1])
+    assert np.array_equal(np.asarray(cd_q2.accept_count), np.asarray(cd_q.accept_count)[::-1])
+    assert np.array_equal(np.asarray(cd_q2.conv_normal), np.asarray(cd_q.conv_normal)[::-1])
     _report("lanes=4", y_q, cd_q, y_b, cd_b)
 
     # Both routes from one column, so only the queue's tick scheduling differs.
-    y0 = jnp.broadcast_to(jnp.asarray(chem.y0), (THETAS.shape[0],) + chem.y0.shape)
+    y0 = jnp.broadcast_to(jnp.asarray(chem.y0), (THETAS.shape[0], *chem.y0.shape))
     same = {"warm_y": y0, "lnZ_ref": 0.0, "c_o_ref": 0.0}
     y_qs, cd_qs = chem.converged_y_queue(th, n_lanes=THETAS.shape[0], **same)
     y_bs, cd_bs = chem.converged_y_batch(th, return_conv_diag=True, **same)
@@ -169,39 +152,40 @@ def test_two_stage_warm_queue_keeps_the_observed_species(chem):
     the loose branch can fire early, so the arms certify at different depths;
     CO2/CH4/SO2 and slow sulfur differ at the percent level and are printed
     only. The production gate for cold_lanes is the GPU bench's per-draw
-    log-likelihood comparison."""
+    log-likelihood comparison.
+    """
     th = jnp.asarray(THETAS)
     y1 = chem.converged_y_batch(th.at[:, 0].set(0.0).at[:, 1].set(0.0))
-    y_b, cd_b = chem.converged_y_batch(th, warm_y=y1, lnZ_ref=0.0, c_o_ref=0.0,
-                                       return_conv_diag=True)
-    y_q, cd_q = chem.converged_y_queue(th, n_lanes=2, chunk=1, warm_y=y1,
-                                       lnZ_ref=0.0, c_o_ref=0.0)
+    y_b, cd_b = chem.converged_y_batch(th, warm_y=y1, lnZ_ref=0.0, c_o_ref=0.0, return_conv_diag=True)
+    y_q, cd_q = chem.converged_y_queue(th, n_lanes=2, chunk=1, warm_y=y1, lnZ_ref=0.0, c_o_ref=0.0)
     y_b, y_q = np.asarray(y_b), np.asarray(y_q)
-    print(f"[two-stage lanes=2 chunk=1] accept_count batch "
-          f"{np.asarray(cd_b.accept_count).tolist()} queue "
-          f"{np.asarray(cd_q.accept_count).tolist()}", flush=True)
+    print(
+        f"[two-stage lanes=2 chunk=1] accept_count batch "
+        f"{np.asarray(cd_b.accept_count).tolist()} queue "
+        f"{np.asarray(cd_q.accept_count).tolist()}",
+        flush=True,
+    )
     assert bool(np.all(np.asarray(cd_b.conv_normal)))
     assert bool(np.all(np.asarray(cd_q.conv_normal)))
-    assert np.array_equal(np.asarray(cd_q.conv_normal),
-                          np.asarray(cd_b.conv_normal))
-    mix = [y_b[k] / y_b[k].sum(axis=1, keepdims=True)
-           for k in range(THETAS.shape[0])]
+    assert np.array_equal(np.asarray(cd_q.conv_normal), np.asarray(cd_b.conv_normal))
+    mix = [y_b[k] / y_b[k].sum(axis=1, keepdims=True) for k in range(THETAS.shape[0])]
     for name in PINNED_SPECIES + PRINTED_SPECIES:
         i = chem.sidx[name]
         pinned = name in PINNED_SPECIES
         worst = []
         for k in range(THETAS.shape[0]):
             obs = mix[k][:, i] > SPECIES_FLOOR
-            if not obs.any():   # this job has no opacity-carrying layer of it
+            if not obs.any():  # this job has no opacity-carrying layer of it
                 worst.append(np.nan)
                 continue
-            rel = (np.abs(y_q[k, :, i] - y_b[k, :, i])
-                   / np.maximum(np.abs(y_b[k, :, i]), 1e-300))
+            rel = np.abs(y_q[k, :, i] - y_b[k, :, i]) / np.maximum(np.abs(y_b[k, :, i]), 1e-300)
             worst.append(float(rel[obs].max()))
-        print(f"[two-stage {name:>3} {'pinned ' if pinned else 'printed'}] max rel "
-              f"over layers > {SPECIES_FLOOR:g} VMR per job: "
-              + "  ".join("    n/a" if not np.isfinite(w) else f"{w:.2e}"
-                            for w in worst), flush=True)
+        print(
+            f"[two-stage {name:>3} {'pinned ' if pinned else 'printed'}] max rel "
+            f"over layers > {SPECIES_FLOOR:g} VMR per job: "
+            + "  ".join("    n/a" if not np.isfinite(w) else f"{w:.2e}" for w in worst),
+            flush=True,
+        )
         if pinned:
             assert np.all(np.isfinite(worst)), name
             assert max(worst) < SPECIES_MAX, name
@@ -213,25 +197,27 @@ def test_masked_jobs_take_no_step(chem):
     masked SUFFIX -- how vulcan-retrieval pads a short chunk -- leaves the
     active jobs' schedule alone: their step counts and certificates are the
     unmasked queue's, and their columns agree to roundoff (on the GPU the
-    retrieval's real-mix check pins them bitwise)."""
+    retrieval's real-mix check pins them bitwise).
+    """
     th = jnp.asarray(THETAS)
-    y0 = jnp.broadcast_to(jnp.asarray(chem.y0), (THETAS.shape[0],) + chem.y0.shape)
+    y0 = jnp.broadcast_to(jnp.asarray(chem.y0), (THETAS.shape[0], *chem.y0.shape))
     warm = {"warm_y": y0, "lnZ_ref": 0.0, "c_o_ref": 0.0}
     act = np.array([True, True, False, False])
-    y_m, cd_m = chem.converged_y_queue(th, n_lanes=2, chunk=1, active=jnp.asarray(act),
-                                       **warm)
+    y_m, cd_m = chem.converged_y_queue(th, n_lanes=2, chunk=1, active=jnp.asarray(act), **warm)
     y_u, cd_u = chem.converged_y_queue(th, n_lanes=2, chunk=1, **warm)
     acc_m, acc_u = np.asarray(cd_m.accept_count), np.asarray(cd_u.accept_count)
     y_m, y_u = np.asarray(y_m), np.asarray(y_u)
-    print(f"[masked suffix] accept_count masked {acc_m.tolist()} unmasked "
-          f"{acc_u.tolist()}; active columns bitwise "
-          f"{bool(np.array_equal(y_m[act], y_u[act]))}", flush=True)
+    print(
+        f"[masked suffix] accept_count masked {acc_m.tolist()} unmasked "
+        f"{acc_u.tolist()}; active columns bitwise "
+        f"{bool(np.array_equal(y_m[act], y_u[act]))}",
+        flush=True,
+    )
     assert np.all(acc_m[~act] == 0)
     assert not np.any(np.asarray(cd_m.conv_normal)[~act])
-    assert np.all(acc_u[~act] > 0)            # unmasked, the same jobs do run
+    assert np.all(acc_u[~act] > 0)  # unmasked, the same jobs do run
     assert np.array_equal(acc_m[act], acc_u[act])
-    assert np.array_equal(np.asarray(cd_m.conv_normal)[act],
-                          np.asarray(cd_u.conv_normal)[act])
+    assert np.array_equal(np.asarray(cd_m.conv_normal)[act], np.asarray(cd_u.conv_normal)[act])
     assert bool(np.all(np.asarray(cd_m.conv_normal)[act]))
     for k in np.flatnonzero(act):
         mix = y_u[k] / y_u[k].sum(axis=1, keepdims=True)
@@ -239,8 +225,7 @@ def test_masked_jobs_take_no_step(chem):
         rel = np.abs(y_m[k] - y_u[k]) / np.maximum(np.abs(y_u[k]), 1e-300)
         assert rel[obs].max() < 1.0e-9, (k, float(rel[obs].max()))
     with pytest.raises(ValueError, match="active must have shape"):
-        chem.converged_y_queue(th, n_lanes=2, chunk=1, active=jnp.asarray(act[:3]),
-                               **warm)
+        chem.converged_y_queue(th, n_lanes=2, chunk=1, active=jnp.asarray(act[:3]), **warm)
 
 
 def _dy_rel(dy, dy_ref, mix):
@@ -283,24 +268,25 @@ def test_queue_is_differentiable(chem_tangent):
     # one direction (lnZ), the same for every theta in the stack
     v = jnp.zeros_like(th).at[:, 0].set(1.0)
 
-    (y_q, cd_q), (dy_q, _dcd) = jax.jvp(
-        lambda t: chem.converged_y_queue(t, 2, chunk=1), (th,), (v,))
-    (y_b, cd_b), (dy_b, _dcd_b) = jax.jvp(
-        lambda t: chem.converged_y_batch(t, return_conv_diag=True), (th,), (v,))
+    (y_q, cd_q), (dy_q, _dcd) = jax.jvp(lambda t: chem.converged_y_queue(t, 2, chunk=1), (th,), (v,))
+    (y_b, cd_b), (dy_b, _dcd_b) = jax.jvp(lambda t: chem.converged_y_batch(t, return_conv_diag=True), (th,), (v,))
     dy_q, dy_b, y_b = np.asarray(dy_q), np.asarray(dy_b), np.asarray(y_b)
-    assert np.all(np.isfinite(dy_q)) and np.all(np.isfinite(dy_b))
+    assert np.all(np.isfinite(dy_q))
+    assert np.all(np.isfinite(dy_b))
     # the primal of the jvp'd batch is the primal-only batch, bit for bit
     assert np.array_equal(y_b, y_b_ref)
-    assert np.array_equal(np.asarray(cd_b.conv_normal),
-                          np.asarray(cd_b_ref.conv_normal))
+    assert np.array_equal(np.asarray(cd_b.conv_normal), np.asarray(cd_b_ref.conv_normal))
     _report("jvp lanes=2 chunk=1", y_q, cd_q, y_b, cd_b)
     acc_q, acc_b = np.asarray(cd_q.accept_count), np.asarray(cd_b.accept_count)
     for k in range(THETAS.shape[0]):
         mix = y_b[k] / y_b[k].sum(axis=1, keepdims=True)
         rel = _dy_rel(dy_q[k], dy_b[k], mix)
-        print(f"[jvp lanes=2 chunk=1 job {k}] queue-vs-batch tangent "
-              f"max|ddy|/max|dy| {rel:.3e}; accept_count queue {acc_q[k]} "
-              f"batch {acc_b[k]}", flush=True)
+        print(
+            f"[jvp lanes=2 chunk=1 job {k}] queue-vs-batch tangent "
+            f"max|ddy|/max|dy| {rel:.3e}; accept_count queue {acc_q[k]} "
+            f"batch {acc_b[k]}",
+            flush=True,
+        )
         assert rel < QUEUE_DY_MAX
 
     # The contract a batched-gradient consumer relies on: one jvp through the
@@ -308,15 +294,16 @@ def test_queue_is_differentiable(chem_tangent):
     # scale and with the same certificate (a lane is its own solve, so the
     # four-lane batch's first two lanes stand for a batch of two).
     for k in range(2):
-        (y_s, cd_s), (dy_s, _ds) = jax.jvp(
-            lambda t: chem.converged_y(t, return_conv_diag=True),
-            (th[k],), (v[k],))
+        (y_s, cd_s), (dy_s, _ds) = jax.jvp(lambda t: chem.converged_y(t, return_conv_diag=True), (th[k],), (v[k],))
         y_s, dy_s = np.asarray(y_s), np.asarray(dy_s)
         mix = y_s / y_s.sum(axis=1, keepdims=True)
         rel = _dy_rel(dy_b[k], dy_s, mix)
-        print(f"[jvp batch-vs-solo job {k}] tangent max|ddy|/max|dy| {rel:.3e}; "
-              f"accept_count batch {int(np.asarray(cd_b.accept_count)[k])} "
-              f"solo {int(np.asarray(cd_s.accept_count))}", flush=True)
+        print(
+            f"[jvp batch-vs-solo job {k}] tangent max|ddy|/max|dy| {rel:.3e}; "
+            f"accept_count batch {int(np.asarray(cd_b.accept_count)[k])} "
+            f"solo {int(np.asarray(cd_s.accept_count))}",
+            flush=True,
+        )
         assert bool(np.asarray(cd_s.conv_normal))
         assert bool(np.asarray(cd_b.conv_normal)[k])
         assert rel < REL_MAX
@@ -342,65 +329,62 @@ def chem_photo():
 
 
 def _stack_thetas(outs):
-    """The per-theta solo results stacked along a leading theta axis. A Python
-    loop, not a vmap over thetas: each theta is its own solve (the vmap would
-    run them in lockstep), and one compiled program serves all four."""
+    """The per-theta solo results stacked along a leading theta axis.
+
+    A Python loop, not a vmap over thetas: each theta is its own solve (the vmap would run them in lockstep), and one
+    compiled program serves all four.
+    """
     return jax.tree_util.tree_map(lambda *xs: jnp.stack(xs), *outs)
 
 
 def _two_stage_routes(chem, th, routes):
     """The two-stage cold map on each named route ("solo", "batch", "queue",
-    "queue-rev"), each ``(y (N, nz, ni), ConvDiag over N, dy (N, D, nz, ni))``."""
+    "queue-rev"), each ``(y (N, nz, ni), ConvDiag over N, dy (N, D, nz, ni))``.
+    """
     n_dir = th.shape[1]
     eye = jnp.eye(n_dir, dtype=jnp.float64)
 
     def pad(dy1):
         # directions 0,1 (lnZ, c_o) carry no stage-1 tangent: stage 1 zeroes them
-        return jnp.zeros((n_dir,) + dy1.shape[1:], dy1.dtype).at[2:].set(dy1)
+        return jnp.zeros((n_dir, *dy1.shape[1:]), dy1.dtype).at[2:].set(dy1)
 
     def solo(TH):
         def s1(t):
             return chem.converged_y(t.at[0].set(0.0).at[1].set(0.0))
 
         def s2(t, y1):
-            return chem.converged_y(t, warm_y=y1, lnZ_ref=0.0, c_o_ref=0.0,
-                                    return_conv_diag=True)
+            return chem.converged_y(t, warm_y=y1, lnZ_ref=0.0, c_o_ref=0.0, return_conv_diag=True)
 
         def one(t):
             y1_l, dy1 = jax.vmap(lambda v: jax.jvp(s1, (t,), (v,)))(eye[2:])
-            (y_l, cd_l), (dy_l, _d) = jax.vmap(
-                lambda v, dy: jax.jvp(s2, (t, y1_l[0]), (v, dy)))(eye, pad(dy1))
+            (y_l, cd_l), (dy_l, _d) = jax.vmap(lambda v, dy: jax.jvp(s2, (t, y1_l[0]), (v, dy)))(eye, pad(dy1))
             return y_l[0], jax.tree_util.tree_map(lambda x: x[0], cd_l), dy_l
+
         return _stack_thetas([one(TH[k]) for k in range(TH.shape[0])])
 
     def stacked(solve1, solve2, TH):
-        bc = lambda v: jnp.broadcast_to(v, TH.shape)     # noqa: E731
+        bc = lambda v: jnp.broadcast_to(v, TH.shape)  # noqa: E731  # a short local name for one broadcast
         Y1_l, dY1 = jax.vmap(lambda v: jax.jvp(solve1, (TH,), (bc(v),)))(eye[2:])
-        (Y_l, CD_l), (dY_l, _d) = jax.vmap(
-            lambda v, dY: jax.jvp(solve2, (TH, Y1_l[0]), (bc(v), dY))
-        )(eye, pad(dY1))
-        return (Y_l[0], jax.tree_util.tree_map(lambda x: x[0], CD_l),
-                jnp.swapaxes(dY_l, 0, 1))
+        (Y_l, CD_l), (dY_l, _d) = jax.vmap(lambda v, dY: jax.jvp(solve2, (TH, Y1_l[0]), (bc(v), dY)))(eye, pad(dY1))
+        return (Y_l[0], jax.tree_util.tree_map(lambda x: x[0], CD_l), jnp.swapaxes(dY_l, 0, 1))
 
     def batch(TH):
         return stacked(
             lambda C: chem.converged_y_batch(C.at[:, 0].set(0.0).at[:, 1].set(0.0)),
-            lambda C, Y1: chem.converged_y_batch(C, warm_y=Y1, lnZ_ref=0.0,
-                                                 c_o_ref=0.0, return_conv_diag=True),
-            TH)
+            lambda C, Y1: chem.converged_y_batch(C, warm_y=Y1, lnZ_ref=0.0, c_o_ref=0.0, return_conv_diag=True),
+            TH,
+        )
 
     def queue(TH):
         return stacked(
-            lambda C: chem.converged_y_queue(
-                C.at[:, 0].set(0.0).at[:, 1].set(0.0), 2, chunk=1)[0],
-            lambda C, Y1: chem.converged_y_queue(C, 2, chunk=1, warm_y=Y1,
-                                                 lnZ_ref=0.0, c_o_ref=0.0),
-            TH)
+            lambda C: chem.converged_y_queue(C.at[:, 0].set(0.0).at[:, 1].set(0.0), 2, chunk=1)[0],
+            lambda C, Y1: chem.converged_y_queue(C, 2, chunk=1, warm_y=Y1, lnZ_ref=0.0, c_o_ref=0.0),
+            TH,
+        )
 
     def rev(TH):
         r = queue(TH[::-1])
-        return (r[0][::-1], jax.tree_util.tree_map(lambda x: x[::-1], r[1]),
-                r[2][::-1])
+        return (r[0][::-1], jax.tree_util.tree_map(lambda x: x[::-1], r[1]), r[2][::-1])
 
     run = {"solo": solo, "batch": batch, "queue": queue, "queue-rev": rev}
     return {name: run[name](th) for name in routes}
@@ -408,26 +392,31 @@ def _two_stage_routes(chem, th, routes):
 
 def _check_routes(prefix, out):
     """Every theta certifies on every route; its tangent is finite and nonzero.
-    Accept counts are printed only: the routes' photo / refresh cadences
-    differ, so they certify at different depths."""
+
+    Accept counts are printed only: the routes' photo / refresh cadences differ, so they certify at different depths.
+    """
     for tag, r in out.items():
         y, cd, dy = np.asarray(r[0]), r[1], np.asarray(r[2])
-        print(f"[{prefix}{tag}] conv_normal "
-              f"{np.asarray(cd.conv_normal).astype(int).tolist()} branch "
-              f"{np.asarray(cd.conv_branch).astype(int).tolist()} accept "
-              f"{np.asarray(cd.accept_count).astype(int).tolist()}", flush=True)
+        print(
+            f"[{prefix}{tag}] conv_normal "
+            f"{np.asarray(cd.conv_normal).astype(int).tolist()} branch "
+            f"{np.asarray(cd.conv_branch).astype(int).tolist()} accept "
+            f"{np.asarray(cd.accept_count).astype(int).tolist()}",
+            flush=True,
+        )
         assert bool(np.all(np.asarray(cd.conv_normal))), tag
-        assert np.all(np.isfinite(y)) and np.all(np.isfinite(dy)), tag
+        assert np.all(np.isfinite(y)), tag
+        assert np.all(np.isfinite(dy)), tag
         assert float(np.abs(dy).max()) > 0.0, tag
 
 
 def _assert_spread(solo):
     """Not vacuous: the four thetas are heterogeneous, so their columns differ
-    by far more than any route-to-route difference the tests allow."""
+    by far more than any route-to-route difference the tests allow.
+    """
     y0 = np.asarray(solo[0])
     mix = y0[0] / y0[0].sum(axis=1, keepdims=True)
-    spread = float((np.abs(y0[1] - y0[0])
-                    / np.maximum(np.abs(y0[0]), 1e-300))[mix > MIX_FLOOR].max())
+    spread = float((np.abs(y0[1] - y0[0]) / np.maximum(np.abs(y0[0]), 1e-300))[mix > MIX_FLOOR].max())
     print(f"[spread] job1-vs-job0 column max rel {spread:.2e}", flush=True)
     assert spread > COL_MAX
 
@@ -451,15 +440,18 @@ def _cmp(tag, a, b, n_dir):
         rel = np.abs(ya[k] - yb[k]) / np.maximum(np.abs(yb[k]), 1e-300)
         scale = float(np.abs(dyb[k][:, obs]).max())
         stack = float(np.abs(dya[k] - dyb[k])[:, obs].max() / scale)
-        per = [float(np.abs(dya[k, i] - dyb[k, i])[obs].max()
-                     / max(float(np.abs(dyb[k, i][obs]).max()), 1e-300))
-               for i in range(n_dir)]
+        per = [
+            float(np.abs(dya[k, i] - dyb[k, i])[obs].max() / max(float(np.abs(dyb[k, i][obs]).max()), 1e-300))
+            for i in range(n_dir)
+        ]
         frac = [float(np.abs(dyb[k, i][obs]).max() / scale) for i in range(n_dir)]
-        print(f"[{tag} job {k}] y max rel {rel[obs].max():.2e} median "
-              f"{np.median(rel[obs]):.2e} over {int(obs.sum())} cells; dy "
-              f"stack-rel {stack:.2e}; per direction "
-              + " ".join(f"{p:.2e}(scale {f:.0e})" for p, f in zip(per, frac)),
-              flush=True)
+        print(
+            f"[{tag} job {k}] y max rel {rel[obs].max():.2e} median "
+            f"{np.median(rel[obs]):.2e} over {int(obs.sum())} cells; dy "
+            f"stack-rel {stack:.2e}; per direction "
+            + " ".join(f"{p:.2e}(scale {f:.0e})" for p, f in zip(per, frac, strict=True)),
+            flush=True,
+        )
         assert rel[obs].max() < COL_MAX
         assert float(np.median(rel[obs])) < COL_MED
         assert stack < DY_STACK_MAX
@@ -480,9 +472,9 @@ def cold_solo():
 def test_two_stage_cold_gradient_batch_matches_solo(chem_photo, cold_solo):
     """The batched cold GRADIENT agrees with the per-theta one: every theta
     certified, tangents finite, columns and the direction stack at the
-    convergence scale."""
-    out = {"solo": cold_solo,
-           **_two_stage_routes(chem_photo, jnp.asarray(THETAS), ("batch",))}
+    convergence scale.
+    """
+    out = {"solo": cold_solo, **_two_stage_routes(chem_photo, jnp.asarray(THETAS), ("batch",))}
     _check_routes("", out)
     _assert_spread(cold_solo)
     _cmp("batch-vs-solo", out["batch"], cold_solo, THETAS.shape[1])
@@ -492,10 +484,9 @@ def test_two_stage_cold_gradient_batch_matches_solo(chem_photo, cold_solo):
 def test_two_stage_cold_gradient_queue_matches_solo(chem_photo, cold_solo):
     """The queued cold GRADIENT agrees with the per-theta one, and with
     itself with the thetas queued in reverse order (refilled lanes take other
-    jobs at other ticks)."""
-    out = {"solo": cold_solo,
-           **_two_stage_routes(chem_photo, jnp.asarray(THETAS),
-                               ("queue", "queue-rev"))}
+    jobs at other ticks).
+    """
+    out = {"solo": cold_solo, **_two_stage_routes(chem_photo, jnp.asarray(THETAS), ("queue", "queue-rev"))}
     _check_routes("", out)
     _assert_spread(cold_solo)
     _cmp("queue-vs-solo", out["queue"], cold_solo, THETAS.shape[1])
@@ -504,8 +495,7 @@ def test_two_stage_cold_gradient_queue_matches_solo(chem_photo, cold_solo):
 
 def _warm_routes(chem, th, yw, r0, r1):
     """(solo, batch, queue, queue-reversed) results of the WARM
-    continuation map -- each theta from its OWN carried column ``yw`` at its
-    OWN reference composition (r0, r1) -- as
+    continuation map -- each theta from its OWN carried column ``yw`` at its OWN reference composition (r0, r1) -- as
     ``(y (N, nz, ni), ConvDiag over N, dy (N, D, nz, ni))``.
 
     The carried column and the references are CONSTANTS of the map (the
@@ -518,32 +508,26 @@ def _warm_routes(chem, th, yw, r0, r1):
     def solo(TH):
         def one(t, y_w, a, b):
             def f(tt):
-                return chem.converged_y(tt, warm_y=y_w, lnZ_ref=a, c_o_ref=b,
-                                        return_conv_diag=True)
-            (y_l, cd_l), (dy_l, _d) = jax.vmap(
-                lambda v: jax.jvp(f, (t,), (v,)))(eye)
+                return chem.converged_y(tt, warm_y=y_w, lnZ_ref=a, c_o_ref=b, return_conv_diag=True)
+
+            (y_l, cd_l), (dy_l, _d) = jax.vmap(lambda v: jax.jvp(f, (t,), (v,)))(eye)
             return y_l[0], jax.tree_util.tree_map(lambda x: x[0], cd_l), dy_l
-        return _stack_thetas([one(TH[k], yw[k], r0[k], r1[k])
-                              for k in range(TH.shape[0])])
+
+        return _stack_thetas([one(TH[k], yw[k], r0[k], r1[k]) for k in range(TH.shape[0])])
 
     def stacked(solve, TH):
-        bc = lambda v: jnp.broadcast_to(v, TH.shape)     # noqa: E731
-        (Y_l, CD_l), (dY_l, _d) = jax.vmap(
-            lambda v: jax.jvp(solve, (TH,), (bc(v),)))(eye)
-        return (Y_l[0], jax.tree_util.tree_map(lambda x: x[0], CD_l),
-                jnp.swapaxes(dY_l, 0, 1))
+        bc = lambda v: jnp.broadcast_to(v, TH.shape)  # noqa: E731  # a short local name for one broadcast
+        (Y_l, CD_l), (dY_l, _d) = jax.vmap(lambda v: jax.jvp(solve, (TH,), (bc(v),)))(eye)
+        return (Y_l[0], jax.tree_util.tree_map(lambda x: x[0], CD_l), jnp.swapaxes(dY_l, 0, 1))
 
     def batch(TH, y_w=yw, a=r0, b=r1):
-        return stacked(lambda C: chem.converged_y_batch(
-            C, warm_y=y_w, lnZ_ref=a, c_o_ref=b, return_conv_diag=True), TH)
+        return stacked(lambda C: chem.converged_y_batch(C, warm_y=y_w, lnZ_ref=a, c_o_ref=b, return_conv_diag=True), TH)
 
     def queue(TH, y_w=yw, a=r0, b=r1):
-        return stacked(lambda C: chem.converged_y_queue(
-            C, 2, chunk=1, warm_y=y_w, lnZ_ref=a, c_o_ref=b), TH)
+        return stacked(lambda C: chem.converged_y_queue(C, 2, chunk=1, warm_y=y_w, lnZ_ref=a, c_o_ref=b), TH)
 
     rev = queue(TH=th[::-1], y_w=yw[::-1], a=r0[::-1], b=r1[::-1])
-    rev = (rev[0][::-1], jax.tree_util.tree_map(lambda x: x[::-1], rev[1]),
-           rev[2][::-1])
+    rev = (rev[0][::-1], jax.tree_util.tree_map(lambda x: x[::-1], rev[1]), rev[2][::-1])
     return solo(th), batch(th), queue(th), rev
 
 
@@ -563,10 +547,9 @@ def test_warm_gradient_three_routes(chem_photo):
     yw, cd0 = chem.converged_y_batch(th0, return_conv_diag=True)
     assert bool(np.all(np.asarray(cd0.conv_normal))), "carried columns not certified"
     r0, r1 = th0[:, 0], th0[:, 1]
-    assert len(set(np.asarray(THETAS)[:, 0].tolist())) > 1   # references differ
+    assert len(set(np.asarray(THETAS)[:, 0].tolist())) > 1  # references differ
     solo, batch, queue, rev = _warm_routes(chem, th1, yw, r0, r1)
-    _check_routes("warm ", {"solo": solo, "batch": batch, "queue": queue,
-                            "queue-rev": rev})
+    _check_routes("warm ", {"solo": solo, "batch": batch, "queue": queue, "queue-rev": rev})
     _cmp("warm batch-vs-solo", batch, solo, n_dir)
     _cmp("warm queue-vs-batch", queue, batch, n_dir)
     _cmp("warm queue-vs-solo", queue, solo, n_dir)

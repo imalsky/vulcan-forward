@@ -80,9 +80,7 @@ Tags: [M] measured, [E] estimated, [I] inferred.
 - `pytest.importorskip("exojax")` imports exojax ahead of `vulcan_chem` for every later
   test module, so test modules use `importlib.util.find_spec`. A `conftest.py` moved
   `vulcan_chem` ahead of the jax-free contract test, so the preamble repeats per module.
-- ruff stays on `E4`/`E7`/`E9`/`F`: ruff 0.16's defaults found 96 items, including import
-  sorting that would reorder those preambles, and dropped `E402`, which the `noqa`s rely
-  on [M].
+- Ruff's import sorting would reorder those preambles, so `tests/**` ignores `I` and `E402`.
 - `PROFILE_KEYS` is the union of the keys the three builders read (consumers pass one
   dict to all three); `check_profile_keys` refuses anything else (`affaecf`, 0.26.0).
   Before it, deleting a reader turned a set key into a silent no-op. `cfg_overrides` pass

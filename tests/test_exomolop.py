@@ -10,6 +10,7 @@ on their band grid or quadrature. ``ckd.overlap`` combines species ordinate by
 ordinate; two tables on different g-nodes would be added as though they were
 the same distribution and would return a plausible, wrong spectrum.
 """
+
 from __future__ import annotations
 
 import importlib.util
@@ -25,25 +26,36 @@ import jax
 # which is itself pinned, in test_load_refuses_without_x64.
 jax.config.update("jax_enable_x64", True)
 
-from vulcan_forward import exomolop, paths   # noqa: E402
+from vulcan_forward import exomolop, paths
 
 HAVE_H5PY = importlib.util.find_spec("h5py") is not None
 pytestmark = pytest.mark.skipif(not HAVE_H5PY, reason="h5py not installed")
 
 DATA = Path(__file__).parent / "data"
 NT, NP, NB, NG = 4, 3, 20, 8
-ROUND_TOL = 1e-12   # float64 rounding bar
-SPLIT_TOL = 1e-6    # the split quadrature's 0.9 / 0.1 weight sums
+ROUND_TOL = 1e-12  # float64 rounding bar
+SPLIT_TOL = 1e-6  # the split quadrature's 0.9 / 0.1 weight sums
 # exo_k fixture: band edges (cm^-1, absolute) and interpolated k (relative)
 EXOK_TOL = 1e-9
 
 
-def _write(path, *, nb=NB, nu0=100.0, zeros=False, g_shift=0.0,
-           kunits="cm^2/molecule", punits="bar", method="petit_samples",
-           ngauss=None):
+def _write(
+    path,
+    *,
+    nb=NB,
+    nu0=100.0,
+    zeros=False,
+    g_shift=0.0,
+    kunits="cm^2/molecule",
+    punits="bar",
+    method="petit_samples",
+    ngauss=None,
+):
     """A miniature file in ExoMolOP's petitRADTRANS layout, header included
-    (the real files carry the same unit attributes and string datasets)."""
+    (the real files carry the same unit attributes and string datasets).
+    """
     import h5py
+
     edges = nu0 * np.exp(np.arange(nb + 1) / 1000.0)
     t = np.linspace(300.0, 3000.0, NT)
     p = np.logspace(-5, 2, NP)
@@ -67,21 +79,20 @@ def _write(path, *, nb=NB, nu0=100.0, zeros=False, g_shift=0.0,
         f["mol_mass"] = np.array([18])
         f["ngauss"] = NG if ngauss is None else ngauss
         f.create_dataset("method", data=np.array([method], dtype=h5py.string_dtype()))
-        f.create_dataset("DOI", data=np.array(["x.xxxx/yyyyy"],
-                                              dtype=h5py.string_dtype()))
+        f.create_dataset("DOI", data=np.array(["x.xxxx/yyyyy"], dtype=h5py.string_dtype()))
     return k, edges, t, p, g, w
 
 
-@pytest.fixture()
+@pytest.fixture
 def data_root(tmp_path, monkeypatch):
     monkeypatch.setattr(paths, "data_root", lambda: tmp_path)
     (tmp_path / "exomolop").mkdir()
     return tmp_path
 
 
-def test_missing_table_raises_with_the_fetch_command(data_root):
-    """A missing table raises with the fetch command; nothing is downloaded
-    at run time."""
+@pytest.mark.usefixtures("data_root")
+def test_missing_table_raises_with_the_fetch_command():
+    """A missing table raises with the fetch command; nothing is downloaded at run time."""
     with pytest.raises(FileNotFoundError) as e:
         exomolop.load_tables(["H2O"], 100.0, 200.0)
     msg = str(e.value)
@@ -89,19 +100,26 @@ def test_missing_table_raises_with_the_fetch_command(data_root):
     assert "--molecules H2O" in msg
 
 
-@pytest.mark.parametrize("mols,err", [(["NOT_A_MOLECULE"], KeyError),
-                                      (["H2O", "H2O"], ValueError)])
-def test_unknown_or_repeated_molecules_raise_before_touching_the_disk(
-        data_root, mols, err):
+@pytest.mark.parametrize(("mols", "err"), [(["NOT_A_MOLECULE"], KeyError), (["H2O", "H2O"], ValueError)])
+@pytest.mark.usefixtures("data_root")
+def test_unknown_or_repeated_molecules_raise_before_touching_the_disk(mols, err):
     """A repeated name would fold its opacity in twice."""
     with pytest.raises(err):
         exomolop.load_tables(mols, 100.0, 200.0)
 
 
-def test_layout_is_transposed_to_the_engine_order(data_root):
-    """ExoMolOP stores (n_P, n_T, n_band, n_g); everything downstream indexes
-    (n_T, n_P, n_g, n_band). A wrong transpose still returns finite numbers of
-    the right total size, so it has to be pinned elementwise."""
+@pytest.mark.usefixtures("data_root")
+def test_an_empty_molecule_list_is_refused():
+    with pytest.raises(ValueError, match="at least one molecule"):
+        exomolop.load_tables([], 2000.0, 3000.0)
+
+
+@pytest.mark.usefixtures("data_root")
+def test_layout_is_transposed_to_the_engine_order():
+    """ExoMolOP stores (n_P, n_T, n_band, n_g); everything downstream indexes (n_T, n_P, n_g, n_band).
+
+    A wrong transpose still returns finite numbers of the right total size, so it has to be pinned elementwise.
+    """
     k, edges, t, p, g, w = _write(exomolop.table_path("H2O"))
     pack = exomolop.load_tables(["H2O"], edges[0], edges[-1], verbose=False)
     got = np.asarray(pack.logk["H2O"])
@@ -115,25 +133,27 @@ def test_layout_is_transposed_to_the_engine_order(data_root):
     assert pack.ng == NG
 
 
-def test_only_bands_fully_inside_the_request_are_kept(data_root):
+@pytest.mark.usefixtures("data_root")
+def test_only_bands_fully_inside_the_request_are_kept():
     _, edges, *_ = _write(exomolop.table_path("H2O"))
     lo, hi = edges[5], edges[12]
     pack = exomolop.load_tables(["H2O"], lo, hi, verbose=False)
-    assert pack.band_edges[0] >= lo and pack.band_edges[-1] <= hi
+    assert pack.band_edges[0] >= lo
+    assert pack.band_edges[-1] <= hi
     assert pack.nu_bands.size == 7
     # centres are the geometric means of the kept edges
-    assert np.allclose(pack.nu_bands,
-                       np.sqrt(pack.band_edges[:-1] * pack.band_edges[1:]))
+    assert np.allclose(pack.nu_bands, np.sqrt(pack.band_edges[:-1] * pack.band_edges[1:]))
     # a request wholly outside the table keeps nothing, and says so
     with pytest.raises(ValueError, match="no band inside"):
-        exomolop.load_tables(["H2O"], edges[-1] * 10, edges[-1] * 20,
-                             verbose=False)
+        exomolop.load_tables(["H2O"], edges[-1] * 10, edges[-1] * 20, verbose=False)
 
 
-def test_zero_cross_sections_floor_instead_of_going_to_minus_infinity(data_root):
+@pytest.mark.usefixtures("data_root")
+def test_zero_cross_sections_floor_instead_of_going_to_minus_infinity():
     """Their tables carry exact zeros where a species has no lines in a band.
-    log(0) would poison the bilinear (T, P) interpolation for every layer, not
-    just that band, so it must floor."""
+
+    log(0) would poison the bilinear (T, P) interpolation for every layer, not just that band, so it must floor.
+    """
     _, edges, *_ = _write(exomolop.table_path("H2O"), zeros=True)
     pack = exomolop.load_tables(["H2O"], edges[0], edges[-1], verbose=False)
     lk = np.asarray(pack.logk["H2O"])
@@ -141,22 +161,26 @@ def test_zero_cross_sections_floor_instead_of_going_to_minus_infinity(data_root)
     assert lk.min() == pytest.approx(np.log(exomolop.K_FLOOR))
 
 
-@pytest.mark.parametrize("kw,match", [
-    (dict(g_shift=0.01), "disagree on the g ordinates"),
-    (dict(nb=NB - 1), "disagree on the band grid"),
-    (dict(nu0=101.0), "disagree on the band grid"),
-    (dict(kunits="cm^2/g"), "kcoeff units"),
-    (dict(punits="Pa"), "p units"),
-    (dict(method="gauss_legendre"), "method"),
-    (dict(ngauss=NG + 1), "ngauss"),
-])
-def test_tables_that_disagree_or_carry_a_wrong_header_are_refused(data_root, kw,
-                                                                  match):
+@pytest.mark.parametrize(
+    ("kw", "match"),
+    [
+        ({"g_shift": 0.01}, "disagree on the g ordinates"),
+        ({"nb": NB - 1}, "disagree on the band grid"),
+        ({"nu0": 101.0}, "disagree on the band grid"),
+        ({"kunits": "cm^2/g"}, "kcoeff units"),
+        ({"punits": "Pa"}, "p units"),
+        ({"method": "gauss_legendre"}, "method"),
+        ({"ngauss": NG + 1}, "ngauss"),
+    ],
+)
+@pytest.mark.usefixtures("data_root")
+def test_tables_that_disagree_or_carry_a_wrong_header_are_refused(kw, match):
     """The mixing is ordinate by ordinate, so tables from different releases
     cannot be combined, and a mislabelled header (per-gram units, a different
     quadrature, an ngauss that does not match the samples) would change every
     cross section -- both failures would be silent, not a crash. Refuse, and
-    name the offender."""
+    name the offender.
+    """
     _write(exomolop.table_path("H2O"))
     _write(exomolop.table_path("CO2"), **kw)
     with pytest.raises(ValueError, match=match) as e:
@@ -168,8 +192,10 @@ def test_table_info_and_provenance_report_what_is_on_disk(data_root):
     """The metadata API reports the file verbatim -- placeholder DOIs
     included, absent fields as None, never substituted -- and stays
     JSON-serializable for the consumers' provenance export; both raise with
-    the fetch command when nothing is installed."""
+    the fetch command when nothing is installed.
+    """
     import json
+
     with pytest.raises(FileNotFoundError, match="fetch_exomolop"):
         exomolop.table_info("H2O")
     with pytest.raises(FileNotFoundError, match="fetch_exomolop"):
@@ -177,32 +203,47 @@ def test_table_info_and_provenance_report_what_is_on_disk(data_root):
     _, edges, t, p, _, _ = _write(exomolop.table_path("H2O"))
     info = exomolop.table_info("H2O")
     assert info["doi"] == "x.xxxx/yyyyy"
-    assert info["mol_name"] is None and info["date_id"] is None
-    assert info["method"] == "petit_samples" and info["ngauss"] == NG
+    assert info["mol_name"] is None
+    assert info["date_id"] is None
+    assert info["method"] == "petit_samples"
+    assert info["ngauss"] == NG
     assert info["kcoeff_units"] == exomolop.KCOEFF_UNITS
     assert info["p_units"] == exomolop.P_UNITS
     assert info["t_range_k"] == [t[0], t[-1]]
     assert info["p_range_bar"] == [p[0], p[-1]]
     assert info["wl_range_um"] == pytest.approx([1e4 / edges[-1], 1e4 / edges[0]])
-    assert info["n_bands"] == NB and info["file"] == "H2O.ktable.h5"
+    assert info["n_bands"] == NB
+    assert info["file"] == "H2O.ktable.h5"
     json.dumps(info)
-    rec = {"H2O": {"dataset": "POKAZATEL", "iso": "1H2-16O", "file": "x.h5",
-                   "natural_abundance": False, "url": "https://example"}}
+    rec = {
+        "H2O": {
+            "dataset": "POKAZATEL",
+            "iso": "1H2-16O",
+            "file": "x.h5",
+            "natural_abundance": False,
+            "url": "https://example",
+        }
+    }
     (data_root / "exomolop" / "provenance.json").write_text(json.dumps(rec))
     assert exomolop.provenance() == rec
 
 
-@pytest.mark.parametrize("dataset,index,value", [
-    ("p", ..., [1e-5, 1e-5, 1e2]),                                  # duplicate node
-    ("t", ..., [300.0, np.nan, 3000.0, 3400.0]),                    # non-finite
-    ("samples", ..., [0.02, 0.2, 0.4, 0.6, 0.8, 0.9, 0.95, 1.0]),  # g = 1
-    ("weights", ..., [0.2] * NG),                                   # sum != 1
-    ("kcoeff", (0, 0, 0, 0), -1.0),                                 # negative
-    ("kcoeff", (0, 0, 0, 0), np.nan),                               # non-finite
-    ("kcoeff", (0, 0, 0, 0), 1.0),    # above every later g-node (~1e-22): unsorted
-])
-def test_malformed_tables_are_refused(data_root, dataset, index, value):
+@pytest.mark.parametrize(
+    ("dataset", "index", "value"),
+    [
+        ("p", ..., [1e-5, 1e-5, 1e2]),  # duplicate node
+        ("t", ..., [300.0, np.nan, 3000.0, 3400.0]),  # non-finite
+        ("samples", ..., [0.02, 0.2, 0.4, 0.6, 0.8, 0.9, 0.95, 1.0]),  # g = 1
+        ("weights", ..., [0.2] * NG),  # sum != 1
+        ("kcoeff", (0, 0, 0, 0), -1.0),  # negative
+        ("kcoeff", (0, 0, 0, 0), np.nan),  # non-finite
+        ("kcoeff", (0, 0, 0, 0), 1.0),  # above every later g-node (~1e-22): unsorted
+    ],
+)
+@pytest.mark.usefixtures("data_root")
+def test_malformed_tables_are_refused(dataset, index, value):
     import h5py
+
     path = exomolop.table_path("H2O")
     _, edges, *_ = _write(path)
     with h5py.File(path, "r+") as f:
@@ -213,26 +254,28 @@ def test_malformed_tables_are_refused(data_root, dataset, index, value):
 
 # Against a REAL table, when one is installed.
 
+
 def _need_real(*mols):
     """Resolve at CALL time, not import time: test_contract.py
     clears the data root to prove the library imports with no data installed,
     so a module-level skipif marker would be evaluated against whichever
-    environment happened to exist when this module was collected."""
+    environment happened to exist when this module was collected.
+    """
     mols = mols or ("H2O",)
     try:
         ps = [exomolop.table_path(m) for m in mols]
-    except RuntimeError:                    # no data root configured
+    except RuntimeError:  # no data root configured
         pytest.skip("no $VULCAN_FORWARD_DATA configured")
     missing = [str(p) for p in ps if not p.exists()]
     if missing:
-        pytest.skip(f"no ExoMolOP table at {missing} "
-                    "(python -m vulcan_forward.fetch_exomolop)")
+        pytest.skip(f"no ExoMolOP table at {missing} (python -m vulcan_forward.fetch_exomolop)")
 
 
 def test_real_tables_share_one_grid_signature():
     """Every installed table must carry the same band grid and quadrature
     (load_tables refuses to mix them); the signature is what a consumer
-    keys its caches on, so it must agree across the whole set."""
+    keys its caches on, so it must agree across the whole set.
+    """
     _need_real()
     signatures = {m: exomolop.table_info(m)["grid_sha256"] for m in exomolop.available()}
     assert len(set(signatures.values())) == 1, signatures
@@ -240,7 +283,8 @@ def test_real_tables_share_one_grid_signature():
 
 def test_real_table_uses_the_petitradtrans_split_quadrature():
     """The quadrature is petitRADTRANS' split rule (8 points on [0, 0.9] + 8
-    on [0.9, 1.0]), not plain Gauss-Legendre: the weights split 0.9/0.1."""
+    on [0.9, 1.0]), not plain Gauss-Legendre: the weights split 0.9/0.1.
+    """
     _need_real()
     pack = exomolop.load_tables(["H2O"], 2000.0, 2100.0, verbose=False)
     w = np.asarray(pack.gw)
@@ -254,7 +298,7 @@ def test_real_table_uses_the_petitradtrans_split_quadrature():
 
 
 def test_real_table_is_a_cross_section_per_molecule_not_per_gram():
-    """kcoeff is cm^2 per molecule: ``opacity_profile_xs_ckd`` multiplies by mmr and divides by the molecular
+    """Kcoeff is cm^2 per molecule: ``opacity_profile_xs_ckd`` multiplies by mmr and divides by the molecular
     mass, so a cm^2/g table would come out ~3.3e22 times too large. An H2O
     band-mean cross section at 1200 K and 0.1 bar is of order 1e-23 to 1e-19
     cm^2/molecule; per gram it would be 1e-1 to 1e3.
@@ -266,7 +310,7 @@ def test_real_table_is_a_cross_section_per_molecule_not_per_gram():
     p = np.asarray(pack.p_grid)
     it = int(np.argmin(np.abs(t - 1200.0)))
     ip = int(np.argmin(np.abs(p - 0.1)))
-    kbar = np.exp(lk[it, ip]).T @ np.asarray(pack.gw)     # (nband,)
+    kbar = np.exp(lk[it, ip]).T @ np.asarray(pack.gw)  # (nband,)
     med = float(np.median(kbar))
     assert 1e-26 < med < 1e-17, med
     # the same claim from the file header, checked on every load
@@ -295,41 +339,45 @@ def test_real_tables_reproduce_the_exo_k_reference():
     edges = np.asarray(pack.band_edges)
     ib = np.searchsorted(edges, z["wn_edges_lo"])
     assert np.allclose(edges[ib], z["wn_edges_lo"], rtol=0.0, atol=EXOK_TOL)
-    for ours, theirs in ((pack.gg, z["ggrid"]), (pack.gw, z["weights"]),
-                         (pack.t_grid, z["tgrid"]), (pack.p_grid, z["pgrid"])):
+    for ours, theirs in (
+        (pack.gg, z["ggrid"]),
+        (pack.gw, z["weights"]),
+        (pack.t_grid, z["tgrid"]),
+        (pack.p_grid, z["pgrid"]),
+    ):
         assert np.allclose(np.asarray(ours), theirs, rtol=1e-15, atol=0.0)
     it, ip = z["on_it"], z["on_ip"]
     # reader: bitwise
     k_on = {}
     for j, m in enumerate(mols):
-        lk = np.asarray(pack.logk[m])[it, ip][:, :, ib]      # (node, g, band)
+        lk = np.asarray(pack.logk[m])[it, ip][:, :, ib]  # (node, g, band)
         assert np.array_equal(lk, np.log(z["k_on"][j])), m
         k_on[m] = np.exp(lk)
     # (T, P) interpolation at the off-grid nodes
     T, P = jnp.asarray(z["off_T"]), jnp.asarray(z["off_P"])
     for j, m in enumerate(mols):
-        got = np.exp(np.asarray(ckd._interp_logk(
-            pack.logk[m], pack.t_grid, pack.p_grid, T, P)))[:, :, ib]
+        got = np.exp(np.asarray(ckd._interp_logk(pack.logk[m], pack.t_grid, pack.p_grid, T, P)))[:, :, ib]
         assert np.allclose(got, z["k_off"][j], rtol=EXOK_TOL, atol=0.0), m
     # random overlap: the fixture's left fold, on the same 58 bands (band-local)
     x = meta["vmr"]
     tot = None
     for m in mols:
-        dt = jnp.asarray(k_on[m] * x[m])                    # (node as layer, g, band)
+        dt = jnp.asarray(k_on[m] * x[m])  # (node as layer, g, band)
         tot = dt if tot is None else ckd.overlap(tot, dt, pack.gg, pack.gw)
     tot = np.asarray(tot)
     rel = np.abs(tot / z["k_mix_on"] - 1.0)
     assert np.median(rel) < 5e-3, np.median(rel)
     assert np.percentile(rel, 90) < 6e-2, np.percentile(rel, 90)
     w = np.asarray(pack.gw)
-    band_rel = np.abs(np.einsum("g,lgb->lb", w, tot)
-                      / np.einsum("g,lgb->lb", w, z["k_mix_on"]) - 1.0)
+    band_rel = np.abs(np.einsum("g,lgb->lb", w, tot) / np.einsum("g,lgb->lb", w, z["k_mix_on"]) - 1.0)
     assert np.median(band_rel) < 7e-3, np.median(band_rel)
 
 
-def test_load_refuses_without_x64(data_root, monkeypatch):
+@pytest.mark.usefixtures("data_root")
+def test_load_refuses_without_x64(monkeypatch):
     """float32 k-tables are a ~1e-5 relative error on every cross section that
-    would surface as an unexplained spectrum shift, never as a crash. Refuse."""
+    would surface as an unexplained spectrum shift, never as a crash. Refuse.
+    """
     _, edges, *_ = _write(exomolop.table_path("H2O"))
 
     class _Off:

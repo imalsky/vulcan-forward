@@ -1,22 +1,13 @@
-"""Regression: the transmission opacity columns use INVERSE-SQUARE gravity.
+"""The transmission opacity columns use inverse-square gravity.
 
-`exojax_rt._gravity_profile_invsq` is the one physics choice in this package
-that a refactor can silently undo. There are two wrong neighbours it could
-collapse onto, and neither raises:
+There are two wrong neighbours a refactor could collapse onto, and neither raises: constant ``g_btm``, and a profile
+linear in 1/r, which leaves heights and opacity columns on different gravities. Against an independent chord quadrature
+the three differ by tens of ppm in transit depth (constant g -102 ppm, 1/r-linear -51 ppm, inverse-square +1.5 ppm).
 
-* constant `g_btm`, which makes the upper layers' opacity columns too light;
-* a profile LINEAR in 1/r, while ExoJAX's height integrator
-  `normalized_layer_height` is inverse-square. Using it leaves heights and
-  opacity columns on different gravities.
-
-Against an independent chord quadrature the three differ by tens of ppm in
-transit depth (constant g -102 ppm, 1/r-linear -51 ppm, inverse-square
-+1.5 ppm): a real bias, not a rounding choice.
-
-The test drives the helper with a tiny FAKE ART whose `atmosphere_height`
-returns known arrays, so it pins the algebra without building an opacity grid,
-reading a line list, or running RT.
+The test drives the helper with a fake ART whose ``atmosphere_height`` returns known arrays, so it pins the algebra with
+no opacity grid.
 """
+
 from __future__ import annotations
 
 import importlib.util
@@ -25,17 +16,16 @@ import numpy as np
 import pytest
 
 # Import order: vulcan_chem before exojax; find_spec, never importorskip("exojax").
-if importlib.util.find_spec("exojax") is None:                  # pragma: no cover
-    pytest.skip("exojax not installed (light-CI environment)",
-                allow_module_level=True)
-if importlib.util.find_spec("vulcan3") is not None:          # pragma: no cover
-    from vulcan_forward import vulcan_chem  # noqa: F401
-else:                                                            # pragma: no cover
+if importlib.util.find_spec("exojax") is None:
+    pytest.skip("exojax not installed (light-CI environment)", allow_module_level=True)
+if importlib.util.find_spec("vulcan3") is not None:
+    from vulcan_forward import vulcan_chem  # noqa: F401  # vulcan_chem first: the import order is the contract
+else:
     import jax
 
     jax.config.update("jax_enable_x64", True)
 
-from vulcan_forward.exojax_rt import _gravity_profile_invsq      # noqa: E402
+from vulcan_forward.exojax_rt import _gravity_profile_invsq
 
 
 class _FakeArt:
@@ -50,7 +40,7 @@ class _FakeArt:
         self._r = np.asarray(normalized_radius_lower, dtype=np.float64)
         self.calls = []
 
-    def atmosphere_height(self, T_art, mmw_art, radius_btm, gravity_btm):
+    def atmosphere_height(self, _T_art, _mmw_art, radius_btm, gravity_btm):
         self.calls.append((radius_btm, gravity_btm))
         return self._h, self._r
 
@@ -60,17 +50,17 @@ class _FakeArt:
 # numerically far apart.
 _HEIGHT = np.array([0.04, 0.04, 0.04, 0.04, 0.04])
 _R_LOWER = np.array([1.00, 1.04, 1.08, 1.12, 1.16])
-_G_BTM = 2140.0        # cgs, W39b-like
-_R_BTM = 6.5e9         # cm
+_G_BTM = 2140.0  # cgs, W39b-like
+_R_BTM = 6.5e9  # cm
 
 
 def test_gravity_profile_is_exactly_inverse_square():
     """g(r) == g_btm / r_mid**2 on the mid-layer normalized radius, with
     radius_btm / gravity_btm reaching `atmosphere_height` unmodified (a helper
-    that substituted a default planet would still pass the algebra)."""
+    that substituted a default planet would still pass the algebra).
+    """
     art = _FakeArt(_HEIGHT, _R_LOWER)
-    g = np.asarray(_gravity_profile_invsq(art, T_art=None, mmw_art=None,
-                                          radius_btm=_R_BTM, gravity_btm=_G_BTM))
+    g = np.asarray(_gravity_profile_invsq(art, T_art=None, mmw_art=None, radius_btm=_R_BTM, gravity_btm=_G_BTM))
     r_mid = _R_LOWER + 0.5 * _HEIGHT
     expected = (_G_BTM / r_mid**2).reshape(-1, 1)
     # Same operations in the same precision -> exact, not merely close.

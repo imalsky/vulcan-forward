@@ -12,6 +12,7 @@ the column is opaque, and that the boundary temperatures fed to it are right.
 
 Cheap by construction -- no line lists, no opacity build, no chemistry.
 """
+
 from __future__ import annotations
 
 import importlib.util
@@ -20,30 +21,30 @@ import numpy as np
 import pytest
 
 # Import order: vulcan_chem before exojax; find_spec, never importorskip("exojax").
-if importlib.util.find_spec("exojax") is None:              # pragma: no cover
-    pytest.skip("RT stack (exojax) not installed; run where exojax is present.",
-                allow_module_level=True)
-if importlib.util.find_spec("vulcan3") is not None:      # pragma: no cover
-    from vulcan_forward import vulcan_chem  # noqa: F401
-else:                                                        # pragma: no cover
+if importlib.util.find_spec("exojax") is None:
+    pytest.skip("RT stack (exojax) not installed; run where exojax is present.", allow_module_level=True)
+if importlib.util.find_spec("vulcan3") is not None:
+    from vulcan_forward import vulcan_chem  # noqa: F401  # vulcan_chem first: the import order is the contract
+else:
     import jax as _jax
 
     _jax.config.update("jax_enable_x64", True)
 
-import jax                                                  # noqa: E402
-import jax.numpy as jnp                                     # noqa: E402
-from exojax.rt import ArtEmisPure                           # noqa: E402
-from exojax.rt.planck import piBarr                         # noqa: E402
+import jax
+import jax.numpy as jnp
+from exojax.rt import ArtEmisPure
+from exojax.rt.planck import piBarr
 
-from vulcan_forward.exojax_rt import _boundary_temperature   # noqa: E402
+from vulcan_forward.exojax_rt import _boundary_temperature
 
-NU = jnp.asarray([2000.0, 5000.0])          # 5 um and 2 um
+NU = jnp.asarray([2000.0, 5000.0])  # 5 um and 2 um
 NLAYER = 30
 
 
 def _art():
-    return ArtEmisPure(nu_grid=NU, pressure_top=1e-8, pressure_btm=100.0,
-                       nlayer=NLAYER, rtsolver="ibased_linsap", nstream=8)
+    return ArtEmisPure(
+        nu_grid=NU, pressure_top=1e-8, pressure_btm=100.0, nlayer=NLAYER, rtsolver="ibased_linsap", nstream=8
+    )
 
 
 def _column(tau_total, t_lo=900.0, t_hi=2600.0):
@@ -53,9 +54,10 @@ def _column(tau_total, t_lo=900.0, t_hi=2600.0):
 
 
 def test_boundary_temperatures_are_midpoints_with_extrapolated_ends():
-    """The solver's source lives at the nlayer+1 layer boundaries; chemistry
-    hands us the nlayer centres. On a log-uniform grid a boundary is the
-    midpoint of its two neighbours, and the two ends extrapolate."""
+    """The solver's source lives at the nlayer+1 layer boundaries; chemistry hands us the nlayer centres.
+
+    On a log-uniform grid a boundary is the midpoint of its two neighbours, and the two ends extrapolate.
+    """
     T = jnp.asarray([100.0, 200.0, 400.0, 800.0])
     got = np.asarray(_boundary_temperature(T))
     assert got.shape == (5,)
@@ -71,35 +73,33 @@ def test_the_interior_source_is_present_and_fades_with_depth():
 
     Transparent: the column returns the interior blackbody (``ibased`` returns
     ~0 there, a see-through window read as an empty sky). tau_bottom = 3, the
-    band the consumer's gate admits and where the term matters: moving only the interior temperature moves the flux, with a
-    finite positive derivative (the term is in the graph). Opaque
+    band the consumer's gate admits and where the term matters: moving only the interior temperature moves the flux,
+    with a finite positive derivative (the term is in the graph). Opaque
     (tau 200): the flux forgets the interior; the deepest layer still
     radiates, so a little is allowed.
     """
     art = _art()
     T_btm = 2600.0
     T = jnp.full(NLAYER, T_btm)
-    got = np.asarray(art.run(jnp.full((NLAYER, NU.size), 1e-12),
-                             _boundary_temperature(T)))
+    got = np.asarray(art.run(jnp.full((NLAYER, NU.size), 1e-12), _boundary_temperature(T)))
     want = np.asarray(piBarr(jnp.asarray([T_btm]), NU))[0]
     assert got == pytest.approx(want, rel=1e-5)
 
     dtau, T = _column(3.0)
     base = np.asarray(art.run(dtau, _boundary_temperature(T)))
-    hotter = np.asarray(art.run(
-        dtau, _boundary_temperature(T.at[-1].set(float(T[-1]) + 1500.0))))
+    hotter = np.asarray(art.run(dtau, _boundary_temperature(T.at[-1].set(float(T[-1]) + 1500.0))))
     assert np.all((hotter - base) / base > 0.05)
 
     def f(t_int):
         return jnp.sum(art.run(dtau, _boundary_temperature(T.at[-1].set(t_int))))
 
     d = float(jax.grad(f)(float(T[-1])))
-    assert np.isfinite(d) and d > 0.0
+    assert np.isfinite(d)
+    assert d > 0.0
 
     dtau, T = _column(200.0)
     hot = np.asarray(art.run(dtau, _boundary_temperature(T)))
-    cool = np.asarray(art.run(
-        dtau, _boundary_temperature(T.at[-1].set(float(T[-1]) - 800.0))))
+    cool = np.asarray(art.run(dtau, _boundary_temperature(T.at[-1].set(float(T[-1]) - 800.0))))
     assert np.max(np.abs(hot - cool) / hot) < 0.02
 
 
@@ -113,7 +113,7 @@ def test_the_interior_source_is_present_and_fades_with_depth():
 # g-ordinates and still returns plausible numbers), and the presence of the
 # interior term.
 
-from vulcan_forward.exojax_rt import _run_emis_ckd_linsap    # noqa: E402
+from vulcan_forward.exojax_rt import _run_emis_ckd_linsap
 
 
 def _gquad(ng=16):
@@ -148,27 +148,28 @@ def test_ckd_emission_matches_line_by_line_when_every_g_is_identical():
 def test_ckd_emission_keeps_the_interior_source_upstream_run_ckd_drops():
     """ArtEmisPure.run_ckd's "ibased" solver loses the interior blackbody on a
     thin column (22-99% less flux over the band); the engine's linsap path
-    must not."""
+    must not.
+    """
     art = _art()
-    art_ibased = ArtEmisPure(nu_grid=NU, pressure_top=1e-8, pressure_btm=100.0,
-                             nlayer=NLAYER, rtsolver="ibased", nstream=8)
+    art_ibased = ArtEmisPure(
+        nu_grid=NU, pressure_top=1e-8, pressure_btm=100.0, nlayer=NLAYER, rtsolver="ibased", nstream=8
+    )
     ng = 16
     gw = _gquad(ng)
     T = jnp.asarray(np.linspace(900.0, 2600.0, NLAYER))
     thin = jnp.full((NLAYER, ng, NU.size), 1e-4 / NLAYER)
 
-    ours = np.asarray(_run_emis_ckd_linsap(art, thin, _boundary_temperature(T),
-                                           NU, gw))
+    ours = np.asarray(_run_emis_ckd_linsap(art, thin, _boundary_temperature(T), NU, gw))
     upstream = np.asarray(art_ibased.run_ckd(thin, T, gw, NU))
     assert np.all(ours > upstream)
     assert (1.0 - upstream / ours).min() > 0.05
 
 
 def test_ckd_emission_is_not_the_same_as_using_the_band_mean_opacity():
-    """Sanity that the k-distribution is doing work. A real k(g) spread at
-    FIXED band-mean optical depth must give a different flux from running that
-    mean directly -- that gap (measured 24-38% here) is the grey within-band
-    averaging error correlated-k exists to remove.
+    """Sanity that the k-distribution is doing work.
+
+    A real k(g) spread at FIXED band-mean optical depth must give a different flux from running that mean directly --
+    that gap (measured 24-38% here) is the grey within-band averaging error correlated-k exists to remove.
     """
     art = _art()
     ng = 16
@@ -187,9 +188,10 @@ def test_ckd_emission_is_not_the_same_as_using_the_band_mean_opacity():
 
 
 def test_ckd_emission_tangent_sign_follows_the_lapse_rate():
-    """Differentiability plus a physics check in one. More opacity moves the
-    photosphere UP; on a normal profile that is into cooler gas so the flux
-    dims, and on an inversion it is into hotter gas so the flux brightens.
+    """Differentiability plus a physics check in one.
+
+    More opacity moves the photosphere UP; on a normal profile that is into cooler gas so the flux dims, and on an
+    inversion it is into hotter gas so the flux brightens.
     """
     art = _art()
     ng = 8
@@ -206,5 +208,6 @@ def test_ckd_emission_tangent_sign_follows_the_lapse_rate():
             return jnp.sum(_run_emis_ckd_linsap(art, dtau_g * scale, _Tb, NU, gw))
 
         _, tan = jax.jvp(f, (1.0,), (1.0,))
-        assert np.isfinite(float(tan)) and float(tan) != 0.0
+        assert np.isfinite(float(tan))
+        assert float(tan) != 0.0
         assert (float(tan) < 0.0) == (t_top < t_btm), (t_top, t_btm, float(tan))

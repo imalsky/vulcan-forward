@@ -60,7 +60,7 @@ policy: the project-root `CLAUDE.md`.
   or its batched routes.
 - Both tiers need single-threaded XLA as above: multi-threaded Eigen breaks the bitwise lane checks. Run them on the CPU
   (`tests/conftest.py` defaults `JAX_PLATFORMS=cpu`): on a GPU in use the suite runs out of memory.
-- Lint: `uv run ruff check src tests`.
+- Lint and types: `uvx pre-commit run --all-files`; size limits: `python3 tools/check_size_limits.py`.
 - CI (`.github/workflows/tests.yml`) runs the normal tier serially, without exojax (the RT tests skip), with vulcan3
   from `imalsky/VULCAN3@main`: push VULCAN3 `main` first when a change here needs a newer vulcan3.
 - Releases: the `vulcan-release` skill; the version is in `src/vulcan_forward/_version.py`.
@@ -165,16 +165,20 @@ policy: the project-root `CLAUDE.md`.
 - A test that compiles a tangent runner or takes minutes goes in the full tier (`skipif` on `VULCAN_FORWARD_RUN_FULL`).
 - Never `pytest.importorskip("exojax")` in a test module (it breaks the import-order contract for every later module):
   use `importlib.util.find_spec` and import `vulcan_chem` first. The repeated test-module preamble is deliberate: never
-  move the `vulcan_chem` import into a conftest (it would reorder the contract test).
-- Ruff's import sorting would reorder those preambles: when this repo takes the template rule set, `tests/*` gets a
-  per-file ignore for `I`, with this reason beside it.
+  move the `vulcan_chem` import into a conftest (it would reorder the contract test). Ruff's import sorting would reorder
+  those preambles, so `tests/**` has a per-file ignore for `I`.
+- jwst-transit-authority's `tests/unit/test_engine_api_contract.py` reads `vulcan_chem.py` and `exojax_rt.py` as text for
+  the profile keys and the namespace fields: keep those in these two files.
 
 ## Where things live
 
-- `vulcan_chem.py`: `build_chem_model`, `ChemParams`, `ConvDiag`, every solve entry point.
-- `exojax_rt.py`: `build_rt_model`, `build_emis_model`, geometry anchors, emission solver.
+- `vulcan_chem.py`: `build_chem_model`, every solve entry point; `_chem_layout.py`: `ChemParams`, `ConvDiag`;
+  `_elemental.py`: the composition masks and the elemental repair.
+- `exojax_rt.py`: `build_rt_model`, `build_emis_model`, emission solver; `_rt_geometry.py`: geometry anchors;
+  `_rt_opacity.py`: the optical depth.
 - `ckd.py`: correlated-k interpolation and the overlap fold. `exomolop.py`: table loading and `provenance()`.
   `fetch_exomolop.py`: the offline fetcher.
+- `docs/method.md`: the methods, their sources and the glossary.
 - `interp_map.py`: chemistry grid to RT grid. `paths.py`: the data root. `constants.py`: `PROFILE_KEYS`, anchor and grid
   constants, `MOLECULES`.
 - `tests/test_contract.py`: the library contract. `tests/test_e2e_rt_reference.py`: the pRT gate.

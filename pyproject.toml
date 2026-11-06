@@ -42,6 +42,16 @@ Repository = "https://github.com/imalsky/vulcan-forward"
 [project.optional-dependencies]
 dev = ["pytest>=7", "ruff>=0.11", "build>=1.2", "twine>=5"]
 
+[dependency-groups]
+test = [
+    "pytest>=8",
+    "pytest-xdist>=3",
+    "pytest-cov>=5",
+]
+dev = [
+    { include-group = "test" },
+]
+
 [tool.setuptools]
 package-dir = { "" = "src" }
 include-package-data = false
@@ -52,15 +62,139 @@ where = ["src"]
 [tool.setuptools.dynamic]
 version = { attr = "vulcan_forward._version.__version__" }
 
-# Classic rule set, pinned: import sorting would reorder the import-order test
-# preambles, and E402 must stay for the noqa comments.
-[tool.ruff.lint]
-select = ["E4", "E7", "E9", "F"]
-
-# exojax_rt enables jax x64 before its exojax imports, so its module-level
-# imports follow a statement (vulcan_chem marks its two with noqa).
-[tool.ruff.lint.per-file-ignores]
-"src/vulcan_forward/exojax_rt.py" = ["E402"]
-
 [tool.ruff]
-line-length = 100
+line-length = 120
+show-fixes = true
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # pyflakes
+    "I",      # isort
+    "D",      # pydocstyle
+    "N",      # pep8-naming
+    "C90",    # mccabe complexity
+    "ARG",    # flake8-unused-arguments
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "EXE",    # flake8-executable
+    "FURB",   # refurb
+    "G",      # flake8-logging-format
+    "ICN",    # flake8-import-conventions
+    "ISC",    # flake8-implicit-str-concat
+    "LOG",    # flake8-logging
+    "NPY",    # NumPy specific rules
+    "PERF",   # perflint
+    "PGH",    # pygrep-hooks
+    "PL",     # pylint
+    "PT",     # flake8-pytest-style
+    "PTH",    # flake8-use-pathlib
+    "PYI",    # flake8-pyi
+    "Q",      # flake8-quotes
+    "RET",    # flake8-return
+    "RSE",    # flake8-raise
+    "RUF",    # Ruff-specific
+    "SIM",    # flake8-simplify
+    "SLOT",   # flake8-slots
+    "T10",    # flake8-debugger
+    "T20",    # flake8-print
+    "TC",     # flake8-type-checking
+    "TRY",    # tryceratops
+    "UP",     # pyupgrade
+]
+ignore = [
+    "PLR09",    # too many <...>: tools/check_size_limits.py covers size
+    "PLR2004",  # magic value in comparison: noisy in numerical code
+    "TRY003",   # long message at the raise: the rules want messages that say what to fix
+    "PERF401",  # list.extend with a comprehension: a guarded append reads better for lists of refusals
+    "PERF203",  # try in a loop: no cost on Python 3.11 and later
+    "SIM300",   # Yoda conditions: takes the math names T and G for constants, and swapping operands moves the program
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["vulcan_forward"]  # the commit guard lints an export without src/, where Ruff cannot detect this
+combine-as-imports = true
+
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"
+
+[tool.ruff.lint.mccabe]
+max-complexity = 15
+
+[tool.ruff.lint.pep8-naming]
+# Published symbols; docs/method.md holds the glossary.
+extend-ignore-names = [
+    "T", "T_*", "*_T", "*_T_*", "Ti", "P", "M", "Mn", "K_*", "A", "A0", "B", "Bs", "C", "E_*", "R0_*", "Rp*", "*_Rp",
+    "*Kzz*", "*lnZ*", "lnR0", "lnM", "Dzz*", "*_Dzz*", "OC_z", "OO_z", "Msys", "Mz", "S", "iC", "iO", "iS",
+    "Hp_i", "Hpi_i", "dP", "logP_*", "nO_per_species",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Lazy imports stay lazy on purpose: the package imports with no data and no jax (tests/test_contract.py), vulcan3 follows
+# the environment vulcan_chem sets, and h5py is only for ingestion.
+"src/vulcan_forward/*.py" = ["PLC0415"]
+# E402: vulcan_chem sets the import-frozen environment and jax x64 before its imports, exojax_rt enables x64 before exojax.
+"src/vulcan_forward/vulcan_chem.py" = ["PLC0415", "E402"]
+"src/vulcan_forward/exojax_rt.py" = ["PLC0415", "E402"]
+"src/vulcan_forward/fetch_exomolop.py" = ["PLC0415", "T20"]  # a command-line tool prints
+# I: import sorting would reorder the import-order preambles (vulcan_chem before exojax), which are the contract under test.
+# E402: those preambles run before the imports. A test's name is its documentation. Names follow the symbol under test.
+# PLW0108: a fresh lambda is a fresh trace. PT011: the exception type is the contract there.
+# D205, D401: a test's docstring states its claim in a sentence; a one-line imperative summary would only repeat the name.
+"tests/**" = [
+    "I", "E402", "T20", "PLC0415", "D103", "D205", "D401", "N802", "N803", "N806", "N812", "PLW0108", "PLW2901", "PTH", "PT011",
+]
+"tools/**" = ["T20", "PLC0415"]
+
+[tool.codespell]
+ignore-words-list = "nd,radis,optin,statics"
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = ["-ra", "--strict-markers", "--strict-config"]
+xfail_strict = true
+log_level = "INFO"
+testpaths = ["tests"]
+filterwarnings = [
+    "error",
+    # exojax warns for every ArtTransPure built without a wavenumber grid; the transmission model has none by design.
+    "ignore:nu_grid is not given:UserWarning",
+]
+markers = [
+    "slow: minutes or several GB; the full tier, behind VULCAN_FORWARD_RUN_FULL=1",
+    "gpu: needs a GPU; runs locally, never in CI",
+]
+
+[tool.coverage.run]
+source = ["vulcan_forward"]
+omit = [
+    "*/fetch_exomolop.py",  # the offline fetcher needs the network; it never runs in the engine's path
+]
+
+[tool.coverage.report]
+fail_under = 80
+exclude_also = [
+    '\.\.\.',
+    'if typing.TYPE_CHECKING:',
+    'if TYPE_CHECKING:',
+]
+
+[tool.mypy]
+files = ["src"]
+strict = true
+enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
+warn_unreachable = true
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+# ndarray type parameters add nothing here: shapes and dtypes are in the docstrings beside each array.
+disallow_any_generics = false
+ignore_missing_imports = true
+# vulcan3 and exojax carry no types, so what they return is Any; jax's own config.update and vmapped lambdas are untyped.
+warn_return_any = false
+disallow_untyped_calls = false
+
+[[tool.mypy.overrides]]
+module = "vulcan_forward.*"
+disallow_untyped_defs = true
+disallow_incomplete_defs = true

@@ -1,34 +1,14 @@
-"""The differentiable physics-parameters -> converged-VMR map on VULCAN-JAX.
+# size-limit-ok: one closure per solve, with the numpy docs of the public ones
+"""The differentiable map from chemistry parameters to the converged column, on vulcan3.
 
-``build_chem_model(profile)`` runs the one-time pre-loop and builds the inner
-runner closure (XLA compiles it on the first solve), then returns a model whose
-``converged_y(theta)`` re-converges the column as a function of
-``theta = [lnZ, c_o, lnKzz, T...]``.
+``build_chem_model`` runs the one-time pre-loop and returns a model whose ``converged_y(theta)`` re-converges the column
+for ``theta = [lnZ, c_o, lnKzz, *extras, *tp]``. Rates, structure and condensation arrays are rebuilt on-graph per
+proposal; the runner's ``lax.while_loop`` supports jvp but not vjp, so forward mode is the end-to-end route.
 
-Abundance knobs: the initial column is renormalized to sum_i n_i = M per layer
-and repaired (fixed Newton-style iterations on He/H2O/CO/N2/H2S) so the column
-elemental ratios hit the theta targets exactly (He/H fixed; O/N x Z; C x Z
-e^{c_o}; S x Z e^{s_o}, with s_o an optional entry of the layout,
-``CHEM_EXTRAS``). ``pv.atom_ini`` is rebuilt from the repaired column.
-Residuals ~1e-15 relative (machine precision); measure with ``audit_init``.
-
-Rate constants and the T/composition-dependent structure (Dzz + vm/vs, pv.Kzz,
-the initial carry geometry) are rebuilt on-graph per proposal. Condensation
-follows the live T(P) too: ``_prep`` rebuilds every T-dependent conden array
-per proposal, and unsupported conden configs refuse at build. The cold-trap
-index and active-layer set are discrete, so a jvp through a condensing state
-is valid only away from those switches.
-
-Known limitation: conden-on does NOT reduce to conden-off when nothing
-condenses: the fix_species pin freezes the reservoirs at their
-stop_conden_time state. Enable condensation only where the species
-genuinely condenses.
-
-T-dependent photolysis cross sections (``T_cross_sp``) are refused at build:
-``_prep`` does not rebuild them. The
-runner's lax.while_loop supports jvp/jacfwd but NOT vjp; forward mode is the
-end-to-end route.
+This module owns the first jax import: it sets the import-frozen ``VULCAN3_*`` variables and jax x64, and refuses to
+follow exojax. docs/method.md describes the composition map and the limits of a condensing column.
 """
+
 from __future__ import annotations
 
 import logging
@@ -37,308 +17,76 @@ import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from typing import NamedTuple
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
 from vulcan_forward import constants
 
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterable
+
+    from jax import Array
+    from jax.typing import ArrayLike
+
+    Profile = dict[str, Any]
+
+__all__ = ["CHEM_EXTRAS", "ChemParams", "ConvDiag", "build_chem_model", "bz_margin", "params_from_vector"]
+
 logger = logging.getLogger(__name__)
 
-# This module must own the first jax import: it fixes the VULCAN3_* import-frozen
-# env vars and jax x64. If exojax got in first those knobs are already baked wrong.
 if "exojax" in sys.modules:
     raise RuntimeError(
         "vulcan_forward.vulcan_chem must be imported BEFORE exojax: it fixes "
         "jax x64 and the VULCAN3_* import-frozen env vars. Import order: "
-        "vulcan_forward.vulcan_chem, then vulcan_forward.exojax_rt.")
+        "vulcan_forward.vulcan_chem, then vulcan_forward.exojax_rt."
+    )
 
-# VULCAN-JAX freezes network/atom_list at ITS first import, so arriving after
-# it makes the setdefault below a no-op and the run fails much later. Raise
-# only when the frozen choice actually conflicts with what this engine needs.
-_WANT_ENV = {"VULCAN3_NETWORK": constants.DEFAULT_NETWORK,
-             "VULCAN3_ATOM_LIST": constants.DEFAULT_ATOM_LIST}
+# vulcan3 freezes network and atom_list at its first import, so arriving after it makes the setdefault below a no-op.
+_WANT_ENV = {"VULCAN3_NETWORK": constants.DEFAULT_NETWORK, "VULCAN3_ATOM_LIST": constants.DEFAULT_ATOM_LIST}
 if "vulcan3" in sys.modules:
-    _conflict = {k: (os.environ.get(k), v) for k, v in _WANT_ENV.items()
-                 if os.environ.get(k) not in (None, v)}
-    # With the env vars unset, read the network vulcan3 actually froze.
+    _conflict = {k: (os.environ.get(k), v) for k, v in _WANT_ENV.items() if os.environ.get(k) not in (None, v)}
     if not _conflict:
         _frozen = getattr(sys.modules["vulcan3"], "chem_funs", None)
         _frozen = getattr(getattr(_frozen, "NETWORK", None), "network_path", None)
-        if _frozen and os.path.basename(_frozen) != os.path.basename(
-                constants.DEFAULT_NETWORK):
-            _conflict = {"VULCAN3_NETWORK": (_frozen,
-                                                constants.DEFAULT_NETWORK)}
+        if _frozen and Path(_frozen).name != Path(constants.DEFAULT_NETWORK).name:
+            _conflict = {"VULCAN3_NETWORK": (_frozen, constants.DEFAULT_NETWORK)}
     if _conflict:
         raise RuntimeError(
             "vulcan3 was imported before vulcan_forward.vulcan_chem, so its "
             "network/atom_list are already frozen and cannot be changed: "
-            + "; ".join(f"{k} is {got!r} but this engine needs {want!r}"
-                        for k, (got, want) in _conflict.items())
+            + "; ".join(f"{k} is {got!r} but this engine needs {want!r}" for k, (got, want) in _conflict.items())
             + ". Import vulcan_forward.vulcan_chem first, or set those env vars "
-              "before importing vulcan3.")
+            "before importing vulcan3."
+        )
 
-# --- env setup MUST happen before importing vulcan3 / jax ------------------
-# setdefault, not assignment: a caller driving a non-default network (a batched
-# emulator, say) sets these itself, and silently overwriting that choice would
-# model different chemistry than was asked for.
+# setdefault: a caller driving another network sets these itself.
 for _k, _v in _WANT_ENV.items():
     os.environ.setdefault(_k, _v)
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 
-import jax  # noqa: E402
-import jax.numpy as jnp  # noqa: E402
+import jax
+import jax.numpy as jnp
 
 jax.config.update("jax_enable_x64", True)
 
-# Column-repair groups for the exact-elemental mode: element -> adjuster species,
-# scaled by one common factor per element. Each group holds the element's dominant
-# carriers in H2-dominated gas, so the linear repair stays tiny and
-# well-conditioned. Carbon needs CO and CH4 together: below ~900 K CH4 holds the
-# carbon and CO only ~1e-3 of it, so a CO-only repair of a 1% carbon error drives
-# CO negative. H is the reference element; He preserves the baseline He/H.
-_ELEMENTAL_REPAIR = (("He", ("He",)), ("O", ("H2O",)), ("C", ("CO", "CH4")),
-                     ("N", ("N2",)), ("S", ("H2S",)))
-# Renorm+repair iterations: one pass takes a warm guess's ~1e-1 residual to
-# ~1e-10, two reach machine precision (~1e-15); see audit_init.
-_ELEMENTAL_REPAIR_ITERS = 3
-
-# Tolerance (g/mol) for checking constants.ATOMIC_MASSES against the package's
-# composition-table mass column, which carries mild rounding (O listed as 16.0 vs
-# 15.999; the electron as 1e-3 vs 5.4858e-4). Real drift -- a swapped or wrong
-# element column -- differs by >= 1 g/mol and is caught cleanly.
-_ATOMIC_MASS_TOL_G_MOL = 0.01
+from vulcan_forward._chem_layout import CHEM_EXTRAS, ChemParams, ConvDiag, _check_extras, params_from_vector
+from vulcan_forward._elemental import _assert_composition_tables, _build_elemental, bz_margin
 
 
-def _assert_composition_tables(composition) -> None:
-    """Verify constants.ATOM_COLS / constants.ATOMIC_MASSES against the composition
-    metadata vulcan3 actually loaded.
-
-    Both config tables are positional hardcoded mirrors of the package's
-    composition table (whose atom-column order comes from the com_file header at
-    import). A package change that reorders or extends the atom columns would
-    silently corrupt the Z / C-O masks, the exact-elemental repair matrix, and
-    the mean-molecular-weight masses, so any mismatch raises here at build time.
-    """
-    atom_list = tuple(composition.atom_list)
-    if len(constants.ATOMIC_MASSES) != len(atom_list):
-        raise RuntimeError(
-            f"constants.ATOMIC_MASSES has {len(constants.ATOMIC_MASSES)} entries but "
-            f"vulcan3.composition.atom_list has {len(atom_list)} columns "
-            f"{atom_list}: the hardcoded mass table no longer mirrors the "
-            "package's composition table.")
-    for elem, col in constants.ATOM_COLS.items():
-        if atom_list[col] != elem:
-            raise RuntimeError(
-                f"constants.ATOM_COLS[{elem!r}] = {col} but "
-                f"vulcan3.composition.atom_list[{col}] is {atom_list[col]!r} "
-                f"(full order {atom_list}): the hardcoded element-column map no "
-                "longer matches the package's atom order.")
-    compo, compo_row = composition.compo, composition.compo_row
-    compo_arr = np.asarray(composition.compo_array, dtype=np.float64)
-    for col, atom in enumerate(atom_list):
-        if atom in compo_row:
-            table_mass = float(compo[compo_row.index(atom)]["mass"])
-            if abs(table_mass - float(constants.ATOMIC_MASSES[col])) > _ATOMIC_MASS_TOL_G_MOL:
-                raise RuntimeError(
-                    f"constants.ATOMIC_MASSES[{col}] = {constants.ATOMIC_MASSES[col]} "
-                    f"for {atom!r} but the package composition table's {atom!r} "
-                    f"row has mass {table_mass}: the hardcoded mass no longer "
-                    "matches the package's mass data.")
-        elif compo_arr[:, col].sum() != 0.0:
-            raise RuntimeError(
-                f"composition atom column {col} ({atom!r}) is carried by network "
-                "species but has no monatomic table row to verify "
-                "constants.ATOMIC_MASSES against; extend the check before trusting "
-                "the hardcoded mass.")
-
-
-# Optional chemistry parameters beyond [lnZ, c_o, lnKzz], in the order they
-# take in the positional vector when a model is built with them
-# (``build_chem_model(chem_extras=...)``). ``s_o`` is ln of the S/O multiple
-# of the baseline (sulfur freed from the metallicity scaling); ``kzz_slope`` is
-# the power-law slope of Kzz in pressure (``kzz_mode="powerlaw"``).
-CHEM_EXTRAS = ("s_o", "kzz_slope")
-
-
-def _check_extras(extras) -> tuple:
-    extras = tuple(extras)
-    bad = [e for e in extras if e not in CHEM_EXTRAS]
-    if bad or len(set(extras)) != len(extras):
-        raise ValueError(f"chem_extras {extras!r}: expected a subset of "
-                         f"{CHEM_EXTRAS} with no repeats")
-    if list(extras) != [e for e in CHEM_EXTRAS if e in extras]:
-        raise ValueError(f"chem_extras {extras!r} must keep the order {CHEM_EXTRAS}")
-    return extras
-
-
-class ChemParams(NamedTuple):
-    """Named chemistry parameters -- the engine's primitive.
-
-    ``lnZ`` scales the metals (ln of the multiple of the baseline metallicity),
-    ``c_o`` moves carbon at fixed oxygen (ln of the C/O multiple), ``lnKzz``
-    scales the whole eddy-diffusion profile, and ``tp`` carries the temperature
-    parameters. What ``tp`` MEANS is fixed when the model is built: with a
-    ``tp_eval`` hook it is that hook's parameter block; without one it is a
-    single uniform temperature offset in K, added to the structural profile.
-    ``s_o`` moves sulfur on top of lnZ (ln of the S/O multiple) and
-    ``kzz_slope`` is the Kzz power-law slope; both default to 0, the model
-    without them.
-
-    The positional vector form (``params_from_vector``) is also accepted; a
-    sampler or forward-mode AD needs the vector. A NamedTuple, so a JAX pytree.
-    """
-    lnZ: float = 0.0
-    c_o: float = 0.0
-    lnKzz: float = 0.0
-    tp: tuple = ()
-    s_o: float = 0.0
-    kzz_slope: float = 0.0
-
-    def to_vector(self, extras=()):
-        """The equivalent positional vector ``[lnZ, c_o, lnKzz, *extras, *tp]``:
-        ``extras`` names the optional entries the layout carries (the model's
-        ``chem_extras``; none by default, so the vector is ``[lnZ, c_o, lnKzz,
-        *tp]``)."""
-        extras = _check_extras(extras)
-        return jnp.asarray([self.lnZ, self.c_o, self.lnKzz,
-                            *(getattr(self, e) for e in extras), *self.tp],
-                           dtype=jnp.float64)
-
-
-def params_from_vector(theta, n_tp_params: int, *, has_tp_eval: bool, extras=()):
-    """Read a positional ``theta`` into named :class:`ChemParams`.
-
-    The layout is the retrieval framework's, kept for compatibility:
-    ``theta[0:3]`` is ``[lnZ, c_o, lnKzz]``, then the optional entries named
-    by ``extras`` (in ``CHEM_EXTRAS`` order), then the temperature block --
-    ``n_tp_params`` entries when the model was built with a ``tp_eval`` hook,
-    else a single element (the uniform T offset).
-    """
-    extras = _check_extras(extras)
-    v = jnp.asarray(theta, dtype=jnp.float64)
-    k = 3 + len(extras)
-    tp = v[k:k + n_tp_params] if has_tp_eval else v[k:k + 1]
-    kw = {e: v[3 + i] for i, e in enumerate(extras)}
-    return ChemParams(lnZ=v[0], c_o=v[1], lnKzz=v[2], tp=tp, **kw)
-
-
-def bz_margin(y, n_o, carbon_mask, o_only_mask) -> float:
-    """Positivity margin of the fixed-O C/O seed map on a column ``y`` (nz, ni).
-
-    The map scales every C-bearing species by e^c and compensates the oxygen
-    they drag along by scaling the O-only carriers by
-    b_z = 1 + (1 - e^c) OC_z / OO_z, so b_z > 0 iff c < ln(1 + OO_z/OC_z).
-    Returns the worst layer's bound, ln(1 + min_z OO_z/OC_z): 0 where a layer
-    has no O-only carriers left, NaN where a layer has no oxygen in either
-    group -- gate with ``not margin > x`` so NaN refuses. ``n_o`` is the O
-    atoms per species, the masks the C-bearing / O-only species (ni,).
-    """
-    y = np.asarray(y, dtype=np.float64)
-    n_o = np.asarray(n_o, dtype=np.float64)
-    oc_z = (y * (n_o * np.asarray(carbon_mask, dtype=np.float64))[None, :]).sum(axis=1)
-    oo_z = (y * (n_o * np.asarray(o_only_mask, dtype=np.float64))[None, :]).sum(axis=1)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        return float(np.log(1.0 + np.min(oo_z / oc_z)))
-
-
-class ConvDiag(NamedTuple):
-    """Per-solve convergence diagnostics read off the runner's final carry.
-
-    Every field rides the runner's primal carry, so reading them is free inside a
-    forward-mode jvp chain. ``accept_count`` is integer-valued (no tangent);
-    ``longdy``/``longdydt`` are floats and DO carry a tangent -- callers on an AD
-    path must ``stop_gradient`` them.
-
-    ``accept_count`` alone is NOT a convergence test: the runtime budget, a
-    hybrid run's post-flip step budget or a non-finite state can end the runner
-    with accept_count well under the cap on a state whose tangent has not
-    settled. ``conv_normal`` is the runner's canonical two-branch certification
-    (tight yconv_cri/slope_cri OR loose yconv_min/slope_min, AND the photo-flux
-    gate, the geometry term and the column element budget) recomputed at the
-    exit state: False on an exit that did not certify, such as a budget exit.
-    """
-
-    accept_count: jnp.ndarray         # () int32   accepted steps taken
-    longdy: jnp.ndarray               # () float64 runner's convergence metric at exit
-    longdydt: jnp.ndarray             # () float64 longdy per lookback time
-    conv_normal: jnp.ndarray          # () bool    canonical certification at exit
-    aflux_change: jnp.ndarray         # () float64 max relative actinic-flux change at exit
-    conv_branch: jnp.ndarray          # () int32   certified branch: 1 tight (yconv_cri,
-    #                                               slope_cri), 2 loose (yconv_min,
-    #                                               slope_min), 0 not certified
-    cell_species: jnp.ndarray         # () int32   species index of the cell that sets longdy
-    cell_layer: jnp.ndarray           # () int32   layer index of that cell (0 = bottom)
-    cell_vmr: jnp.ndarray             # () float64 mixing ratio of that cell at exit
-    t: jnp.ndarray                    # () float64 integration time at exit (s)
-    dt: jnp.ndarray                   # () float64 step size at exit (s)
-    tangent_longdy: jnp.ndarray       # () float64 converged_y_jvp only: the tangent's
-    #                                               longdy at exit (NaN on the primal path)
-
-
-def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0,
-                     chem_extras=()) -> SimpleNamespace:
-    """Build the chemistry model and the differentiable converged_y(theta).
-
-    Parameters
-    ----------
-    profile : dict
-        A caller-owned settings dict (keys: ``constants.PROFILE_KEYS``; an
-        unknown key raises). ``use_photo`` and ``yconv_cri`` are required.
-        ``kzz_mode`` ("scale", the default: Kzz0(P) e^lnKzz on the config's
-        profile; "powerlaw": Kzz0(P_ref) e^lnKzz (P / P_ref)^-kzz_slope with
-        ``kzz_p_ref_bar`` the reference level, default 1 mbar).
-    tp_eval : callable or None, optional
-        Temperature-profile hook. ``None`` (default): ``T = T_base + theta[k]``,
-        a uniform offset in K, with ``k = 3 + len(chem_extras)``. Otherwise
-        ``tp_eval(theta[k:k+n_tp_params], p_bar)`` returns the full (nz,) T(P)
-        on the bar grid.
-    n_tp_params : int, optional
-        Number of T-P parameters consumed from ``theta[k:]`` when ``tp_eval`` is given.
-    chem_extras : tuple of str, optional
-        The optional chemistry entries the positional vector carries between
-        ``lnKzz`` and the temperature block, a subset of ``CHEM_EXTRAS`` in that
-        order: ``"s_o"`` (ln of the S/O multiple) and/or ``"kzz_slope"``. The
-        default (none) keeps the ``[lnZ, c_o, lnKzz, *tp]`` layout.
-
-    Returns
-    -------
-    SimpleNamespace with fields (the full list is the namespace at the end):
-        converged_y(theta, ...) -> (nz, ni) number densities, differentiable
-        audit_init(theta) -> host-side dict of elemental/density residuals at init
-        T_base   : (nz,) baseline temperature (np.float64)
-        p_bar    : (nz,) pressure grid in bar (np.float64)
-        sidx     : dict species-name -> column index
-        species_masses : (ni,) jnp molar mass per species (g/mol)
-        nz, ni   : ints
-    """
-    t0 = time.time()
-    constants.check_profile_keys(profile)
-    chem_extras = _check_extras(chem_extras)
-    kzz_mode = str(profile.get("kzz_mode", "scale"))
-    if kzz_mode not in ("scale", "powerlaw"):
-        raise ValueError(f"kzz_mode={kzz_mode!r}: expected 'scale' or 'powerlaw'")
-    if "kzz_slope" in chem_extras and kzz_mode != "powerlaw":
-        raise ValueError("chem_extras carries 'kzz_slope' but kzz_mode is "
-                         f"{kzz_mode!r}: the slope is read only by the power law, so "
-                         "it would be a silent no-op")
+def _configured_cfg(profile: Profile) -> Any:
+    """Load the VULCAN config the profile names and apply the profile to it, refusing what the rebuild cannot follow."""
     import vulcan3
 
-    # Baseline VULCAN config by name (vulcan3/configs/*.yaml).
     cfg = vulcan3.load_config(profile.get("vulcan_cfg_name") or constants.DEFAULT_CFG_NAME)
     cfg.use_print_prog = False
     cfg.use_photo = bool(profile["use_photo"])
     cfg.yconv_cri = float(profile["yconv_cri"])
-    # `is not None`, never truthiness: 0 is a legitimate value for several of
-    # these (count_min=0 no floor, yconv_min=0 closes the OR-branch) and must
-    # not silently fall back to cfg.
-    for key, cast in (("nz", int), ("count_min", int), ("count_max", int),
-                      ("dt_max", float), ("yconv_min", float)):
+    # is not None: count_min=0 and yconv_min=0 are legitimate values.
+    for key, cast in (("nz", int), ("count_min", int), ("count_max", int), ("dt_max", float), ("yconv_min", float)):
         if profile.get(key) is not None:
             setattr(cfg, key, cast(profile[key]))
-    # Generic cfg overrides, applied BEFORE the pre-loop build so they reach
-    # make_atm_static / OuterLoop exactly like use_photo does. setattr checks
-    # nothing, so a removed or misspelled key is refused first.
+    # setattr checks nothing, so a removed or misspelled key is refused first.
     vulcan3.validate_overrides(profile.get("cfg_overrides") or {})
     for _k, _v in (profile.get("cfg_overrides") or {}).items():
         setattr(cfg, _k, _v)
@@ -349,42 +97,144 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0,
             "per-proposal rebuild (_prep) does not rebuild the T-dependent cross "
             "sections (pv.p_absp_T_cross, pv.p_cross_J_T), so photolysis would use "
             "the baseline temperature. Set T_cross_sp=[] in the config or "
-            "cfg_overrides.")
-    # The chemistry grid must reach the RT top (interp_map refuses a clamped
-    # top). An explicit cfg_overrides P_t wins: the model-top ladder and the
+            "cfg_overrides."
+        )
+    # The chemistry grid must reach the RT top. An explicit cfg_overrides P_t wins: the model-top ladder and the
     # condensation pin bring their own grids.
     if "P_t" not in (profile.get("cfg_overrides") or {}):
         _ptop = profile.get("art_ptop_bar")
-        cfg.P_t = (float(_ptop if _ptop is not None else constants.ART_PTOP_BAR)
-                   * constants.BAR_CGS)
+        cfg.P_t = float(_ptop if _ptop is not None else constants.ART_PTOP_BAR) * constants.BAR_CGS
 
-    from vulcan3.state import RunState, legacy_view
-    from vulcan3 import network as net_mod, composition, rates_jax
-    from vulcan3 import atm_jax, atm_refresh as atm_refresh_mod
-    from vulcan3 import conden as conden_mod
+    return cfg
+
+
+def _make_kzz_eff(
+    kzz_mode: str, profile: Profile, atm: Any, Kzz0: Array
+) -> Callable[[float | Array, float | Array], Array]:
+    """Return ``Kzz(lnKzz, kzz_slope)`` at the interior interfaces, where the runner reads Kzz, [nz-1].
+
+    "scale" keeps the config's profile shape. "powerlaw" anchors Kzz0 at ``kzz_p_ref_bar``, log-log interpolated on the
+    config's profile, and tilts it by (P / P_ref)^-slope, so lnKzz = 0, slope = 0 is a constant Kzz equal to the
+    profile's value there.
+    """
+    from vulcan3.atm_setup import compute_pico
+
+    _p_int_bar = (
+        np.asarray(compute_pico(np.asarray(atm.pco, dtype=np.float64)), dtype=np.float64)[1:-1] / constants.BAR_CGS
+    )
+    _kzz_ref0 = _p_over_ref = None
+    if kzz_mode == "powerlaw":
+        kzz_p_ref_bar = float(profile.get("kzz_p_ref_bar", constants.KZZ_P_REF_BAR))
+        if not (_p_int_bar.min() <= kzz_p_ref_bar <= _p_int_bar.max()):
+            raise ValueError(
+                f"kzz_p_ref_bar={kzz_p_ref_bar:g} lies outside the Kzz grid "
+                f"[{_p_int_bar.min():.3g}, {_p_int_bar.max():.3g}] bar"
+            )
+        _order = np.argsort(_p_int_bar)
+        _kzz_ref0 = float(
+            np.exp(
+                np.interp(
+                    np.log(kzz_p_ref_bar),
+                    np.log(_p_int_bar[_order]),
+                    np.log(np.asarray(Kzz0, dtype=np.float64)[_order]),
+                )
+            )
+        )
+        _p_over_ref = jnp.asarray(_p_int_bar / kzz_p_ref_bar)
+        logger.info("[chem] kzz_mode=powerlaw: Kzz0(%g bar) = %.3e cm^2/s, slope from theta", kzz_p_ref_bar, _kzz_ref0)
+
+    def _kzz_eff(lnKzz: float | Array, kzz_slope: float | Array) -> Array:
+        """Return the effective Kzz, cm^2/s."""
+        if kzz_mode == "powerlaw":
+            return _kzz_ref0 * jnp.exp(lnKzz) * _p_over_ref ** (-kzz_slope)  # type: ignore[operator]  # set for powerlaw
+        return Kzz0 * jnp.exp(lnKzz)
+
+    return _kzz_eff
+
+
+# size-limit-ok: the closures of one build share its arrays; a split would pass them all as arguments
+def build_chem_model(  # noqa: C901  # counts its closures
+    profile: Profile,
+    tp_eval: Callable[[tuple[float, ...] | Array, Array], Array] | None = None,
+    n_tp_params: int = 0,
+    chem_extras: Iterable[str] = (),
+) -> SimpleNamespace:
+    """Build the chemistry model for one profile.
+
+    Parameters
+    ----------
+    profile : dict
+        Settings, with keys in ``constants.PROFILE_KEYS``. ``use_photo`` and ``yconv_cri`` are required.
+    tp_eval : callable, optional
+        ``tp_eval(theta[k:k+n_tp_params], p_bar)`` returns T(P), K, on the bar grid, with k = 3 + len(chem_extras).
+        None: T is the baseline profile plus a uniform offset ``theta[k]``, K.
+    n_tp_params : int, optional
+        Entries ``tp_eval`` consumes.
+    chem_extras : sequence of str, optional
+        The optional entries of the vector between ``lnKzz`` and the temperature block, a subset of ``CHEM_EXTRAS``
+        in order.
+
+    Returns
+    -------
+    types.SimpleNamespace
+        The solves ``converged_y``, ``converged_y_batch``, ``converged_y_queue``, ``converged_y_jvp``, ``run_diag``; the
+        checks ``conv_normal_at_exit``, ``audit_init``, ``prep_pv``, ``co_bz_bound``, ``co_bz_margin``; and the build's
+        data ``y0``, ``T_base`` (K), ``p_bar``, ``dz`` (cm), ``sidx``, ``species_masses`` (g/mol), ``compo_array``,
+        ``atom_list``, ``nz``, ``ni``, ``chem_extras``, ``kzz_mode``, ``count_max``, ``yconv_min``, ``conden_spec``.
+
+    Raises
+    ------
+    ValueError
+        On an unknown key or mode, unsupported T-dependent cross sections, or a condensing species with no reaction.
+    NotImplementedError
+        If condensation meets ``use_sat_surfaceH2O``, which a live T(P) does not rebuild.
+    """
+    t0 = time.time()
+    constants.check_profile_keys(profile)
+    chem_extras = _check_extras(chem_extras)
+    kzz_mode = str(profile.get("kzz_mode", "scale"))
+    if kzz_mode not in ("scale", "powerlaw"):
+        raise ValueError(f"kzz_mode={kzz_mode!r}: expected 'scale' or 'powerlaw'")
+    if "kzz_slope" in chem_extras and kzz_mode != "powerlaw":
+        raise ValueError(
+            "chem_extras carries 'kzz_slope' but kzz_mode is "
+            f"{kzz_mode!r}: the slope is read only by the power law, so "
+            "it would be a silent no-op"
+        )
+    import vulcan3
+
+    cfg = _configured_cfg(profile)
+
+    import vulcan3.legacy_io as op
+    from vulcan3 import (
+        atm_jax,
+        atm_refresh as atm_refresh_mod,
+        composition,
+        conden as conden_mod,
+        network as net_mod,
+        op_jax,
+        outer_loop,
+        rates_jax,
+    )
     from vulcan3.atm_setup import VISCOSITY_TABLE, settling_velocity_jax
-    from vulcan3.jax_step import make_atm_static
     from vulcan3.gibbs import load_nasa9
-    from vulcan3.ini_abun import (column_atoms, element_vector, eq_seed,
-                                     ratio_indices)
+    from vulcan3.ini_abun import column_atoms, element_vector, eq_seed, ratio_indices
+    from vulcan3.jax_step import make_atm_static
     from vulcan3.paths import resolve_data_path
     from vulcan3.phy_const import kb
-    import vulcan3.legacy_io as op
-    import vulcan3.op_jax as op_jax
-    import vulcan3.outer_loop as outer_loop
+    from vulcan3.state import RunState, legacy_view
 
     _assert_composition_tables(composition)
 
-    # Condensation with a live T(P): vulcan3's runtime validation (inside
-    # with_pre_loop_setup) refuses the inert configurations; this is the one
-    # it cannot see. _prep rebuilds the conden arrays per proposal.
+    # vulcan3's runtime validation refuses the inert condensation configurations; this is the one it cannot see.
     use_condense = bool(cfg.use_condense)
     if use_condense and bool(cfg.use_sat_surfaceH2O):
         raise NotImplementedError(
             "use_condense with use_sat_surfaceH2O=True is unsupported in the "
             "T-varying model: it rewrites the fixed-bottom H2O boundary "
             "condition from the STRUCTURAL temperature at ini time, which a "
-            "live T(P) does not rebuild. Disable use_sat_surfaceH2O.")
+            "live T(P) does not rebuild. Disable use_sat_surfaceH2O."
+        )
 
     rs = RunState.with_pre_loop_setup(cfg)
     var, atm, para = legacy_view(rs)
@@ -392,68 +242,67 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0,
     nz, ni = atm.Tco.shape[0], network.ni
     sidx = dict(network.species_idx)
 
-    # Static condensation metadata (species identity, particle coefficients,
-    # relax/fix flags) -- extracted once; _prep rebuilds the dynamic arrays
-    # from it at every proposed T. None when condensation is off.
+    # Static condensation metadata; _prep rebuilds the dynamic arrays from it at every proposed T.
     conden_spec = None
     if use_condense:
         conden_spec = conden_mod.make_conden_spec(cfg, var, atm, sidx)
         relax_set = set(cfg.use_relax or [])
-        inert = [sp for sp in cfg.condense_sp
-                 if sp not in conden_spec.gas_names and sp not in relax_set]
+        inert = [sp for sp in cfg.condense_sp if sp not in conden_spec.gas_names and sp not in relax_set]
         if inert:
             raise ValueError(
                 f"condense_sp entries {inert} have no condensation reaction in "
                 f"network {cfg.network!r} and are not in use_relax -- they would "
-                "silently not condense. Remove them or add the reaction/relax.")
-        logger.info(f"[chem] condensation ON: kinetics rows {list(conden_spec.gas_names)}, "
-                    f"relax H2O={conden_spec.h2o_active} NH3={conden_spec.nh3_active}, "
-                    f"fix_species={list(conden_spec.fix_names)}; conden arrays rebuilt "
-                    "on-graph at each proposed T")
+                "silently not condense. Remove them or add the reaction/relax."
+            )
+        logger.info(
+            "[chem] condensation ON: kinetics rows %s, relax H2O=%s NH3=%s, fix_species=%s; "
+            "conden arrays rebuilt on-graph at each proposed T",
+            list(conden_spec.gas_names),
+            conden_spec.h2o_active,
+            conden_spec.nh3_active,
+            list(conden_spec.fix_names),
+        )
 
     pco = jnp.asarray(np.asarray(atm.pco, dtype=np.float64))
     p_bar = np.asarray(atm.pco, dtype=np.float64) / constants.BAR_CGS
-    p_bar_j = jnp.asarray(p_bar)   # bar grid for tp_eval and the equilibrium seed
-
+    p_bar_j = jnp.asarray(p_bar)
     thermo_dir = resolve_data_path(cfg.network).parent
     if not (thermo_dir / "NASA9").exists():
         thermo_dir = Path(vulcan3.__file__).resolve().parent / "thermo"
     nasa9, _ = load_nasa9(network.species, thermo_dir)
     remove_list = cfg.remove_list
 
-    # --- runner closure: XLA compiles integ.runner on the first solve
     solver = op_jax.Ros2JAX()
     if rs.photo_static is not None:
         solver.photo_static = rs.photo_static
     integ = outer_loop.OuterLoop(solver, op.Output(cfg=cfg), cfg=cfg)
     solver.naming_solver(para)
-    logger.info(f"[chem] setup {time.time() - t0:.1f}s; nz={nz} ni={ni} photo={cfg.use_photo}")
+    logger.info("[chem] setup %.1fs; nz=%d ni=%d photo=%s", time.time() - t0, nz, ni, cfg.use_photo)
     integ.ensure_runner(var, atm)
 
-    # --- runner-carry budget/scheme seeding --------------------------------
-    # The termination budget and diffusion blend live on the carry, and state0
-    # is packed once under the cold statics, so each solve re-seeds them. Under
-    # the hybrid scheme a warm continuation starts from a column converged on
-    # the central operator, so it continues on it (pure-upwind configs keep
-    # upwind).
+    # The termination budget and diffusion blend live on the carry, and state0 is packed once under the cold statics,
+    # so each solve re-seeds them. Under the hybrid scheme a warm continuation starts from a column converged on the
+    # central operator, so it continues on it.
     count_max_v = int(cfg.count_max)
     count_min_v = int(cfg.count_min)
     runtime_v = float(cfg.runtime)
     use_vm_mol_v = bool(cfg.use_vm_mol)
     hybrid_v = use_vm_mol_v and bool(cfg.use_hybrid_vm_mol)
-    _warm_note = ("; warm continuation pinned to central difference (the "
-                  "converged phase-1 operator)" if hybrid_v else "")
-    logger.info(f"[chem] diffusion scheme: use_vm_mol={use_vm_mol_v} "
-                f"hybrid={hybrid_v}{_warm_note}")
+    _warm_note = "; warm continuation pinned to central difference (the converged phase-1 operator)" if hybrid_v else ""
+    logger.info("[chem] diffusion scheme: use_vm_mol=%s hybrid=%s%s", use_vm_mol_v, hybrid_v, _warm_note)
 
-    def _seeded_prep(theta, warm_y=None, lnZ_ref=0.0, c_o_ref=0.0, s_o_ref=0.0):
-        """``_prep`` with the carry's live termination budget + diffusion blend
-        re-seeded for the runner (see the block comment above)."""
-        init, atm_T = _prep(theta, warm_y=warm_y, lnZ_ref=lnZ_ref, c_o_ref=c_o_ref,
-                            s_o_ref=s_o_ref)
+    def _seeded_prep(
+        theta: ChemParams | Array,
+        warm_y: Array | None = None,
+        lnZ_ref: Array | float = 0.0,
+        c_o_ref: Array | float = 0.0,
+        s_o_ref: Array | float = 0.0,
+    ) -> tuple[Any, Any]:
+        """Return ``_prep`` with the carry's termination budget and diffusion blend seeded for the runner."""
+        init, atm_T = _prep(theta, warm_y=warm_y, lnZ_ref=lnZ_ref, c_o_ref=c_o_ref, s_o_ref=s_o_ref)
         blend = 1.0 if use_vm_mol_v else 0.0
         if warm_y is not None and hybrid_v:
-            blend = 0.0   # continue on the converged (phase-1, central) operator
+            blend = 0.0
         return init._replace(
             hybrid_use_vm=jnp.float64(blend),
             count_min_dyn=jnp.int32(count_min_v),
@@ -461,15 +310,13 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0,
             runtime_dyn=jnp.float64(runtime_v),
         ), atm_T
 
-    def _conv_diag(final, tangent_ok=True, tangent_longdy=jnp.nan):
-        """ConvDiag read off the runner's exit carry. ``conv_normal`` is
-        ``vulcan3.conv_normal`` (the terms listed on ConvDiag; not the ready
-        gate, hybrid phase or non-finite exit) AND ``tangent_ok``, the
-        ``OuterLoop.run_jvp`` sensitivity certificate on the ``converged_y_jvp``
-        path (primal path: True). ``conv_branch`` stays the column's own branch,
-        so a consumer can tell an unsettled sensitivity (branch set,
-        ``tangent_longdy`` above the gate) from an uncertified column. The
-        controlling cell is the argmax of the carry's ``where_varies_most``."""
+    def _conv_diag(final: Any, tangent_ok: Array | bool = True, tangent_longdy: Array | float = jnp.nan) -> ConvDiag:
+        """Read ``ConvDiag`` off the runner's exit carry.
+
+        ``conv_normal`` is ``vulcan3.conv_normal`` AND ``tangent_ok``, the ``run_jvp`` sensitivity certificate.
+        ``conv_branch``
+        stays the column's own branch, so a consumer can tell an unsettled sensitivity from an uncertified column.
+        """
         ok, branch = vulcan3.conv_normal(final, cfg)
         flat = jnp.argmax(final.where_varies_most)
         return ConvDiag(
@@ -487,8 +334,8 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0,
             tangent_longdy=jnp.float64(tangent_longdy),
         )
 
-    def _conv_normal_at_exit(final):
-        """The canonical certification alone (see ``_conv_diag``)."""
+    def _conv_normal_at_exit(final: Any) -> Array:
+        """Return the certificate of a raw ``run_diag`` final carry."""
         return _conv_diag(final).conv_normal
 
     atm_static = make_atm_static(atm, ni, nz, cfg=integ.config)
@@ -498,250 +345,79 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0,
     pv0 = state0.pv
     T_base = jnp.asarray(np.asarray(atm.Tco, dtype=np.float64))
 
-    # --- Kzz(P) at the interior interfaces pico[1:-1], where the runner reads
-    # Kzz ((nz-1,); vulcan3.atm_setup.kzz_profile_jax). "scale" keeps the
-    # config's profile shape; "powerlaw" anchors Kzz0 at kzz_p_ref_bar
-    # (log-log interpolated on the config's profile, so lnKzz = 0, slope = 0
-    # is a constant Kzz equal to the profile's value there) and tilts it by
-    # (P / P_ref)^-slope.
-    from vulcan3.atm_setup import compute_pico
-    _p_int_bar = (np.asarray(compute_pico(np.asarray(atm.pco, dtype=np.float64)),
-                             dtype=np.float64)[1:-1] / constants.BAR_CGS)
-    _kzz_ref0 = _p_over_ref = None
-    if kzz_mode == "powerlaw":
-        kzz_p_ref_bar = float(profile.get("kzz_p_ref_bar", constants.KZZ_P_REF_BAR))
-        if not (_p_int_bar.min() <= kzz_p_ref_bar <= _p_int_bar.max()):
-            raise ValueError(
-                f"kzz_p_ref_bar={kzz_p_ref_bar:g} lies outside the Kzz grid "
-                f"[{_p_int_bar.min():.3g}, {_p_int_bar.max():.3g}] bar")
-        _order = np.argsort(_p_int_bar)
-        _kzz_ref0 = float(np.exp(np.interp(
-            np.log(kzz_p_ref_bar), np.log(_p_int_bar[_order]),
-            np.log(np.asarray(Kzz0, dtype=np.float64)[_order]))))
-        _p_over_ref = jnp.asarray(_p_int_bar / kzz_p_ref_bar)
-        logger.info(f"[chem] kzz_mode=powerlaw: Kzz0({kzz_p_ref_bar:g} bar) = "
-                    f"{_kzz_ref0:.3e} cm^2/s, slope from theta")
+    _kzz_eff = _make_kzz_eff(kzz_mode, profile, atm, Kzz0)
 
-    def _kzz_eff(lnKzz, kzz_slope):
-        if kzz_mode == "powerlaw":
-            return _kzz_ref0 * jnp.exp(lnKzz) * _p_over_ref ** (-kzz_slope)
-        return Kzz0 * jnp.exp(lnKzz)
-
-    # --- on-graph atmosphere rebuild inputs -------------------------------
-    # refresh_static: inputs of the runner's own hydrostatic-refresh kernel
-    # (pico, gs, Rp, pref anchor, species masses).
-    # phys0/spec_atm: inputs of atm_jax.mol_diff, the on-graph Dzz(T, M)
-    # builder (field-for-field equal to the host make_atm_static for this
-    # atm_type; VULCAN-JAX tests/test_atm_jax.py).
+    # refresh_static feeds the runner's own hydrostatic-refresh kernel; phys0 and spec_atm feed atm_jax.mol_diff, the
+    # on-graph Dzz(T, M) builder.
     refresh_static = integ.build_refresh_static(atm)
     phys0, spec_atm = atm_jax.make_physical_inputs(cfg, var, atm, list(network.species))
     use_vm = bool(spec_atm.use_vm_mol and spec_atm.use_moldiff)
     use_set = bool(spec_atm.use_settling and spec_atm.use_moldiff)
 
-    # --- composition masks for the y0 knobs -------------------------------
     compo = np.asarray(composition.compo_array)
-    metal_cols = [constants.ATOM_COLS[a] for a in ("O", "C", "N", "S")]
-    # Scales every C/N/O/S-bearing species; NOT an exact elemental direction
-    # (bound H scales along, ~0.6% per e-fold of Z at 10x solar). It is only
-    # the initial guess: the elemental repair removes the leakage.
-    metal_mask = jnp.asarray((compo[:, metal_cols].sum(axis=1) > 0).astype(np.float64))
-    carbon_mask = jnp.asarray(                                   # C/O proxy
-        (compo[:, constants.ATOM_COLS["C"]] > 0).astype(np.float64))
-    # S-bearing species: the s_o knob's guess scales them by e^s_o on top of
-    # the metal scaling; the O they drag along (SO, SO2, OCS, HSO) is repaired
-    # by the projection, which fixes every element's column ratio exactly.
-    sulfur_mask = jnp.asarray(
-        (compo[:, constants.ATOM_COLS["S"]] > 0).astype(np.float64))
-    # fixed-O C/O mode ("co_mode": "fixed_O"): every C atom lives in a C-bearing species,
-    # and the O-carriers holding no C (H2O, OH, O2, SO, SO2, NO, ...) are disjoint from
-    # them -- the two masks partition all O between "dragged along by C-carriers" and
-    # "free to compensate".
-    nO_per_species = jnp.asarray(np.asarray(compo[:, constants.ATOM_COLS["O"]], dtype=np.float64))
-    o_only_mask = jnp.asarray(((compo[:, constants.ATOM_COLS["O"]] > 0)
-                               & (compo[:, constants.ATOM_COLS["C"]] == 0)).astype(np.float64))
-    # The two modes differ only in a warm continuation's guess; the projection
-    # puts both on the same targets. Cold solves start from the eq seed in both.
+    # The two modes differ only in a warm continuation's guess; the projection puts both on the same targets.
     co_mode = str(profile.get("co_mode", "fixed_O"))
     if co_mode not in ("proxy", "fixed_O"):
         raise ValueError(f"co_mode={co_mode!r}: expected 'proxy' or 'fixed_O'")
     co_fixed_o = co_mode == "fixed_O"
     atomic_masses = jnp.asarray(np.asarray(constants.ATOMIC_MASSES, dtype=np.float64))
     species_masses = jnp.asarray(np.asarray(compo, dtype=np.float64)) @ atomic_masses  # (ni,)
-    # runner's own (ni, n_atoms) composition table, columns in its internal _atom_order --
-    # used to rebuild the conserved atom totals (atom_ini) in the runner's exact basis.
+    # The runner's own (ni, n_atoms) table, for atom_ini in the runner's basis.
     compo_run = jnp.asarray(np.asarray(integ.compo_arr, dtype=np.float64))
 
-    # --- exact-elemental targets + repair tables ----------------------------
-    # Baseline elemental totals (layer sums, no dz weight) from the pristine y0 (which sums to
-    # M_base per layer by construction: equilibrium mixing ratios x layer density).
-    # Targets are RATIOS to elemental H; absolute densities follow from sum_i n_i = M.
-    elem_pairs = [(e, tuple(sp for sp in sps if sp in sidx)) for e, sps in _ELEMENTAL_REPAIR
-                  if any(sp in sidx for sp in sps)
-                  and compo[:, constants.ATOM_COLS[e]].sum() > 0]
     _y0_np = np.asarray(y0, dtype=np.float64)
-    _elem_cols = [constants.ATOM_COLS["H"]] + [constants.ATOM_COLS[e] for e, _ in elem_pairs]
-    # (ni, 1+nrep) atoms-per-molecule for [H, He, O, C, N, S]-as-present
-    E_np = np.asarray(compo[:, _elem_cols], dtype=np.float64)
-    E_mat = jnp.asarray(E_np)
-    # adjuster species of all groups in one gather, and each one's group; the
-    # group totals are explicit adds over those static positions (a contraction
-    # over species would let XLA reorder the sum between batched routes)
-    rep_cols = np.asarray([sidx[sp] for _, sps in elem_pairs for sp in sps], dtype=np.int64)
-    rep_group = np.asarray([k for k, (_, sps) in enumerate(elem_pairs) for _ in sps],
-                           dtype=np.int64)
-    rep_slots = [np.flatnonzero(rep_group == k).tolist() for k in range(len(elem_pairs))]
-    A0 = _y0_np @ E_np                                                # per-layer (nz, 1+nrep)
-    A0 = A0.sum(axis=0)                                               # column totals
-    missing = [sp for _, sps in _ELEMENTAL_REPAIR for sp in sps if sp not in sidx]
-    if not elem_pairs:
-        raise RuntimeError("elemental mode: no repair species found in the network")
-    R0_ratios = A0[1:] / A0[0]
-    # per-element theta-scaling kind: He fixed; O/N x Z; C x Z e^{c_o}; S x Z e^{s_o}
-    _zk = np.asarray([0.0 if e == "He" else 1.0 for e, _ in elem_pairs])
-    _ck = np.asarray([1.0 if e == "C" else 0.0 for e, _ in elem_pairs])
-    _sk = np.asarray([1.0 if e == "S" else 0.0 for e, _ in elem_pairs])
-    zscale_kind = jnp.asarray(_zk)
-    cscale_kind = jnp.asarray(_ck)
-    sscale_kind = jnp.asarray(_sk)
-    R0_j = jnp.asarray(R0_ratios)
-    _names = [e for e, _ in elem_pairs]
+    elem = _build_elemental(compo, sidx, _y0_np, ni, co_fixed_o)
+    _targets, _elemental_project, _guess_y0, co_bz_margin = elem.targets, elem.project, elem.guess, elem.margin
+    elem_pairs, E_np, R0_ratios, _names = elem.pairs, elem.E_np, elem.R0_ratios, elem.names
+    _zk, _ck, _sk = elem.kinds
 
-    def _targets(lnZ, c_o, s_o):
-        return R0_j * jnp.exp(lnZ * zscale_kind + c_o * cscale_kind + s_o * sscale_kind)
-
-    logger.info("[chem] elemental mode: exact column ratios to H via repair species "
-                f"{[sp for _, sp in elem_pairs]}"
-                + (f" (absent: {missing})" if missing else "")
-                + "; baseline C/O = "
-                f"{A0[1 + _names.index('C')] / A0[1 + _names.index('O')]:.4f}")
-
-    # --- cold-start seed: the network's own Gibbs equilibrium at the proposal's
-    # own T-P and column elemental ratios (the upstream VULCAN start). End-to-end
-    # JAX (vulcan3.ini_abun.eq_seed): no host callback, so it jits and vmaps
-    # with the rest of the solve. Its tangent is zero by construction (vulcan3
-    # carries the custom_jvp); lnZ / c_o tangents enter through the exact
-    # elemental projection below. Only cold solves (warm_y=None) use it.
+    # The cold-start seed is the network's Gibbs equilibrium at the proposal's T-P and column ratios. Its tangent is
+    # zero by construction (vulcan3 carries the custom_jvp); lnZ and c_o tangents enter through the projection.
     _ratio_idx = ratio_indices([e for e, _ in elem_pairs])
 
-    def _eq_seed(T, ratios, M):
-        """The equilibrium column as ABSOLUTE densities (nz, ni): eq_seed
-        returns mixing ratios, and every caller here works in densities."""
-        return eq_seed(T, p_bar_j,
-                       element_vector(ratios, _ratio_idx)) * M[:, None]
+    def _eq_seed(T: Array, ratios: Array, M: Array) -> Array:
+        """Return the equilibrium column as absolute densities, [nz, ni]; ``eq_seed`` returns mixing ratios."""
+        return eq_seed(T, p_bar_j, element_vector(ratios, _ratio_idx)) * M[:, None]
 
-    def co_bz_margin(y):
-        """Positivity margin of the fixed-O C/O knob on the column ``y`` (nz, ni):
-        see :func:`bz_margin`. Evaluate it on the column the tangent actually
-        starts from (a warm converged column, not only the build's initial
-        one). inf in proxy mode (no b_z compensation)."""
-        if not co_fixed_o:
-            return float("inf")
-        return bz_margin(y, nO_per_species, carbon_mask, o_only_mask)
+    co_bz_bound = co_bz_margin(_y0_np)  # the build's initial column
 
-    co_bz_bound = co_bz_margin(_y0_np)   # the build's initial column
-
-    rep_cols_j = jnp.asarray(rep_cols)
-    rep_group_j = jnp.asarray(rep_group)
-
-    def _elemental_project(y_in, M, lnZ, c_o, s_o):
-        """Renormalize to sum_i n_i = M and repair the column elemental ratios exactly.
-
-        y_in : (nz, ni) guessed absolute densities. Returns (y_out, min_adj) where
-        y_out rows sum to M and the column ratios-to-H equal the theta targets to the
-        fixed-iteration residual (~1e-15 rel; audit_init measures it), and min_adj is
-        the smallest per-group repair factor (must stay > 0 for a physical column;
-        it is ~1 +/- the mask-leakage scale everywhere in the shipped prior boxes).
-        """
-        targets = _targets(lnZ, c_o, s_o)                       # (nrep,)
-        y = y_in * (M / jnp.sum(y_in, axis=1))[:, None]
-        min_adj = jnp.asarray(1.0, dtype=jnp.float64)
-        for _ in range(_ELEMENTAL_REPAIR_ITERS):
-            A = jnp.einsum("zi,ie->e", y, E_mat)                # [H, e1..] column totals
-            col_tot = jnp.sum(y[:, rep_cols_j], axis=0)         # adjuster columns
-            Bs = E_mat[rep_cols_j, :].T * col_tot[None, :]      # per adjuster species
-            cols = []
-            for slots in rep_slots:                             # (1+nrep, nrep) per group
-                b = Bs[:, slots[0]]
-                for j in slots[1:]:
-                    b = b + Bs[:, j]
-                cols.append(b)
-            B = jnp.stack(cols, axis=1)
-            Msys = B[1:, :] - targets[:, None] * B[0:1, :]
-            rhs = targets * A[0] - A[1:]
-            alpha = jnp.linalg.solve(Msys, rhs)                 # (nrep,) additive factors
-            min_adj = jnp.minimum(min_adj, jnp.min(1.0 + alpha))
-            scale_vec = jnp.ones(ni, dtype=jnp.float64).at[rep_cols_j].set(
-                1.0 + alpha[rep_group_j])
-            y = y * scale_vec[None, :]
-            y = y * (M / jnp.sum(y, axis=1))[:, None]
-        return y, min_adj
-
-    def _guess_y0(lnZ, c_o, s_o, warm_y, lnZ_ref, c_o_ref, s_o_ref):
-        """Mask-scaled continuation GUESS from the converged column ``warm_y``
-        (shared by _prep and audit_init): only the increments (lnZ - lnZ_ref,
-        c_o - c_o_ref, s_o - s_o_ref) are applied, so a large absolute
-        perturbation is reached by small steps from a nearby converged state.
-        The sulfur increment scales the S-bearing species; the projection
-        repairs the oxygen they carry."""
-        c_o_inc = c_o - c_o_ref     # incremental C/O relative to the warm state
-        base = warm_y * jnp.exp((s_o - s_o_ref) * sulfur_mask)[None, :]
-        if co_fixed_o:
-            # c_o == delta ln(C/O) at fixed O, exactly, layer by layer: scale
-            # C-bearing species by e^c; compensate the O they drag along by
-            # scaling O-only carriers by b_z = 1 + (1 - e^c)*O_Ccarriers/O_Oonly,
-            # keeping each layer's O total invariant. Smooth in c_o -> AD-safe;
-            # b_z > 0 while c_o_inc < co_bz_margin(base).
-            OC_z = (base * (nO_per_species * carbon_mask)[None, :]).sum(axis=1)
-            OO_z = (base * (nO_per_species * o_only_mask)[None, :]).sum(axis=1)
-            b_z = 1.0 + (1.0 - jnp.exp(c_o_inc)) * OC_z / OO_z                # (nz,)
-            cofac = jnp.where(carbon_mask[None, :] > 0, jnp.exp(c_o_inc), 1.0)  # (1, ni)
-            cofac = jnp.where(o_only_mask[None, :] > 0, b_z[:, None], cofac)  # (nz, ni)
-            y0p = base * jnp.exp((lnZ - lnZ_ref) * metal_mask)[None, :] * cofac
-        else:
-            scale = jnp.exp((lnZ - lnZ_ref) * metal_mask + c_o_inc * carbon_mask)  # (ni,)
-            y0p = base * scale[None, :]
-        return y0p
-
-    def _as_params(p):
-        """Accept named :class:`ChemParams` or a positional vector."""
+    def _as_params(p: ChemParams | Array) -> ChemParams:
+        """Accept named ``ChemParams`` or a positional vector."""
         if isinstance(p, ChemParams):
             return p
-        return params_from_vector(p, n_tp_params, has_tp_eval=tp_eval is not None,
-                                  extras=chem_extras)
+        return params_from_vector(p, n_tp_params, has_tp_eval=tp_eval is not None, extras=chem_extras)
 
-    def _prep(theta, warm_y=None, lnZ_ref=0.0, c_o_ref=0.0, s_o_ref=0.0):
-        """Build the perturbed initial runner state + atm from ChemParams (or
-        the positional vector [lnZ, c_o, lnKzz, *chem_extras, T...]).
+    # size-limit-ok: one proposal's state, in program order
+    def _prep(
+        theta: ChemParams | Array,
+        warm_y: Array | None = None,
+        lnZ_ref: Array | float = 0.0,
+        c_o_ref: Array | float = 0.0,
+        s_o_ref: Array | float = 0.0,
+    ) -> tuple[Any, Any]:
+        """Build the initial runner state and atmosphere for one proposal.
 
-        Continuation: pass warm_y = a previously-CONVERGED y (with its lnZ_ref /
-        c_o_ref / s_o_ref) to warm-start from there. The projection fixes each layer's
-        total at M and the layer-summed (unweighted) column ratios to H at the
-        theta targets. It does not fix the dz-weighted inventory the element
-        budget tracks (budget_ref), so two starts at one theta can carry
-        different weighted inventories."""
-        # One column per solve, always: the batched entry points map this over
-        # the leading axis, so warm_i is (nz, ni) there too. Any other trailing
-        # shape would BROADCAST silently -- a (1, ni) column would seed every
-        # layer from one layer. Shapes are static, so this check runs under jit
-        # and under vmap.
+        With ``warm_y``, start from that converged column. The projection fixes each layer's total at M and the
+        layer-summed column ratios to H at the theta targets, not the dz-weighted inventory the element budget tracks,
+        so two starts at one theta can carry different weighted inventories.
+        """
+        # One column per solve: a (1, ni) column would broadcast and seed every layer from one layer. Shapes are static,
+        # so this runs under jit and vmap.
         if warm_y is not None and jnp.shape(warm_y) != (nz, ni):
             raise ValueError(
                 f"warm_y has shape {tuple(jnp.shape(warm_y))}: one converged "
                 f"column of shape ({nz}, {ni}) is expected per solve "
                 f"(batched callers pass ({nz}, {ni}) per lane, i.e. "
-                f"(N, {nz}, {ni}) stacked).")
+                f"(N, {nz}, {ni}) stacked)."
+            )
         _p = _as_params(theta)
         lnZ, c_o, lnKzz, s_o = _p.lnZ, _p.c_o, _p.lnKzz, _p.s_o
 
-        if tp_eval is None:
-            T = T_base + _p.tp[0]
-        else:
-            T = tp_eval(_p.tp, p_bar_j)
+        T = T_base + _p.tp[0] if tp_eval is None else tp_eval(_p.tp, p_bar_j)
         M = pco / (kb * T)
-        # Pass cfg.use_lowT_limit_rates through; build_rate_array defaults it off.
         k_arr = rates_jax.build_rate_array(
-            network, T, M, nasa9, remove_list,
-            use_lowT_caps=bool(cfg.use_lowT_limit_rates))
+            network, T, M, nasa9, remove_list, use_lowT_caps=bool(cfg.use_lowT_limit_rates)
+        )
         Ti = 0.5 * (T[:-1] + T[1:])
         Kzz_eff = _kzz_eff(lnKzz, _p.kzz_slope)
 
@@ -750,25 +426,17 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0,
         else:
             y0p = _guess_y0(lnZ, c_o, s_o, warm_y, lnZ_ref, c_o_ref, s_o_ref)
 
-        # Exact construction: sum_i n_i = M per layer AND exact column elemental
-        # ratios; atom_ini rebuilt from the repaired column so the conservation
-        # anchor matches the actual initial gas.
+        # atom_ini comes from the repaired column, so the conservation anchor matches the initial gas.
         y0p, _min_adj = _elemental_project(y0p, M, lnZ, c_o, s_o)
         ymix0 = y0p / M[:, None]
         atom_ini_new = jnp.einsum("zi,ia->a", y0p, compo_run)  # runner atom order
         pv_T = pv0._replace(n_0=M, r_Tco=T, Kzz=Kzz_eff, atom_ini=atom_ini_new)
 
-        # --- atmospheric structure at the proposed T + composition --------
-        # Hydrostatic geometry via the runner's OWN refresh kernel (so the initial
-        # carry equals what the in-loop refresh maintains); Dzz/vm/vs via the
-        # committed on-graph builder at the proposed (T, M). The runner splices the
-        # carry geometry into every step and recomputes vm in-loop from atm.Dzz, so
-        # rebuilding Dzz here fixes the whole molecular-diffusion channel.
+        # Geometry from the runner's own refresh kernel, so the initial carry equals what the in-loop refresh maintains.
+        # The runner recomputes vm in-loop from atm.Dzz, so rebuilding Dzz fixes the whole molecular-diffusion channel.
         refresh_lane = refresh_static._replace(Tco=T)
-        mu_i, g_i, Hp_i, dz_i, zco_i, dzi_i, Hpi_i = atm_refresh_mod.update_mu_dz_jax(
-            ymix0, refresh_lane)
-        Dzz_new, _Dzz_cen, vm_new = atm_jax.mol_diff(
-            phys0._replace(Tco=T), spec_atm, M, g_i, Hp_i, dz_i)
+        mu_i, g_i, Hp_i, dz_i, zco_i, dzi_i, Hpi_i = atm_refresh_mod.update_mu_dz_jax(ymix0, refresh_lane)
+        Dzz_new, _Dzz_cen, vm_new = atm_jax.mol_diff(phys0._replace(Tco=T), spec_atm, M, g_i, Hp_i, dz_i)
         if not use_vm:
             vm_new = jnp.zeros((nz - 1, ni), dtype=jnp.float64)
         if use_set:
@@ -776,14 +444,9 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0,
             vs_new = settling_velocity_jax(_na, _a, _b, T, g_i, spec_atm.settle_coeff)
         else:
             vs_new = jnp.zeros((nz - 1, ni), dtype=jnp.float64)
-        # The runner does not read pv.y_ini. The element-budget reference
-        # is `budget_ref`, seeded below from this theta's own starting column
-        # (as atom_ini is re-anchored above), so the proposal's composition
-        # change is not charged to the solver's conservation.
         pv_T = pv_T._replace(r_Dzz_top=Dzz_new[-1], y_ini=y0p)
 
-        # --- condensation at the proposed T ---------------------------------
-        # Replace every T-dependent condensation field; the carry holds baseline-T values.
+        # The carry holds baseline-T condensation values.
         if conden_spec is not None:
             cprof = conden_mod.build_conden_profile(conden_spec, T, pco, M, Dzz_new)
             pv_T = pv_T._replace(
@@ -796,99 +459,167 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0,
                 c_nh3_conden_top=cprof.nh3_conden_top,
                 fix_species_sat_mix=cprof.fix_species_sat_mix,
             )
-        atm_T = atm_static._replace(Tco=T, Ti=Ti, M=M, Kzz=Kzz_eff, Dzz=Dzz_new,
-                                    vm=vm_new, vs=vs_new, g=g_i, dzi=dzi_i, Hpi=Hpi_i)
+        atm_T = atm_static._replace(
+            Tco=T, Ti=Ti, M=M, Kzz=Kzz_eff, Dzz=Dzz_new, vm=vm_new, vs=vs_new, g=g_i, dzi=dzi_i, Hpi=Hpi_i
+        )
 
-        # y_prev is the runner's revert target on a rejected step AND the state
-        # the element-budget per-step accumulation differences against; state0 carries the
-        # BASELINE column there, so it must be re-seeded with this theta's own.
-        init = state0._replace(y=y0p, y_prev=y0p, ymix=ymix0, k_arr=k_arr, pv=pv_T,
-                               mu=mu_i, g=g_i, Hp=Hp_i, dz=dz_i, zco=zco_i,
-                               dzi=dzi_i, Hpi=Hpi_i, vs=vs_new,
-                               budget_ref=column_atoms(y0p, dz_i, compo_run),
-                               budget_err=jnp.zeros_like(state0.budget_err),
-                               budget_drift=jnp.zeros_like(state0.budget_drift))
+        # y_prev is the revert target on a rejected step and the state the element budget differences against; state0
+        # carries the baseline column there. budget_ref starts from this theta's column, so the proposal's composition
+        # change is not charged to the solver's conservation.
+        init = state0._replace(
+            y=y0p,
+            y_prev=y0p,
+            ymix=ymix0,
+            k_arr=k_arr,
+            pv=pv_T,
+            mu=mu_i,
+            g=g_i,
+            Hp=Hp_i,
+            dz=dz_i,
+            zco=zco_i,
+            dzi=dzi_i,
+            Hpi=Hpi_i,
+            vs=vs_new,
+            budget_ref=column_atoms(y0p, dz_i, compo_run),
+            budget_err=jnp.zeros_like(state0.budget_err),
+            budget_drift=jnp.zeros_like(state0.budget_drift),
+        )
         return init, atm_T
 
-    def run_diag(theta, return_atm=False, warm_y=None, lnZ_ref=0.0, c_o_ref=0.0,
-                 s_o_ref=0.0):
-        """Diagnostic solve: returns (final_runner_state, init_state).
+    def run_diag(
+        theta: ChemParams | Array,
+        return_atm: bool = False,
+        warm_y: Array | None = None,
+        lnZ_ref: Array | float = 0.0,
+        c_o_ref: Array | float = 0.0,
+        s_o_ref: Array | float = 0.0,
+    ) -> tuple[Any, ...]:
+        """Solve for a diagnostic: return the final carry and the initial state.
 
-        Lets a caller inspect convergence and conserved-total drift. Not on any
-        AD path. ``return_atm=True`` additionally returns the theta-dependent
-        AtmStatic the runner was actually driven with -- the operating point a
-        reverse-mode adjoint must linearize around (the setup-time baseline is
-        WRONG whenever theta carries a T-P or Kzz offset). Cold by default;
-        ``warm_y`` / ``lnZ_ref`` / ``c_o_ref`` / ``s_o_ref`` start it as
-        ``converged_y``'s continuation does."""
+        Parameters
+        ----------
+        theta : ChemParams or jax.Array
+            The parameters.
+        return_atm : bool, optional
+            Also return the theta-dependent ``AtmStatic`` the runner was driven with, the operating point a reverse-mode
+            adjoint must linearize around.
+        warm_y : jax.Array [nz, ni], optional
+            A converged column to continue from; None starts cold from the equilibrium seed.
+        lnZ_ref : float, optional
+            The ln metallicity multiple ``warm_y`` was converged at.
+        c_o_ref : float, optional
+            The ln C/O multiple it was converged at.
+        s_o_ref : float, optional
+            The ln S/O multiple it was converged at.
+
+        Returns
+        -------
+        tuple
+            ``(final, init)``, or ``(final, init, atm)`` with ``return_atm``.
+        """
         init, atm_T = _seeded_prep(theta, warm_y, lnZ_ref, c_o_ref, s_o_ref)
         final = integ.runner(init, atm_T)
         return (final, init, atm_T) if return_atm else (final, init)
 
-    def prep_pv(theta):
-        """The initial-carry ProfileVars for ``theta`` -- the per-proposal arrays
-        (n_0, Kzz, atom_ini, and with condensation on the live-rebuilt c_* conden
-        arrays + fix_species_sat_mix) WITHOUT running the solver. Pure function
-        of theta; jit/vmap/jvp-traceable. Diagnostics/tests only."""
+    def prep_pv(theta: ChemParams | Array) -> Any:
+        """Return the initial-carry ``ProfileVars`` for ``theta``, without a solve, for tests and diagnostics.
+
+        Parameters
+        ----------
+        theta : ChemParams or jax.Array
+            The parameters.
+
+        Returns
+        -------
+        ProfileVars
+            The per-proposal arrays (n_0, Kzz, atom_ini and, with condensation on, the rebuilt c_* arrays).
+        """
         init, _atm_T = _prep(theta)
         return init.pv
 
-    def converged_y(theta, warm_y=None, lnZ_ref=0.0, c_o_ref=0.0,
-                    return_conv_diag=False, s_o_ref=0.0):
-        """Converged ABSOLUTE number densities y (nz, ni), with optional
-        continuation warm-start (warm_y at lnZ_ref / c_o_ref / s_o_ref).
-        Forward-mode differentiable w.r.t. theta.
+    def converged_y(
+        theta: ChemParams | Array,
+        warm_y: Array | None = None,
+        lnZ_ref: Array | float = 0.0,
+        c_o_ref: Array | float = 0.0,
+        return_conv_diag: bool = False,
+        s_o_ref: Array | float = 0.0,
+    ) -> Array | tuple[Array, ConvDiag]:
+        """Return the converged column, forward-mode differentiable in ``theta``.
 
-        The carry's termination budget + diffusion blend are re-seeded per
-        solve; under the hybrid vm_mol scheme a warm continuation runs on the
-        central operator instead of re-entering upwind phase 0.
+        Under the hybrid vm_mol scheme a warm continuation runs on the central operator instead of re-entering upwind
+        phase 0.
 
-        ``return_conv_diag=True`` returns ``(y, ConvDiag)`` -- free
-        reads off the primal carry; ``conv_normal`` is the canonical
-        certification recomputed at the exit, so a budget exit reads
-        False even when ``longdy < yconv_min``. ConvDiag's float fields
-        carry a tangent -- AD callers stop_gradient them."""
+        Parameters
+        ----------
+        theta : ChemParams or jax.Array
+            The parameters.
+        warm_y : jax.Array [nz, ni], optional
+            A converged column to continue from; None starts cold from the equilibrium seed.
+        lnZ_ref : float, optional
+            The ln metallicity multiple ``warm_y`` was converged at.
+        c_o_ref : float, optional
+            The ln C/O multiple it was converged at.
+        return_conv_diag : bool, optional
+            Also return the ``ConvDiag``, a free read off the primal carry whose float fields carry a tangent.
+        s_o_ref : float, optional
+            The ln S/O multiple it was converged at.
+
+        Returns
+        -------
+        jax.Array [nz, ni], or tuple
+            Absolute number densities, cm^-3; with ``return_conv_diag``, ``(y, ConvDiag)``.
+        """
         init, atm_T = _seeded_prep(theta, warm_y, lnZ_ref, c_o_ref, s_o_ref)
         final = integ.runner(init, atm_T)
         if return_conv_diag:
             return final.y, _conv_diag(final)
         return final.y
 
-    def _ref_leaves(n, lnZ_ref, c_o_ref, s_o_ref):
-        """The reference composition as PER-LANE (n,) leaves for the vmapped
-        prep. A scalar broadcasts, so a shared reference still works; the
-        retrieval's warm starts pass each row its OWN anchor's (lnZ, c_o, s_o).
-        References are CONSTANTS of the map -- a caller
-        differentiates with respect to theta, never to these."""
-        return tuple(jnp.broadcast_to(jnp.asarray(r, dtype=jnp.float64), (n,))
-                     for r in (lnZ_ref, c_o_ref, s_o_ref))
+    def _ref_leaves(
+        n: int, lnZ_ref: Array | float, c_o_ref: Array | float, s_o_ref: Array | float
+    ) -> tuple[Array, ...]:
+        """Broadcast the reference composition to per-lane leaves [n] for the vmapped prep."""
+        return tuple(jnp.broadcast_to(jnp.asarray(r, dtype=jnp.float64), (n,)) for r in (lnZ_ref, c_o_ref, s_o_ref))
 
-    def converged_y_batch(thetas, warm_y=None, lnZ_ref=0.0, c_o_ref=0.0,
-                          return_conv_diag=False, s_o_ref=0.0):
-        """Converged ABSOLUTE number densities for a STACK of thetas (N, n_theta)
-        -> y (N, nz, ni), with the optional per-lane continuation warm-start
-        ``warm_y`` (N, nz, ni) at lnZ_ref / c_o_ref and, with
-        ``return_conv_diag=True``, the per-lane ``(y, ConvDiag)`` of
-        ``converged_y``. The results are the BATCHED runner's
-        (``OuterLoop.run_batch``, one while loop ABOVE the lane vmap):
-        photolysis and the geometry refresh follow the loop's iteration tick,
-        not the lane's accept count, so a lane is NOT bit-identical to its solo
-        ``converged_y`` -- the two agree at the convergence scale. A lane's
-        result does not depend on the other lanes -- each freezes at its own
-        exit. A plain ``jax.jvp`` through this entry point is supported (the
-        stop test reads the primal only); a tangent-CERTIFIED derivative is
-        ``converged_y_jvp``.
+    def converged_y_batch(
+        thetas: Array,
+        warm_y: Array | None = None,
+        lnZ_ref: Array | float = 0.0,
+        c_o_ref: Array | float = 0.0,
+        return_conv_diag: bool = False,
+        s_o_ref: Array | float = 0.0,
+    ) -> Array | tuple[Array, ConvDiag]:
+        """Return the converged columns of a stack of thetas, on the batched runner.
 
-        ``lnZ_ref`` / ``c_o_ref`` / ``s_o_ref`` may be scalars or ``(N,)``
-        arrays: a warm batch gives every lane the reference its carried column
-        was converged at.
+        One while loop sits above the lane vmap (``OuterLoop.run_batch``): photolysis and the geometry refresh follow
+        the loop's tick, not the lane's accept count, so a lane is not bit-identical to its solo ``converged_y``; the
+        two agree at the convergence scale. A lane's result does not depend on the other lanes. A plain ``jax.jvp``
+        through this is supported; a tangent-certified derivative is ``converged_y_jvp``.
+
+        Parameters
+        ----------
+        thetas : jax.Array [N, n_theta]
+            The parameters.
+        warm_y : jax.Array [N, nz, ni], optional
+            One converged column per lane; None starts cold from the equilibrium seed.
+        lnZ_ref : float or jax.Array [N], optional
+            The ln metallicity multiple each ``warm_y`` was converged at; a scalar is shared. Never differentiated.
+        c_o_ref : float or jax.Array [N], optional
+            The ln C/O multiple, likewise.
+        return_conv_diag : bool, optional
+            Also return the per-lane ``ConvDiag``.
+        s_o_ref : float or jax.Array [N], optional
+            The ln S/O multiple, likewise.
+
+        Returns
+        -------
+        jax.Array [N, nz, ni], or tuple
+            Absolute number densities, cm^-3; with ``return_conv_diag``, ``(y, ConvDiag)``.
         """
         refs = _ref_leaves(int(jnp.shape(thetas)[0]), lnZ_ref, c_o_ref, s_o_ref)
 
-        # The AtmStatic toggles are unbatched Python bools (the runner's own
-        # lane vmap broadcasts them), so they take out_axes None and every
-        # array leaf takes 0 -- exactly `ATM_STATIC_BATCH_AXES`. warm_y=None
-        # is an empty pytree node, so the same vmap covers the cold seed.
+        # warm_y=None is an empty pytree node, so the same vmap covers the cold seed.
         init_b, atm_b = jax.vmap(
             _seeded_prep,
             out_axes=(0, outer_loop.ATM_STATIC_BATCH_AXES),
@@ -898,141 +629,198 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0,
             return final_b.y, jax.vmap(_conv_diag)(final_b)
         return final_b.y
 
-    # `run_queue` keys its compiled program on the init_fn / out_fn OBJECTS, so
-    # fresh closures per call would recompile and grow its cache once per call.
-    # The pair depends only on this key, which holds STATIC choices only: the
-    # reference composition rides the jobs pytree (gathered per job), so its
-    # VALUES never enter a closure and never cost a compile.
-    _queue_fns = {}
+    # run_queue keys its compiled program on the init_fn and out_fn objects, so fresh closures per call would recompile.
+    # The pair depends only on static choices: the reference composition rides the jobs pytree.
+    _queue_fns: dict[tuple[bool, bool], tuple[Callable[..., Any], Callable[..., Any]]] = {}
 
-    def converged_y_queue(thetas, n_lanes, *, chunk=None, warm_y=None,
-                          lnZ_ref=0.0, c_o_ref=0.0, active=None, s_o_ref=0.0):
-        """``converged_y_batch`` on ``n_lanes`` lanes with refill from the job
-        queue (vulcan3 ``OuterLoop.run_queue``): a lane that certifies is
-        written out and takes the next theta inside the same while loop, so
-        wall time follows total work / lanes instead of the slowest theta.
+    # size-limit-ok: most of the length is the numpy docs
+    def converged_y_queue(
+        thetas: Array,
+        n_lanes: int,
+        *,
+        chunk: int | None = None,
+        warm_y: Array | None = None,
+        lnZ_ref: Array | float = 0.0,
+        c_o_ref: Array | float = 0.0,
+        active: ArrayLike | None = None,
+        s_o_ref: Array | float = 0.0,
+    ) -> tuple[Array, ConvDiag]:
+        """Return ``converged_y_batch`` on ``n_lanes`` lanes, refilled from the job queue.
 
-        Same map and the same convergence-scale contract as the plain batch --
-        a refilled theta enters at the tick its lane was freed at, which moves
-        the photolysis / geometry cadence the way the batch already moves it
-        against the solo solve. With ``n_lanes >= N`` nothing is refilled and
-        every theta runs the plain batch's ticks, but the result is not bitwise
-        the batch's (the seed is compiled inside run_queue's loop). Returns
-        ``(y (N, nz, ni), ConvDiag stacked over N)``; the ConvDiag is not
-        optional here (it rides the per-job write-out).
+        A lane that certifies is written out and takes the next theta inside the same while loop
+        (``OuterLoop.run_queue``), so wall time follows total work over lanes. A refilled theta enters at the tick its
+        lane was freed at, which moves the cadence as the batch already does against the solo solve. With ``n_lanes >=
+        N`` nothing is refilled, but the result is not bitwise the batch's: the seed is compiled inside the loop.
 
-        ``lnZ_ref`` / ``c_o_ref`` / ``s_o_ref`` (scalar or ``(N,)``) mean what
-        they mean on ``converged_y_batch``: the references ride the jobs
-        pytree, so each job is prepped at its own. ``chunk=None`` keeps
-        vulcan3's own refill chunk.
+        Parameters
+        ----------
+        thetas : jax.Array [N, n_theta]
+            The parameters.
+        n_lanes : int
+            The lane count.
+        chunk : int, optional
+            Lanes refilled per pass; None keeps vulcan3's.
+        warm_y : jax.Array [N, nz, ni], optional
+            One converged column per lane; None starts cold from the equilibrium seed.
+        lnZ_ref : float or jax.Array [N], optional
+            The ln metallicity multiple each ``warm_y`` was converged at; a scalar is shared. Never differentiated.
+        c_o_ref : float or jax.Array [N], optional
+            The ln C/O multiple, likewise.
+        active : array of bool [N], optional
+            False marks a placeholder: its lane starts done, takes no step and goes to the next job; the caller discards
+            its result. None is the program without the mask.
+        s_o_ref : float or jax.Array [N], optional
+            The ln S/O multiple, likewise.
 
-        ``active`` (optional ``(N,)`` bool): a job with ``active[i]`` False is
-        a placeholder (a padded row). Its lane starts done, so it takes no
-        step: it is written out at the next refill (or the final flush) with
-        its seed column and a ConvDiag of zero accepted steps, and its lane
-        goes to the next job. Its result is meaningless; the caller discards
-        it. ``None`` (the default) is the program without the mask."""
+        Returns
+        -------
+        tuple
+            ``(y [N, nz, ni], ConvDiag stacked over N)``.
+
+        Raises
+        ------
+        ValueError
+            If ``active`` does not have shape [N].
+        """
         masked = active is not None
         key = (warm_y is not None, masked)
         fns = _queue_fns.get(key)
         if fns is None:
             if masked:
-                def init_fn(job):
+
+                def init_fn(job: tuple[Any, ...]) -> tuple[Any, Any]:
+                    """Prep one job for its lane."""
                     *core, act = job
                     init, atm_T = _seeded_prep(*core)
-                    return init._replace(
-                        is_done=init.is_done | jnp.logical_not(act)), atm_T
+                    return init._replace(is_done=init.is_done | jnp.logical_not(act)), atm_T
             else:
-                def init_fn(job):
+
+                def init_fn(job: tuple[Any, ...]) -> tuple[Any, Any]:
+                    """Prep one job for its lane."""
                     return _seeded_prep(*job)
 
-            def out_fn(final):
-                # The ConvDiag is a report, never differentiated. With a
-                # tangent it would keep the certificate ring's tangent alive
-                # through the queue's refill cond (vulcan3 `run_queue` zeroes
-                # the ring's at its lane step for the same reason).
-                return final.y, jax.tree_util.tree_map(jax.lax.stop_gradient,
-                                                       _conv_diag(final))
+            def out_fn(final: Any) -> tuple[Array, ConvDiag]:
+                """Write one finished lane out.
+
+                The ``ConvDiag`` is a report, never differentiated: with a tangent it would keep the certificate ring's
+                tangent alive through the queue's refill cond.
+                """
+                return final.y, jax.tree_util.tree_map(jax.lax.stop_gradient, _conv_diag(final))
 
             fns = _queue_fns[key] = (init_fn, out_fn)
         init_fn, out_fn = fns
 
-        # warm_y=None is an empty pytree node, so the same jobs pytree covers
-        # the cold seed.
         n = int(jnp.shape(thetas)[0])
         jobs = (thetas, warm_y, *_ref_leaves(n, lnZ_ref, c_o_ref, s_o_ref))
         if masked:
             act = jnp.asarray(active, dtype=bool)
             if act.shape != (n,):
-                raise ValueError(f"converged_y_queue: active must have shape ({n},), "
-                                 f"got {act.shape}")
-            jobs = jobs + (act,)
+                raise ValueError(f"converged_y_queue: active must have shape ({n},), got {act.shape}")
+            jobs = (*jobs, act)
         chunk_kw = {} if chunk is None else {"chunk": int(chunk)}
-        (y, cd), _n_iter = integ.run_queue(
-            init_fn, jobs, int(n_lanes), out_fn, **chunk_kw)
+        (y, cd), _n_iter = integ.run_queue(init_fn, jobs, int(n_lanes), out_fn, **chunk_kw)
         return y, cd
 
-    def converged_y_jvp(theta, tangent, warm_y=None, lnZ_ref=0.0, c_o_ref=0.0,
-                        s_o_ref=0.0):
-        """Forward-mode sensitivity certified by the solver: ``(y, dy, ConvDiag)``.
+    def converged_y_jvp(
+        theta: ChemParams | Array,
+        tangent: ChemParams | Array,
+        warm_y: Array | None = None,
+        lnZ_ref: Array | float = 0.0,
+        c_o_ref: Array | float = 0.0,
+        s_o_ref: Array | float = 0.0,
+    ) -> tuple[Array, Array, ConvDiag]:
+        """Return a forward-mode sensitivity certified by the solver.
 
-        ``dy`` is the tangent of ``converged_y`` along ``tangent`` (same shape
-        as ``theta``), read when BOTH the column and the tangent pass the
-        runner's certificate (vulcan3 ``OuterLoop.run_jvp``): the tangent
-        is held, per cell, to the same change-over-lookback tolerance as
-        ``y``, so pass ``tangent`` in the units of a finite-difference step
-        (``e_i * h_i``) and divide ``dy`` by ``h_i`` afterwards. A plain
-        ``jax.jvp(converged_y)`` stops when the column certifies, which from a
-        converged warm start is at ``count_min`` with the tangent unrelaxed.
-        ``ConvDiag.conv_normal`` includes the tangent term; ``tangent_longdy``
-        is the tangent's longdy at exit.
+        ``dy`` is read when both the column and the tangent pass the certificate (``OuterLoop.run_jvp``): the tangent is
+        held, per cell, to the same change-over-lookback tolerance as ``y``, so pass ``tangent`` in
+        finite-difference-step units (``e_i * h_i``) and divide ``dy`` by ``h_i``. A plain ``jax.jvp(converged_y)``
+        stops when the column certifies, which from a converged warm start is at ``count_min`` with the tangent
+        unrelaxed.
 
-        SEVERAL DIRECTIONS AT ONCE: pass ``tangent`` as a stack ``(D, n_theta)``
-        against the single ``(n_theta,)``. The directions ride vulcan3's own
-        tangent axis, so the solver integrates the primal ONCE for all D
-        (``jax.vmap`` of this call would integrate it D times -- the tangent
-        certificate is in the loop predicate). ``dy`` comes back ``(D, nz, ni)``;
-        the run stops only when EVERY direction has settled, so ``tangent_ok``
-        is the AND over directions and ``tangent_longdy`` the worst of them."""
-        def _seeded(th):
+        A stacked ``tangent`` rides vulcan3's tangent axis, so the primal is integrated once for all D directions;
+        ``jax.vmap``
+        of this call would integrate it D times. The run stops when every direction has settled.
+
+        Parameters
+        ----------
+        theta : ChemParams or jax.Array
+            The parameters.
+        tangent : ChemParams or jax.Array [n_theta] or [D, n_theta]
+            The direction or directions.
+        warm_y : jax.Array [nz, ni], optional
+            A converged column to continue from; None starts cold from the equilibrium seed.
+        lnZ_ref : float, optional
+            The ln metallicity multiple ``warm_y`` was converged at.
+        c_o_ref : float, optional
+            The ln C/O multiple it was converged at.
+        s_o_ref : float, optional
+            The ln S/O multiple it was converged at.
+
+        Returns
+        -------
+        tuple
+            ``(y, dy, ConvDiag)``: ``dy`` is [nz, ni] or [D, nz, ni], and ``ConvDiag.tangent_longdy`` the worst
+            direction's.
+        """
+
+        def _seeded(th: ChemParams | Array) -> tuple[Any, Any]:
+            """Return the seeded prep of one theta, for the linearization."""
             return _seeded_prep(th, warm_y, lnZ_ref, c_o_ref, s_o_ref)
-        def _leaves(p):   # named or positional, like converged_y
+
+        def _leaves(p: ChemParams | Array) -> ChemParams | Array:
+            """Return theta or a tangent as float64 leaves, named or positional."""
             if isinstance(p, ChemParams):
-                return jax.tree_util.tree_map(
-                    lambda x: jnp.asarray(x, dtype=jnp.float64), p)
+                return jax.tree_util.tree_map(lambda x: jnp.asarray(x, dtype=jnp.float64), p)
             return jnp.asarray(p, dtype=jnp.float64)
-        def _stack_dir(*ds):
-            # float0 placeholders (the carry's int/bool leaves) are
-            # direction-independent; nothing downstream reads them.
+
+        def _stack_dir(*ds: Array) -> Array:
+            """Stack one leaf over directions; float0 placeholders are direction-independent."""
             if getattr(ds[0], "dtype", None) == jax.dtypes.float0:
                 return ds[0]
             return jnp.stack(ds)
 
         th, tan = _leaves(theta), _leaves(tangent)
-        if not isinstance(tangent, ChemParams) and jnp.ndim(tan) == 2:
-            # linearize: the primal build runs once, each direction only pushes
-            # its tangent through it.
+        if not isinstance(tan, ChemParams) and jnp.ndim(tan) == 2:
+            # linearize: the primal build runs once.
             (init, atm_T), lin = jax.linearize(_seeded, th)
             dinit, datm = jax.tree_util.tree_map(_stack_dir, *[lin(v) for v in tan])
         else:
             (init, atm_T), (dinit, datm) = jax.jvp(_seeded, (th,), (tan,))
         final, dfinal, tl, ok = integ.run_jvp(init, atm_T, dinit, datm)
-        return final.y, dfinal.y, _conv_diag(final, tangent_ok=ok,
-                                             tangent_longdy=jnp.max(tl))
+        return final.y, dfinal.y, _conv_diag(final, tangent_ok=ok, tangent_longdy=jnp.max(tl))
 
-    def audit_init(theta, warm_y=None, lnZ_ref=0.0, c_o_ref=0.0, s_o_ref=0.0):
-        """Host-side audit of the initial column built for ``theta`` (not on any AD path).
+    def audit_init(
+        theta: ChemParams | Array,
+        warm_y: Array | None = None,
+        lnZ_ref: Array | float = 0.0,
+        c_o_ref: Array | float = 0.0,
+        s_o_ref: Array | float = 0.0,
+    ) -> dict[str, Any]:
+        """Audit the initial column built for ``theta``, on the host and off any AD path.
 
-        Returns a dict of initial-column residuals: relative density-closure
-        error max_z |sum_i n_i - M|/M, the achieved-vs-target column elemental
-        ratios, the achieved dln(C/O) and dln(S/O) vs theta, the smallest
-        elemental-repair factor (must be > 0), and the atom_ini consistency
-        |atoms(y_init) - atom_ini|/atom_ini in the runner's atom basis.
+        Parameters
+        ----------
+        theta : ChemParams or jax.Array
+            The parameters.
+        warm_y : jax.Array [nz, ni], optional
+            A converged column to continue from; None starts cold from the equilibrium seed.
+        lnZ_ref : float, optional
+            The ln metallicity multiple ``warm_y`` was converged at.
+        c_o_ref : float, optional
+            The ln C/O multiple it was converged at.
+        s_o_ref : float, optional
+            The ln S/O multiple it was converged at.
+
+        Returns
+        -------
+        dict
+            ``density_closure_max_rel``, the achieved, baseline and target ``*_ratios_to_H``, ``dln_CO_achieved`` and
+            with sulfur ``dln_SO_achieved``, ``ratio_max_rel_err``, ``min_repair_factor`` (must be > 0) and
+            ``atom_ini_max_rel_err``.
         """
         _p = _as_params(theta)
         lnZ, c_o, s_o = float(_p.lnZ), float(_p.c_o), float(_p.s_o)
-        init, _atm_T = _prep(theta, warm_y=warm_y, lnZ_ref=lnZ_ref, c_o_ref=c_o_ref,
-                             s_o_ref=s_o_ref)
+        init, _atm_T = _prep(theta, warm_y=warm_y, lnZ_ref=lnZ_ref, c_o_ref=c_o_ref, s_o_ref=s_o_ref)
         y = np.asarray(init.y, dtype=np.float64)
         Mn = np.asarray(init.pv.n_0, dtype=np.float64)
         A = (y @ E_np).sum(axis=0)
@@ -1041,22 +829,18 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0,
         tg = R0_ratios * np.exp(lnZ * _zk + c_o * _ck + s_o * _sk)
         out = {
             "density_closure_max_rel": float(np.max(np.abs(y.sum(axis=1) - Mn) / Mn)),
-            "ratios_to_H": dict(zip(_names, ratios.tolist())),
-            "baseline_ratios_to_H": dict(zip(_names, R0_ratios.tolist())),
-            "dln_CO_achieved": float(np.log((ratios[iC] / ratios[iO])
-                                            / (R0_ratios[iC] / R0_ratios[iO]))),
-            "target_ratios_to_H": dict(zip(_names, tg.tolist())),
+            "ratios_to_H": dict(zip(_names, ratios.tolist(), strict=True)),
+            "baseline_ratios_to_H": dict(zip(_names, R0_ratios.tolist(), strict=True)),
+            "dln_CO_achieved": float(np.log((ratios[iC] / ratios[iO]) / (R0_ratios[iC] / R0_ratios[iO]))),
+            "target_ratios_to_H": dict(zip(_names, tg.tolist(), strict=True)),
             "ratio_max_rel_err": float(np.max(np.abs(ratios / tg - 1.0))),
         }
         if "S" in _names:
             iS = _names.index("S")
-            out["dln_SO_achieved"] = float(np.log((ratios[iS] / ratios[iO])
-                                                  / (R0_ratios[iS] / R0_ratios[iO])))
-        # Re-run the projection from the raw GUESS to expose the actual repair
-        # magnitude (projecting the already-repaired y would always report ~1).
+            out["dln_SO_achieved"] = float(np.log((ratios[iS] / ratios[iO]) / (R0_ratios[iS] / R0_ratios[iO])))
+        # Project the raw guess: projecting the already-repaired y would always report a factor near 1.
         if warm_y is None:
-            y_guess = _eq_seed(init.pv.r_Tco, jnp.asarray(tg),
-                               jnp.asarray(Mn))
+            y_guess = _eq_seed(init.pv.r_Tco, jnp.asarray(tg), jnp.asarray(Mn))
         else:
             y_guess = _guess_y0(lnZ, c_o, s_o, warm_y, lnZ_ref, c_o_ref, s_o_ref)
         _yg, min_adj = _elemental_project(y_guess, jnp.asarray(Mn), lnZ, c_o, s_o)
@@ -1069,31 +853,28 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0,
     return SimpleNamespace(
         run_diag=run_diag,
         converged_y=converged_y,
-        converged_y_batch=converged_y_batch,   # PRIMAL batched twin (run_batch)
-        converged_y_queue=converged_y_queue,   # the same batch on n_lanes lanes
-        #                                        with refill (run_queue)
+        converged_y_batch=converged_y_batch,
+        converged_y_queue=converged_y_queue,
         converged_y_jvp=converged_y_jvp,
-        conv_normal_at_exit=_conv_normal_at_exit,  # certify a raw run_diag final
-        #                                            carry (gate on conv_normal,
-        #                                            never longdy alone)
+        conv_normal_at_exit=_conv_normal_at_exit,
         audit_init=audit_init,
-        conden_spec=conden_spec,   # static conden metadata (None when conden off)
-        prep_pv=prep_pv,           # theta -> initial ProfileVars (no solve; tests)
-        _integ=integ,              # the OuterLoop (baked statics access)
-        co_bz_bound=co_bz_bound,   # fixed-O knob validity: b_z > 0 iff c_o < this (build column)
-        co_bz_margin=co_bz_margin, # the same margin on any column, e.g. the warm converged one
-        y0=np.asarray(y0, dtype=np.float64),   # baked baseline column (warm-start fallback)
+        conden_spec=conden_spec,
+        prep_pv=prep_pv,
+        _integ=integ,
+        co_bz_bound=co_bz_bound,
+        co_bz_margin=co_bz_margin,
+        y0=np.asarray(y0, dtype=np.float64),
         compo_array=compo,
-        atom_list=tuple(composition.atom_list),   # compo_array column order
+        atom_list=tuple(composition.atom_list),
         T_base=np.asarray(T_base),
         p_bar=p_bar,
-        dz=np.asarray(atm.dz, dtype=np.float64),   # layer thickness (cm), n0*dz weights
+        dz=np.asarray(atm.dz, dtype=np.float64),
         sidx=sidx,
         species_masses=species_masses,
-        nz=nz, ni=ni,
-        chem_extras=chem_extras,        # the optional entries of the positional layout
-        n_chem_params=3 + len(chem_extras),   # entries before the temperature block
+        nz=nz,
+        ni=ni,
+        chem_extras=chem_extras,
         kzz_mode=kzz_mode,
-        count_max=int(cfg.count_max),   # the resolved (profile-overridden or YAML-config) cap
-        yconv_min=float(cfg.yconv_min), # loose convergence gate: a converged solve has longdy<this
+        count_max=int(cfg.count_max),
+        yconv_min=float(cfg.yconv_min),
     )

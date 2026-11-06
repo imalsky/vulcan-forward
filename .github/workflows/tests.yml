@@ -12,10 +12,35 @@ on:
     branches: [main]
   pull_request:
 
+permissions: {}
+
 jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
+      - name: Format, lint, types, spelling
+        run: uvx pre-commit run --all-files --show-diff-on-failure
+        env:
+          SKIP: check-size-limits
+      - name: Size limits
+        run: python3 tools/check_size_limits.py
+
   contract:
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    permissions:
+      contents: read
     # Single-threaded XLA CPU, as the local suite runs: the lane-independence
     # checks are bitwise, and multi-threaded Eigen reductions are not.
     env:
