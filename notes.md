@@ -65,8 +65,9 @@ Tags: [M] measured, [E] estimated, [I] inferred.
   vulcan-retrieval reproduced the planner's default WASP-39 b case at max|diff| = 0 [M].
   The deliberate physics changes since (model top, eclipse radius, emission g(r), lnR0)
   carried new fixtures.
-- `build_chem_model` returns a `SimpleNamespace` whose functions are bound methods of
-  frozen, `eq=False` classes (`_Proposal`, `_ChemSolves`): jwst-transit-authority's
+- The three builders return a `SimpleNamespace` whose functions are bound methods of
+  frozen, `eq=False` classes (`_Proposal`, `_ChemSolves`, `_Transmission`, `_Emission`;
+  the last two share `_Opacities`): jwst-transit-authority's
   contract test reads the record's keywords off the source, and each attribute stays one
   function object for a `jax.jit` of it. `_Proposal` must not reach the runner:
   `OuterLoop.run_queue` compiles its methods into a program the runner holds, and JAX's
