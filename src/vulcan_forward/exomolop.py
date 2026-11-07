@@ -264,7 +264,87 @@ def table_info(molecule: str) -> dict[str, Any]:
     return rec
 
 
-# size-limit-ok: the refusals in order, one table at a time
+def _require_x64() -> None:
+    """Refuse jax without x64: float32 tables would shift every cross section by ~1e-5 relative, without an error."""
+    from jax import config as _jax_config
+
+    if not _jax_config.jax_enable_x64:  # type: ignore[attr-defined]  # jax declares its options at run time
+        raise RuntimeError(
+            "jax x64 is not enabled, so the k-tables would be silently "
+            "downcast to float32. Import vulcan_forward.vulcan_chem (or "
+            "vulcan_forward.exojax_rt) before loading opacities, or call "
+            "jax.config.update('jax_enable_x64', True)."
+        )
+
+
+def _refuse_molecules(mols: list[str], tbl: dict[str, dict[str, Any]]) -> None:
+    """Refuse a molecule with no table entry, a repeat or a missing file, naming the remedy."""
+    unknown = [m for m in mols if m not in tbl]
+    if unknown:
+        raise KeyError(
+            f"no molecule spec for {unknown} in the molecule table "
+            f"(have: {sorted(tbl)}). Pass profile['molecule_table'] with one "
+            "entry per molecule: vulcan, molmass."
+        )
+    if len(set(mols)) != len(mols):
+        # the fold adds one opacity per list entry, so a repeat counts twice
+        raise ValueError(f"molecules {mols} name a species more than once; each would add its opacity again")
+    missing = [m for m in mols if not table_path(m).exists()]
+    if missing:
+        raise FileNotFoundError(
+            f"ExoMolOP k-table missing for {missing}: looked in {paths.exomolop_dir()}\n" + _fetch_hint(missing)
+        )
+
+
+def _read_bands(m: str, nu_min: float, nu_max: float) -> tuple[np.ndarray, dict[str, np.ndarray]]:
+    """Return one table's kcoeff [nP, nT, nband, ng] on the bands inside [nu_min, nu_max], and its grid."""
+    import h5py
+
+    with h5py.File(table_path(m), "r") as f:
+        arrays = _validated_layout(f, table_path(m))
+        _header(f, table_path(m))
+        edges = arrays["bin_edges"]
+        # bands fully inside the requested span; edges has n_band+1 entries
+        keep = np.where((edges[:-1] >= nu_min) & (edges[1:] <= nu_max))[0]
+        if keep.size == 0:
+            raise ValueError(
+                f"ExoMolOP table for {m} covers "
+                f"[{edges[0]:.1f}, {edges[-1]:.1f}] cm^-1 and has no band "
+                f"inside the requested [{nu_min:g}, {nu_max:g}]"
+            )
+        b0, b1 = int(keep[0]), int(keep[-1]) + 1
+        # hyperslab read: (n_P, n_T, n_band, n_g) -> only the bands wanted
+        k = np.asarray(f["kcoeff"][:, :, b0:b1, :], dtype=np.float64)
+        grid = dict(arrays, bin_edges=edges[b0 : b1 + 1])
+
+    if not np.all(np.isfinite(k)) or np.any(k < 0.0):
+        raise ValueError(f"{table_path(m)}: kcoeff must be finite and non-negative")
+    if np.any(np.diff(k, axis=-1) < 0.0):
+        raise ValueError(f"{table_path(m)}: kcoeff must be non-decreasing along the g ordinate")
+    return k, grid
+
+
+def _log_grid(n_mol: int, edges: np.ndarray, gg: np.ndarray, t_grid: np.ndarray, p_grid: np.ndarray) -> None:
+    """Log the loaded grid and the pressure-floor assumption."""
+    logger.info(
+        "[ckd] ExoMolOP: %d species, %d bands over [%.1f,%.1f] cm^-1, ng=%d, T %.0f-%.0f K, P %.1e-%.1e bar",
+        n_mol,
+        edges.size - 1,
+        edges[0],
+        edges[-1],
+        gg.size,
+        t_grid[0],
+        t_grid[-1],
+        p_grid[0],
+        p_grid[-1],
+    )
+    logger.info(
+        "[ckd]   the table's pressure floor is %.1e bar; RT layers above it reuse that entry "
+        "(k is Doppler-dominated and pressure-independent there).",
+        p_grid[0],
+    )
+
+
 def load_tables(
     molecules: Iterable[str],
     nu_min: float,
@@ -274,6 +354,9 @@ def load_tables(
     verbose: bool = True,
 ) -> SimpleNamespace:
     """Load one k-table per molecule, restricted to the bands inside [nu_min, nu_max].
+
+    Refuses jax without x64 (RuntimeError), a molecule with no entry in the molecule table (KeyError) and a missing
+    table, with the fetch command (FileNotFoundError).
 
     Parameters
     ----------
@@ -296,71 +379,19 @@ def load_tables(
 
     Raises
     ------
-    RuntimeError
-        If jax x64 is off: float32 tables would shift every cross section by ~1e-5.
-    KeyError
-        If a molecule has no entry in the molecule table.
     ValueError
-        On a repeated species, a band or header mismatch, or an invalid kcoeff.
-    FileNotFoundError
-        If a table is missing, with the fetch command.
+        On no molecules, a repeated species, a band or header mismatch, or an invalid kcoeff.
     """
-    import h5py
     import jax.numpy as jnp
-    from jax import config as _jax_config
 
-    if not _jax_config.jax_enable_x64:  # type: ignore[attr-defined]  # jax declares its options at run time
-        # float32 tables would shift every cross section by ~1e-5 relative
-        # without an error.
-        raise RuntimeError(
-            "jax x64 is not enabled, so the k-tables would be silently "
-            "downcast to float32. Import vulcan_forward.vulcan_chem (or "
-            "vulcan_forward.exojax_rt) before loading opacities, or call "
-            "jax.config.update('jax_enable_x64', True)."
-        )
-
+    _require_x64()
     tbl = molecule_table or constants.MOLECULES
     mols = list(molecules)
-    unknown = [m for m in mols if m not in tbl]
-    if unknown:
-        raise KeyError(
-            f"no molecule spec for {unknown} in the molecule table "
-            f"(have: {sorted(tbl)}). Pass profile['molecule_table'] with one "
-            "entry per molecule: vulcan, molmass."
-        )
-    if len(set(mols)) != len(mols):
-        # the fold adds one opacity per list entry, so a repeat counts twice
-        raise ValueError(f"molecules {mols} name a species more than once; each would add its opacity again")
-    missing = [m for m in mols if not table_path(m).exists()]
-    if missing:
-        raise FileNotFoundError(
-            f"ExoMolOP k-table missing for {missing}: looked in {paths.exomolop_dir()}\n" + _fetch_hint(missing)
-        )
+    _refuse_molecules(mols, tbl)
 
     out, ref, m0 = {}, None, None
     for m in mols:
-        with h5py.File(table_path(m), "r") as f:
-            arrays = _validated_layout(f, table_path(m))
-            _header(f, table_path(m))
-            edges = arrays["bin_edges"]
-            # bands fully inside the requested span; edges has n_band+1 entries
-            keep = np.where((edges[:-1] >= nu_min) & (edges[1:] <= nu_max))[0]
-            if keep.size == 0:
-                raise ValueError(
-                    f"ExoMolOP table for {m} covers "
-                    f"[{edges[0]:.1f}, {edges[-1]:.1f}] cm^-1 and has no band "
-                    f"inside the requested [{nu_min:g}, {nu_max:g}]"
-                )
-            b0, b1 = int(keep[0]), int(keep[-1]) + 1
-            # hyperslab read: (n_P, n_T, n_band, n_g) -> only the bands wanted
-            k = np.asarray(f["kcoeff"][:, :, b0:b1, :], dtype=np.float64)
-            grid = dict(arrays, bin_edges=edges[b0 : b1 + 1])
-
-        if not np.all(np.isfinite(k)) or np.any(k < 0.0):
-            raise ValueError(f"{table_path(m)}: kcoeff must be finite and non-negative")
-        if np.any(np.diff(k, axis=-1) < 0.0):
-            raise ValueError(f"{table_path(m)}: kcoeff must be non-decreasing along the g ordinate")
-
+        k, grid = _read_bands(m, nu_min, nu_max)
         if ref is None:
             ref, m0 = grid, m
         elif (bad := _grid_mismatch(grid, ref)) is not None:
@@ -377,23 +408,7 @@ def load_tables(
         raise ValueError("load_tables needs at least one molecule; got an empty list")
     sub_edges, t_grid, p_grid, gg, gw = (ref[k] for k in ("bin_edges", "t", "p", "samples", "weights"))
     if verbose:
-        logger.info(
-            "[ckd] ExoMolOP: %d species, %d bands over [%.1f,%.1f] cm^-1, ng=%d, T %.0f-%.0f K, P %.1e-%.1e bar",
-            len(mols),
-            sub_edges.size - 1,
-            sub_edges[0],
-            sub_edges[-1],
-            gg.size,
-            t_grid[0],
-            t_grid[-1],
-            p_grid[0],
-            p_grid[-1],
-        )
-        logger.info(
-            "[ckd]   the table's pressure floor is %.1e bar; RT layers above it reuse that entry "
-            "(k is Doppler-dominated and pressure-independent there).",
-            p_grid[0],
-        )
+        _log_grid(len(mols), sub_edges, gg, t_grid, p_grid)
 
     return SimpleNamespace(
         logk=out,

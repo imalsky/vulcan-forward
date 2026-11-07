@@ -97,10 +97,21 @@ def params_from_vector(
     -------
     ChemParams
         The named parameters.
+
+    Raises
+    ------
+    ValueError
+        If ``theta`` is not one vector of exactly this layout's length; indexing would read past it or drop entries.
     """
     extras = _check_extras(extras)
     v = jnp.asarray(theta, dtype=jnp.float64)
     k = 3 + len(extras)
+    want = k + (n_tp_params if has_tp_eval else 1)
+    if v.shape != (want,):
+        raise ValueError(
+            f"chemistry vector has shape {v.shape}, expected ({want},): lnZ, c_o, lnKzz, the extras {list(extras)} and "
+            f"{want - k} temperature entries"
+        )
     tp = v[k : k + n_tp_params] if has_tp_eval else v[k : k + 1]
     kw = {e: v[3 + i] for i, e in enumerate(extras)}
     return ChemParams(lnZ=v[0], c_o=v[1], lnKzz=v[2], tp=tp, **kw)
@@ -116,6 +127,9 @@ class ConvDiag(NamedTuple):
     under the cap. ``conv_normal`` is the runner's two-branch certification (tight yconv_cri/slope_cri or loose
     yconv_min/slope_min, and the photo-flux gate, the geometry term and the column element budget) recomputed at the
     exit state.
+
+    Under an outer jit nothing can raise, so a column frozen at ``dt_min`` comes back as ``termination_reason`` 4: the
+    caller checks it, with ``vulcan3.raise_if_frozen``.
 
     Attributes
     ----------
@@ -143,6 +157,10 @@ class ConvDiag(NamedTuple):
         Step size at exit, s.
     tangent_longdy : jax.Array
         ``converged_y_jvp`` only: the tangent's ``longdy`` at exit; NaN on the primal path.
+    termination_reason : jax.Array, int32
+        Why the run stopped: a ``vulcan3.state.TERM_*`` code.
+    last_delta : jax.Array
+        The last trial's error ratio, to compare with ``rtol``.
     """
 
     accept_count: jnp.ndarray
@@ -157,3 +175,5 @@ class ConvDiag(NamedTuple):
     t: jnp.ndarray
     dt: jnp.ndarray
     tangent_longdy: jnp.ndarray
+    termination_reason: jnp.ndarray
+    last_delta: jnp.ndarray

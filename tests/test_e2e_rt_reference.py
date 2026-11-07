@@ -52,7 +52,7 @@ import jax.numpy as jnp
 
 from exojax.rt.planck import piBarr
 
-from vulcan_forward import constants, exojax_rt
+from vulcan_forward import _rt_geometry, constants, exojax_rt
 
 DATA = Path(__file__).parent / "data"
 RSTAR_W39 = 0.932 * 6.957e10
@@ -258,12 +258,10 @@ def test_emission_isothermal_atmosphere_radiates_pi_planck():
 
 def test_wo_batch_is_bit_identical_to_separate_solves():
     """The leave-one-out batch must reproduce, bitwise, what separate single solves return: the full spectrum
-    unchanged, and every wo row equal to a from-scratch solve with that molecule's VMR zeroed. It also pins the two
-    fold implementations together: the batch's full spectrum comes from the
-    leave-one-out Python-loop prefix, a single solve from ckd.fold's scan, so
-    up to four molecules make the scan take several steps. Grouped:
-    transmission full + rows, lnR0 at fixed mass for both observables,
-    emission flux/tau full + rows, and the unknown-molecule refusal.
+    unchanged, and every wo row equal to a from-scratch solve with that molecule's VMR zeroed. It also pins the two fold
+    implementations together: the batch's full spectrum comes from the leave-one-out Python-loop prefix, a single solve
+    from ckd.fold's scan, so up to four molecules make the scan take several steps. Grouped: transmission full + rows,
+    lnR0 at fixed mass for both observables, emission flux/tau full + rows, and the unknown-molecule refusal.
     """
     mols = ["H2O"] + [m for m in ("CO2", "CO", "CH4") if exomolop.table_path(m).exists()]
     prof = {**EMIS_PROF, "molecules": mols, "art_nlayer": 40, "rp_cm": 7.1492e9}
@@ -273,7 +271,8 @@ def test_wo_batch_is_bit_identical_to_separate_solves():
     zeros = jnp.zeros(nlay)
     T = jnp.linspace(900.0, 2200.0, nlay)
     mmw = jnp.full(nlay, 2.33)
-    vmr = {m: jnp.full(nlay, v) for m, v in zip(mols, (1.0e-3, 3.0e-4, 5.0e-4, 1.0e-5), strict=True)}
+    abundance = {"H2O": 1.0e-3, "CO2": 3.0e-4, "CO": 5.0e-4, "CH4": 1.0e-5}
+    vmr = {m: jnp.full(nlay, abundance[m]) for m in mols}
 
     def wo_vmr(m):
         return {**vmr, m: jnp.zeros_like(vmr[m])}
@@ -373,7 +372,7 @@ def test_eclipse_flux_carries_the_tau_two_thirds_photospheric_radius():
     T, mmw = 1500.0, 2.33
     zeros, Tcol, mcol = jnp.zeros(nlay), jnp.full(nlay, T), jnp.full(nlay, mmw)
     lnp = jnp.log(jnp.asarray(emod.p_art_bar))
-    r_em, g_em = exojax_rt._radius_at(
+    r_em, g_em = _rt_geometry._radius_at(
         lnp, Tcol, mcol, prof["rp_cm"], prof["gs_cgs"], emod.p_ref_bar, emod.p_ref_emission_bar
     )
     # independent reference: the isothermal closed form of the same integral

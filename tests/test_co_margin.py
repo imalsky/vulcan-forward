@@ -79,3 +79,17 @@ def test_optional_chemistry_entries_follow_the_declared_layout():
         params_from_vector(theta, n_tp_params=2, has_tp_eval=True, extras=("kzz_slope", "s_o"))
     with pytest.raises(ValueError, match="subset"):
         ChemParams().to_vector(("s_h",))
+
+
+@pytest.mark.parametrize(
+    ("theta", "kw"),
+    [
+        ([1.0, 2.0], {"n_tp_params": 0, "has_tp_eval": False}),  # lnKzz and the offset would read past the end
+        ([1.0, 2.0, 3.0, 4.0, 999.0], {"n_tp_params": 0, "has_tp_eval": False}),  # a dropped entry
+        ([1.0, 2.0, 3.0, 4.0], {"n_tp_params": 2, "has_tp_eval": True}),  # a short T-P block
+        ([[1.0, 2.0, 3.0, 4.0]], {"n_tp_params": 0, "has_tp_eval": False}),  # a stack, not a vector
+    ],
+)
+def test_a_vector_of_the_wrong_shape_is_refused(theta, kw):
+    with pytest.raises(ValueError, match="chemistry vector has shape"):
+        params_from_vector(theta, **kw)

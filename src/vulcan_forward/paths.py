@@ -103,7 +103,7 @@ def exomolop_dir() -> Path:
 
 
 def cia_h2h2_file() -> Path:
-    """Return the H2-H2 CIA table path. It may be absent: exojax fetches it, and ``build_rt_model`` warns first."""
+    """Return the H2-H2 CIA table path, which ``build_rt_model`` requires (hitran.org/data/CIA/main/, 24 MB)."""
     return opacity_cache_dir() / "H2-H2_2011.cia"
 
 

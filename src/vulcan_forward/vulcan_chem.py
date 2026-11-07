@@ -314,8 +314,8 @@ def build_chem_model(  # noqa: C901  # counts its closures
         """Read ``ConvDiag`` off the runner's exit carry.
 
         ``conv_normal`` is ``vulcan3.conv_normal`` AND ``tangent_ok``, the ``run_jvp`` sensitivity certificate.
-        ``conv_branch``
-        stays the column's own branch, so a consumer can tell an unsettled sensitivity from an uncertified column.
+        ``conv_branch`` stays the column's own branch, so a consumer can tell an unsettled sensitivity from an
+        uncertified column.
         """
         ok, branch = vulcan3.conv_normal(final, cfg)
         flat = jnp.argmax(final.where_varies_most)
@@ -332,6 +332,8 @@ def build_chem_model(  # noqa: C901  # counts its closures
             t=final.t,
             dt=final.dt,
             tangent_longdy=jnp.float64(tangent_longdy),
+            termination_reason=final.termination_reason,
+            last_delta=final.delta,
         )
 
     def _conv_normal_at_exit(final: Any) -> Array:
@@ -633,7 +635,7 @@ def build_chem_model(  # noqa: C901  # counts its closures
     # The pair depends only on static choices: the reference composition rides the jobs pytree.
     _queue_fns: dict[tuple[bool, bool], tuple[Callable[..., Any], Callable[..., Any]]] = {}
 
-    # size-limit-ok: most of the length is the numpy docs
+    # size-limit-ok: 37 of its 86 lines are the numpy docs of the arguments; the code is under the limit
     def converged_y_queue(
         thetas: Array,
         n_lanes: int,
@@ -738,8 +740,7 @@ def build_chem_model(  # noqa: C901  # counts its closures
         unrelaxed.
 
         A stacked ``tangent`` rides vulcan3's tangent axis, so the primal is integrated once for all D directions;
-        ``jax.vmap``
-        of this call would integrate it D times. The run stops when every direction has settled.
+        ``jax.vmap`` of this call would integrate it D times. The run stops when every direction has settled.
 
         Parameters
         ----------

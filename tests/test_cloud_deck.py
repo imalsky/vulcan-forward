@@ -32,27 +32,13 @@ else:
 
     _jax.config.update("jax_enable_x64", True)
 
-from vulcan_forward import paths
-
-try:
-    paths.data_root()
-except RuntimeError:
-    pytest.skip("VULCAN_FORWARD_DATA not configured", allow_module_level=True)
-
-from vulcan_forward import exomolop
-
-if not exomolop.table_path("H2O").exists():
-    pytest.skip(
-        "ExoMolOP H2O k-table absent; fetch with python -m vulcan_forward.fetch_exomolop --molecules H2O",
-        allow_module_level=True,
-    )
-
 import jax
 import jax.numpy as jnp
 from jax.scipy.special import exp1
 
 from vulcan_forward import constants
 from vulcan_forward.exojax_rt import build_rt_model
+from test_rt_miniature import miniature_root
 
 KB, M_U, GAMMA_E = 1.380649e-16, 1.66053906660e-24, 0.5772156649015329
 # thin shell: R0/H = 1.05e4, so the column spans 0.2% of R0
@@ -68,25 +54,30 @@ CASE = {
     "nlayer": 200,
 }
 H_SCALE = KB * CASE["T"] / (CASE["mmw"] * M_U * CASE["g"])
+# R1000 bands from below 4.2 um to above 2.9 um.
+MINI_NU0, MINI_BANDS = 2370.0, 400
 
 
 @pytest.fixture(scope="module")
-def rt_ins():
-    """(rt model, gas-free isothermal inputs) over a band straddling 3.5 um."""
-    rt = build_rt_model(
-        {
-            "molecules": ["H2O"],
-            "nu_min": 1e4 / 4.2,
-            "nu_max": 1e4 / 2.9,
-            "art_nlayer": CASE["nlayer"],
-            "art_ptop_bar": CASE["ptop"],
-            "art_pbtm_bar": CASE["pbtm"],
-            "rp_cm": CASE["rp_cm"],
-            "gs_cgs": CASE["g"],
-            "rstar_cm": CASE["rstar_cm"],
-            "p_ref_bar": CASE["p_ref_bar"],
-        }
-    )
+def rt_ins(tmp_path_factory):
+    """(rt model, gas-free isothermal inputs) over a band straddling 3.5 um; the gas is absent, so a miniature table's
+    band grid is all that is read.
+    """
+    with miniature_root(tmp_path_factory.mktemp("mini_cloud"), ["H2O"], MINI_BANDS, MINI_NU0):
+        rt = build_rt_model(
+            {
+                "molecules": ["H2O"],
+                "nu_min": 1e4 / 4.2,
+                "nu_max": 1e4 / 2.9,
+                "art_nlayer": CASE["nlayer"],
+                "art_ptop_bar": CASE["ptop"],
+                "art_pbtm_bar": CASE["pbtm"],
+                "rp_cm": CASE["rp_cm"],
+                "gs_cgs": CASE["g"],
+                "rstar_cm": CASE["rstar_cm"],
+                "p_ref_bar": CASE["p_ref_bar"],
+            }
+        )
     z = jnp.zeros(len(rt.p_art_bar))
     ins = {
         "vmr": {"H2O": z},

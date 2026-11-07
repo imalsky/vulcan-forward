@@ -81,9 +81,8 @@ def _assert_composition_tables(composition: ModuleType) -> None:
 def bz_margin(y: ArrayLike, n_o: ArrayLike, carbon_mask: ArrayLike, o_only_mask: ArrayLike) -> float:
     """Return the positivity margin of the fixed-O C/O map on a column.
 
-    The map scales every C-bearing species by e^c and compensates the oxygen they carry by scaling the O-only
-    carriers by
-    b_z = 1 + (1 - e^c) OC_z / OO_z, so b_z > 0 iff c < ln(1 + OO_z/OC_z).
+    The map scales every C-bearing species by e^c and compensates the oxygen they carry by scaling the O-only carriers
+    by b_z = 1 + (1 - e^c) OC_z / OO_z, so b_z > 0 iff c < ln(1 + OO_z/OC_z).
 
     Parameters
     ----------
@@ -158,7 +157,7 @@ def _build_elemental(
     R0_j = jnp.asarray(R0_ratios)
     _names = [e for e, _ in elem_pairs]
 
-    def _targets(lnZ: Array, c_o: Array, s_o: Array) -> Array:
+    def _targets(lnZ: Array | float, c_o: Array | float, s_o: Array | float) -> Array:
         """Return the column ratios to H for one composition, [nrep]."""
         return R0_j * jnp.exp(lnZ * zscale_kind + c_o * cscale_kind + s_o * sscale_kind)
 
@@ -178,12 +177,13 @@ def _build_elemental(
     rep_cols_j = jnp.asarray(rep_cols)
     rep_group_j = jnp.asarray(rep_group)
 
-    def _elemental_project(y_in: Array, M: Array, lnZ: Array, c_o: Array, s_o: Array) -> tuple[Array, Array]:
+    def _elemental_project(
+        y_in: Array, M: Array, lnZ: Array | float, c_o: Array | float, s_o: Array | float
+    ) -> tuple[Array, Array]:
         """Renormalize to sum_i n_i = M and repair the column ratios to the theta targets.
 
-        Returns ``(y, min_adj)``: the residual is ~1e-15 relative (``audit_init`` measures it), and ``min_adj`` is
-        the smallest
-        repair factor, which must stay > 0 for a physical column.
+        Returns ``(y, min_adj)``: the residual is ~1e-15 relative (``audit_init`` measures it), and ``min_adj`` is the
+        smallest repair factor, which must stay > 0 for a physical column.
         """
         targets = _targets(lnZ, c_o, s_o)  # (nrep,)
         y = y_in * (M / jnp.sum(y_in, axis=1))[:, None]
@@ -209,7 +209,13 @@ def _build_elemental(
         return y, min_adj
 
     def _guess_y0(
-        lnZ: Array, c_o: Array, s_o: Array, warm_y: Array, lnZ_ref: Array, c_o_ref: Array, s_o_ref: Array
+        lnZ: Array | float,
+        c_o: Array | float,
+        s_o: Array | float,
+        warm_y: Array,
+        lnZ_ref: Array | float,
+        c_o_ref: Array | float,
+        s_o_ref: Array | float,
     ) -> Array:
         """Return the mask-scaled guess from a converged column, applying only the composition increments.
 

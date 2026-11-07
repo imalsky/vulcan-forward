@@ -86,18 +86,22 @@ def test_set_data_root_is_honored(paths, tmp_path):
     assert paths.data_root() == root
 
 
-def test_geometry_is_required_not_wasp39b():
-    """The RT builder must refuse a profile with no planet geometry.
+def test_geometry_is_required_not_wasp39b(monkeypatch):
+    """The RT builder refuses a profile with no planet geometry, before it loads any table.
 
-    A defaulted rp_cm would silently model a different planet. Checked on the
-    helper so the test needs neither exojax nor a data tree.
+    A defaulted rp_cm would silently model a different planet.
     """
     if importlib.util.find_spec("exojax") is None:
         pytest.skip("exojax not installed (light-CI environment)")
-    from vulcan_forward import exojax_rt
+    from vulcan_forward import exojax_rt, exomolop
 
-    with pytest.raises(ValueError, match="required planet geometry"):
-        exojax_rt._require_geometry({"gs_cgs": 422.0}, "rp_cm", "gs_cgs", "rstar_cm")
+    def no_table(*_a, **_k):
+        raise AssertionError("the geometry refusal comes before any table is read")
+
+    monkeypatch.setattr(exomolop, "load_tables", no_table)
+    profile = {"molecules": ["H2O"], "nu_min": 2000.0, "nu_max": 3000.0, "art_nlayer": 20, "gs_cgs": 422.0}
+    with pytest.raises(ValueError, match=r"required planet geometry \['rp_cm', 'rstar_cm'\]"):
+        exojax_rt.build_rt_model(profile)
     # a complete profile passes
     exojax_rt._require_geometry({"rp_cm": 9.1e9, "gs_cgs": 422.0, "rstar_cm": 6.5e10}, "rp_cm", "gs_cgs", "rstar_cm")
 
@@ -217,29 +221,47 @@ def test_exomolop_helpers_and_provenance_import_without_jax_or_h5py(tmp_path):
     assert r.stdout.strip() == "ok"
 
 
-def test_the_engine_never_resolves_its_data_root_from___file__():
-    """Data paths come from the environment / set_data_root, never __file__.
+def test_the_data_root_follows_the_environment_from_a_relocated_install(tmp_path):
+    """A copy of the package elsewhere, run from an unrelated directory: paths come from the configured root alone.
 
-    Resolving the root from this package's own `__file__` would pin the engine
-    to one repo's directory nesting. `vulcan_chem` may still read
-    `vulcan3.__file__` -- that locates the SIBLING package's vendored
-    thermo data, which is a different thing and is allowed.
+    With no root set it refuses, rather than finding one relative to its own location. ``paths`` imports without jax.
     """
-    import ast
+    import shutil
+    import subprocess
     from pathlib import Path
+
     import vulcan_forward
 
-    pkg = Path(vulcan_forward.__file__).parent
-    offenders = []
-    for src in sorted(pkg.glob("*.py")):
-        tree = ast.parse(src.read_text(), str(src))
-        for node in ast.walk(tree):
-            if not (isinstance(node, ast.Name) and node.id == "__file__"):
-                continue
-            offenders.append(f"{src.name}:{node.lineno}")
-    # vulcan_chem's vulcan3.__file__ read is an Attribute, not a bare Name,
-    # so it does not appear above; a bare __file__ would.
-    assert offenders == [], (
-        f"bare __file__ used in {offenders}: the engine must not resolve its "
-        f"own location. Use $VULCAN_FORWARD_DATA or paths.set_data_root."
+    site = tmp_path / "site"
+    shutil.copytree(Path(vulcan_forward.__file__).parent, site / "vulcan_forward")
+    root, cwd = tmp_path / "somewhere" / "data", tmp_path / "unrelated"
+    (root / "opacity_cache").mkdir(parents=True)
+    cwd.mkdir()
+    # a tree beside the package, which a root resolved from the package's own location would pick up
+    (site / "vulcan_forward" / "data" / "exomolop").mkdir(parents=True)
+    code = (
+        "import vulcan_forward\n"
+        "from vulcan_forward import exomolop, paths\n"
+        "print(vulcan_forward.__file__)\n"
+        "print(paths.data_root())\n"
+        "print(exomolop.table_path('H2O'))\n"
+        "print(paths.cia_h2he_file())\n"
     )
+    env = {k: v for k, v in os.environ.items() if not k.startswith("VULCAN_FORWARD")}
+    env.update(PYTHONPATH=str(site), PYTHONSAFEPATH="1")
+
+    def run(**extra):
+        return subprocess.run(
+            [sys.executable, "-c", code], capture_output=True, text=True, env={**env, **extra}, cwd=cwd, check=False
+        )
+
+    r = run(VULCAN_FORWARD_DATA=str(root))
+    assert r.returncode == 0, r.stderr
+    pkg, data, table, cia = r.stdout.split()
+    assert Path(pkg).parent == site / "vulcan_forward"
+    assert Path(data) == root
+    assert Path(table).is_relative_to(root / "exomolop")
+    assert Path(cia).is_relative_to(root / "opacity_cache")
+    r = run()
+    assert r.returncode != 0
+    assert "VULCAN_FORWARD_DATA" in r.stderr

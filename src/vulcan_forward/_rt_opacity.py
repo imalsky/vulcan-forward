@@ -41,7 +41,7 @@ def _accumulate_dtau_ckd(
     vmr_he: Array,
     T_art: Array,
     mmw_art: Array,
-    g_btm: Array,
+    g_prof: Array,
     cloud: Array | None = None,
     rayleigh_xs: tuple[Array, Array] | None = None,
     deck: Array | float | None = None,
@@ -53,8 +53,10 @@ def _accumulate_dtau_ckd(
     it is scattering, and the pure-absorption emission solver must not count it as thermal extinction.
     """
     P = jnp.asarray(art.pressure)
-    dts = jnp.stack([_ckd_dt_one(art, pack, key, molmass, vmr[key], T_art, mmw_art, g_btm, P) for key in mols])
-    cont = _ckd_continuum(art, pack, opacia, opacia_he, vmr_h2, vmr_he, T_art, mmw_art, g_btm, cloud, rayleigh_xs, deck)
+    dts = jnp.stack([_ckd_dt_one(art, pack, key, molmass, vmr[key], T_art, mmw_art, g_prof, P) for key in mols])
+    cont = _ckd_continuum(
+        art, pack, opacia, opacia_he, vmr_h2, vmr_he, T_art, mmw_art, g_prof, cloud, rayleigh_xs, deck
+    )
     return ckd.fold(dts, pack.gg, pack.gw) + cont[:, None, :]
 
 
@@ -66,7 +68,7 @@ def _ckd_dt_one(
     vmr_key: Array,
     T_art: Array,
     mmw_art: Array,
-    g_btm: Array,
+    g_prof: Array,
     P: Array,
 ) -> Array:
     """Return one molecule's optical depth [nlayer, ng, nband]."""
@@ -75,7 +77,7 @@ def _ckd_dt_one(
     # layer_optical_depth_ckd multiplies a (nlayer, ng, nband) tensor by
     # dParr[:, None, None] / gravity, so gravity needs the third axis too;
     # the continuum terms stay on the 2-D (nlayer, nband) form.
-    return art.opacity_profile_xs_ckd(jnp.exp(lk), mmr, molmass[key], g_btm[..., None])
+    return art.opacity_profile_xs_ckd(jnp.exp(lk), mmr, molmass[key], g_prof[..., None])
 
 
 def _ckd_continuum(
@@ -87,7 +89,7 @@ def _ckd_continuum(
     vmr_he: Array,
     T_art: Array,
     mmw_art: Array,
-    g_btm: Array,
+    g_prof: Array,
     cloud: Array | None,
     rayleigh_xs: tuple[Array, Array] | None,
     deck: Array | float | None = None,
@@ -95,26 +97,24 @@ def _ckd_continuum(
     """Return the band continuum [nlayer, nband]: CIA, Rayleigh, the power-law cloud and the grey deck.
 
     ``cloud`` is ``[log10 kappac0 (cm^2/g at constants.CLOUD_NUC0), alphac]`` for exojax's ``powerlaw_clouds``;
-    ``rayleigh_xs``
-    is ``(xs_h2, xs_he)``, each [nband]; ``deck`` is the log10 pressure (bar) below which layers get the opaque grey
-    ``constants.CLOUD_DECK_TAU``, through a logistic step in ln P so the deck stays differentiable. A consumer passes
-    either
-    cloud term or both.
+    ``rayleigh_xs`` is ``(xs_h2, xs_he)``, each [nband]; ``deck`` is the log10 pressure (bar) below which layers get the
+    opaque grey ``constants.CLOUD_DECK_TAU``, through a logistic step in ln P so the deck stays differentiable. A
+    consumer passes either cloud term or both.
     """
 
     def _cia(opa_: OpaCIA, va: Array, vb: Array) -> Array:
         """Return one CIA pair's optical depth [nlayer, nband]."""
-        return art.opacity_profile_cia(opa_.logacia_matrix(T_art), T_art, va, vb, mmw_art[:, None], g_btm)
+        return art.opacity_profile_cia(opa_.logacia_matrix(T_art), T_art, va, vb, mmw_art[:, None], g_prof)
 
     cont = _cia(opacia, vmr_h2, vmr_h2) + _cia(opacia_he, vmr_h2, vmr_he)
     if rayleigh_xs is not None:
         xs_h2, xs_he = rayleigh_xs
         nl, nb = art.pressure.shape[0], xs_h2.shape[0]
         cont = cont + art.opacity_profile_xs(
-            jnp.broadcast_to(xs_h2[None, :], (nl, nb)), vmr_to_mmr(vmr_h2, _H2_MOLMASS, mmw_art), _H2_MOLMASS, g_btm
+            jnp.broadcast_to(xs_h2[None, :], (nl, nb)), vmr_to_mmr(vmr_h2, _H2_MOLMASS, mmw_art), _H2_MOLMASS, g_prof
         )
         cont = cont + art.opacity_profile_xs(
-            jnp.broadcast_to(xs_he[None, :], (nl, nb)), vmr_to_mmr(vmr_he, _HE_MOLMASS, mmw_art), _HE_MOLMASS, g_btm
+            jnp.broadcast_to(xs_he[None, :], (nl, nb)), vmr_to_mmr(vmr_he, _HE_MOLMASS, mmw_art), _HE_MOLMASS, g_prof
         )
     if cloud is not None:
         # ExoJax's shipped retrieval cloud (pRT convention, per gram of atmosphere).
@@ -122,7 +122,7 @@ def _ckd_continuum(
         # kappa is per gram of atmosphere, so dtau = kappa * dP_cgs / g with no
         # 1/m_u (exojax folds bar_cgs/m_u into its per-molecule opacity_factor).
         dP = jnp.asarray(art.dParr)
-        cont = cont + kappa_c[None, :] * (dP[:, None] * constants.BAR_CGS / g_btm)
+        cont = cont + kappa_c[None, :] * (dP[:, None] * constants.BAR_CGS / g_prof)
     if deck is not None:
         lnp = jnp.log(jnp.asarray(art.pressure))
         step = jax.nn.sigmoid((lnp - jnp.asarray(deck) * jnp.log(10.0)) / constants.CLOUD_DECK_WIDTH_LNP)  # (nlayer,)
@@ -142,7 +142,7 @@ def _ckd_dtau_batch(
     vmr_he: Array,
     T_art: Array,
     mmw_art: Array,
-    g_btm: Array,
+    g_prof: Array,
     wo_mols: list[str],
     finish: Callable[[Array], _Finished],
     cloud: Array | None = None,
@@ -160,14 +160,14 @@ def _ckd_dtau_batch(
     if bad or len(set(wo_mols)) != len(wo_mols):
         raise ValueError(f"wo_mols {list(wo_mols)!r} must be unique members of the RT molecule set {list(mols)!r}")
     P = jnp.asarray(art.pressure)
-    dts = [_ckd_dt_one(art, pack, k, molmass, vmr[k], T_art, mmw_art, g_btm, P) for k in mols]
+    dts = [_ckd_dt_one(art, pack, k, molmass, vmr[k], T_art, mmw_art, g_prof, P) for k in mols]
     cont3 = _ckd_continuum(
-        art, pack, opacia, opacia_he, vmr_h2, vmr_he, T_art, mmw_art, g_btm, cloud, rayleigh_xs, deck
+        art, pack, opacia, opacia_he, vmr_h2, vmr_he, T_art, mmw_art, g_prof, cloud, rayleigh_xs, deck
     )[:, None, :]
 
     def zero_of(i: int) -> Array:
         """Return the optical depth of molecule ``i`` with its VMR zeroed."""
-        return _ckd_dt_one(art, pack, mols[i], molmass, jnp.zeros_like(vmr[mols[i]]), T_art, mmw_art, g_btm, P)
+        return _ckd_dt_one(art, pack, mols[i], molmass, jnp.zeros_like(vmr[mols[i]]), T_art, mmw_art, g_prof, P)
 
     wo_idx = [mols.index(m) for m in wo_mols]
     full_tot, wo = ckd._fold_wo(dts, zero_of, pack.gg, pack.gw, wo_idx, finish=lambda t: finish(t + cont3))

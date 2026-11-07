@@ -75,3 +75,28 @@ jobs:
       # failed on the runner's CPU (run 36254404095).
       - name: Run contract tests
         run: python -m pytest tests -q -ra
+
+  # The same normal tier with exojax installed and no data tree: the RT runs on tests/test_rt_miniature.py's small tables.
+  # The 80 % floor is pyproject's fail_under, and nothing is omitted; the real-table comparisons skip here.
+  coverage:
+    name: Coverage floor
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    env:
+      XLA_FLAGS: "--xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1"
+      OMP_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install (exojax, no data)
+        run: |
+          pip install pytest pytest-cov "numpy<2" "jax==0.6.2" h5py scipy pyyaml pandas "exojax==2.6.0" "radis<0.17"
+          pip install --no-deps "exogibbs==0.6.0"
+          pip install --no-deps "vulcan3 @ git+https://github.com/imalsky/VULCAN3.git@main"
+          pip install --no-deps -e .
+      - name: Run the normal tier, with the coverage floor
+        run: python -m pytest tests -q -ra --cov --cov-report=term

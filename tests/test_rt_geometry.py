@@ -14,6 +14,7 @@ lists, no opacity build and no network.
 from __future__ import annotations
 
 import importlib.util
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -30,8 +31,8 @@ else:
 
 import jax.numpy as jnp
 
-from vulcan_forward import constants
-from vulcan_forward.exojax_rt import (
+from vulcan_forward import constants, exojax_rt
+from vulcan_forward._rt_geometry import (
     _anchor_to_grid_bottom,
     _radius_at,
 )
@@ -120,7 +121,7 @@ def test_a_hotter_deep_atmosphere_pushes_the_bottom_radius_down():
 
 
 def test_is_differentiable():
-    """The retrieval differentiates the depth end to end, and the planner takes jvps through it for Fisher rows.
+    """The planner takes jvps through the depth for Fisher rows.
 
     A cumulative integral keeps this clean, but an ODE solve or a np.interp slipped in here would silently break it.
     """
@@ -136,3 +137,15 @@ def test_is_differentiable():
     d = float(jax.grad(f)(422.0))
     assert np.isfinite(d)
     assert d > 0.0  # weaker gravity -> more altitude -> smaller r_btm
+
+
+@pytest.mark.parametrize(("lo", "hi", "refused"), [(500.0, 1000.0, False), (50.0, 1000.0, True), (500.0, 3000.0, True)])
+def test_cia_span_refuses_a_grid_past_the_table(lo, hi, refused):
+    """A wavenumber grid past either edge of a CIA table would reuse the edge coefficient silently."""
+    cdb = SimpleNamespace(nucia=np.array([100.0, 2000.0]))
+    nu_grid = np.array([lo, hi])
+    if refused:
+        with pytest.raises(ValueError, match="H2-He CIA table covers"):
+            exojax_rt._check_cia_span(cdb, nu_grid, "H2-He")
+    else:
+        exojax_rt._check_cia_span(cdb, nu_grid, "H2-He")

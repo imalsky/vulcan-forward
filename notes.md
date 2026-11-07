@@ -18,7 +18,7 @@ Tags: [M] measured, [E] estimated, [I] inferred.
   release under that name; carries `conv_normal` and `validate_overrides`),
   `jax>=0.6.2`, `numpy>=1.26`, `h5py>=3.9`.
 - Consumers: vulcan-retrieval floors `>=0.30.0` and its `requirements-hpc.txt` pins
-  `acdf63e`; jwst-transit-authority (the planner) floors `>=0.29.0` and pins `32adc85`
+  `0accd36`; jwst-transit-authority (the planner) floors `>=0.29.0` and pins `32adc85`
   in `deploy/pins.env`.
 - Production: the WASP-39b baseline v2 nautilus run used `d26e9d3` (0.28.0, tag
   `w39b-baseline-v2`). All three W39b production runs carry the 0.27.2 carbon repair
@@ -28,9 +28,9 @@ Tags: [M] measured, [E] estimated, [I] inferred.
   the 2021 `SNCHO_photo_network.txt` (89 species).
 - Normal tier: plain `pytest tests`. CI runs it serially on Python 3.10, 3.11 and 3.12,
   single-threaded XLA, numpy<2, vulcan3 from `imalsky/VULCAN3@main`, no exojax (the RT
-  tests skip). Readings [M]: daw, `-n 6` on 12 pinned cores, the 2025-network tree: 90
-  passed / 8 skipped in 161 s; laptop CPU, single-threaded XLA, `-n 4`, the 0.30.0 tree:
-  90 passed / 8 skipped in 75 s.
+  tests skip). Readings [M]: daw, `-n 2`, single-threaded XLA: 135 passed / 8
+  skipped, line coverage 90.6 %. CI's `coverage` job (exojax, no data tree, `fail_under` 80), read here: 125 passed / 12
+  skipped, 90.5 %.
 - Full tier (`VULCAN_FORWARD_RUN_FULL=1`): the `converged_y_jvp` tests, the five `@FULL`
   queue/gradient tests and the 8-species pRT case. Readings at `-n 6 --dist worksteal`
   [M]: `4ca5fa6` 103 passed in 20.7 min, 23.9 GB peak; the 0.29.0 tree 95 passed /
@@ -86,7 +86,8 @@ Tags: [M] measured, [E] estimated, [I] inferred.
   Before it, deleting a reader turned a set key into a silent no-op. `cfg_overrides` pass
   `vulcan3.validate_overrides` first (0.27.0).
 - Every build-time refusal names the remedy: missing table (fetch command), missing
-  geometry, out-of-grid anchor, clamped chemistry top or bottom, CIA span, `art_pbtm_bar`
+  geometry, out-of-grid anchor, clamped chemistry top or bottom, an absent CIA table (exojax would fetch it behind a
+  downloader that swallows failures), CIA span, `art_pbtm_bar`
   deeper than the table's 100 bar ceiling, unknown profile key, unknown `co_mode`,
   repeated molecule, a non-empty `T_cross_sp`. The last because `_prep` leaves the
   T-dependent cross sections at the baseline; no shipped config sets it.

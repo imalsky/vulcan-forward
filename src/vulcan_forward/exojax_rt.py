@@ -1,4 +1,3 @@
-# size-limit-ok: one closure per observable, with its numpy docs
 """Radiative transfer: correlated-k opacities, geometry anchors, transmission depth and emergent flux.
 
 ``build_rt_model`` builds the band grid from the ExoMolOP tables named in the profile, the two CIA tables and an
@@ -44,12 +43,12 @@ if TYPE_CHECKING:
 
     Profile = dict[str, Any]
 
-__all__ = ["EMISSION_NSTREAM", "build_emis_model", "build_rt_model"]
+__all__ = ["build_emis_model", "build_rt_model"]
 
 logger = logging.getLogger(__name__)
 
 # exojax ArtEmisPure's default stream count.
-EMISSION_NSTREAM = 8
+_EMISSION_NSTREAM = 8
 
 
 def _check_profile(profile: Profile) -> None:
@@ -156,10 +155,11 @@ def build_rt_model(profile: Profile) -> SimpleNamespace:
     ValueError
         On an unknown key, a bad grid or anchor, an uncovered band, or missing geometry.
     FileNotFoundError
-        If the H2-He CIA table is missing.
+        If a CIA table is missing.
     """
     t0 = time.time()
     _check_profile(profile)
+    _require_geometry(profile, "rp_cm", "gs_cgs", "rstar_cm")
     mols = list(profile["molecules"])
     from vulcan_forward import exomolop as _exo
 
@@ -207,23 +207,16 @@ def build_rt_model(profile: Profile) -> SimpleNamespace:
         _check_cia_span(cdb, nu_grid, label)
         return OpaCIA(cdb, nu_grid=nu_grid)
 
-    cia_h2h2 = paths.cia_h2h2_file()
-    if not cia_h2h2.exists():
-        # exojax fetches it but its downloader swallows failures, so say first what is about to happen.
-        logger.warning(
-            "[rt] H2-H2 CIA absent at %s; exojax will download 24 MB from "
-            "https://hitran.org/data/CIA/main/H2-H2_2011.cia (network required)",
-            cia_h2h2,
-        )
-    opacia = _cia(cia_h2h2, "H2-H2")
-    cia_h2he = paths.cia_h2he_file()
-    if not cia_h2he.exists():
-        raise FileNotFoundError(
-            f"H2-He CIA table missing ({cia_h2he}). Download "
-            "https://hitran.org/data/CIA/main/H2-He_2011.cia (~147 MB; the "
-            "/main/ segment is required) to that path."
-        )
-    opacia_he = _cia(cia_h2he, "H2-He")
+    cia_files = {"H2-H2": paths.cia_h2h2_file(), "H2-He": paths.cia_h2he_file()}
+    for label, cia_file in cia_files.items():
+        # exojax would fetch an absent table itself, and its downloader swallows failures.
+        if not cia_file.exists():
+            raise FileNotFoundError(
+                f"{label} CIA table missing ({cia_file}). Download "
+                f"https://hitran.org/data/CIA/main/{cia_file.name} (the /main/ segment is required) to that path."
+            )
+    opacia = _cia(cia_files["H2-H2"], "H2-H2")
+    opacia_he = _cia(cia_files["H2-He"], "H2-He")
     logger.info("[rt] CIA + RT built; total %.1fs", time.time() - t0)
 
     if profile.get("use_rayleigh", False):
@@ -235,7 +228,6 @@ def build_rt_model(profile: Profile) -> SimpleNamespace:
     else:
         rayleigh_xs = None
 
-    _require_geometry(profile, "rp_cm", "gs_cgs", "rstar_cm")
     Rp_ref = float(profile["rp_cm"])
     g_ref = float(profile["gs_cgs"])
     rstar_cm = float(profile["rstar_cm"])
@@ -303,7 +295,6 @@ def build_rt_model(profile: Profile) -> SimpleNamespace:
         Rp2 = art.run_ckd(dtau_g, T_art, mmw_art, Rp_btm, g_btm, ckd_pack.gw)
         return Rp2 * (Rp_btm / rstar_cm) ** 2
 
-    # size-limit-ok: most of the length is the numpy docs
     def transmission_depth_r(
         vmr: dict[str, Array],
         vmr_h2: Array,
@@ -361,52 +352,15 @@ def build_rt_model(profile: Profile) -> SimpleNamespace:
         )
         g_prof = _gravity_profile_invsq(art, T_art, mmw_art, Rp_btm, g_btm)  # (nlayer,1)
 
-        def _depth_of(Rp2: Array) -> Array:
-            """Scale one spectrum to a depth; one expression for both paths, so they agree bitwise."""
-            return Rp2 * (Rp_btm / rstar_cm) ** 2  # (radius/R_star)^2
-
         def _finish(dtau_g: Array) -> Array:
-            """Map an optical depth to its transit depth."""
-            return _depth_of(art.run_ckd(dtau_g, T_art, mmw_art, Rp_btm, g_btm, ckd_pack.gw))
+            """Map an optical depth to its transit depth: one expression for both routes, so they agree bitwise."""
+            return art.run_ckd(dtau_g, T_art, mmw_art, Rp_btm, g_btm, ckd_pack.gw) * (Rp_btm / rstar_cm) ** 2
 
+        column = (art, ckd_pack, mols, molmass, opacia, opacia_he, vmr, vmr_h2, vmr_he, T_art, mmw_art, g_prof)
+        extinction: dict[str, Any] = {"cloud": cloud, "rayleigh_xs": rayleigh_xs, "deck": deck}
         if wo_mols is None:
-            dtau_g = _accumulate_dtau_ckd(
-                art,
-                ckd_pack,
-                mols,
-                molmass,
-                opacia,
-                opacia_he,
-                vmr,
-                vmr_h2,
-                vmr_he,
-                T_art,
-                mmw_art,
-                g_prof,
-                cloud=cloud,
-                rayleigh_xs=rayleigh_xs,
-                deck=deck,
-            )
-            return _finish(dtau_g)
-        depth, rows = _ckd_dtau_batch(
-            art,
-            ckd_pack,
-            mols,
-            molmass,
-            opacia,
-            opacia_he,
-            vmr,
-            vmr_h2,
-            vmr_he,
-            T_art,
-            mmw_art,
-            g_prof,
-            list(wo_mols),
-            _finish,
-            cloud=cloud,
-            rayleigh_xs=rayleigh_xs,
-            deck=deck,
-        )
+            return _finish(_accumulate_dtau_ckd(*column, **extinction))
+        depth, rows = _ckd_dtau_batch(*column, list(wo_mols), _finish, **extinction)
         return depth, (jnp.stack(rows) if rows else jnp.zeros((0, *depth.shape)))
 
     return SimpleNamespace(
@@ -499,7 +453,7 @@ def build_emis_model(trt: SimpleNamespace, profile: Profile) -> SimpleNamespace:
         pressure_btm=trt.art_pbtm_bar,
         nlayer=art_nlayer,
         rtsolver="ibased_linsap",
-        nstream=EMISSION_NSTREAM,
+        nstream=_EMISSION_NSTREAM,
     )
     lnp_em = jnp.asarray(np.log(np.asarray(art.pressure)))
     logger.info("[rt] ArtEmisPure %d layers (shares opacities)", art_nlayer)

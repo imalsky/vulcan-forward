@@ -36,8 +36,6 @@ ROOT = f"{BASE}/data/data-types/opacity"
 # The one product this engine can mix: every table in a correlated-k mixture must share a band grid.
 GRID_TOKEN = "R1000_0.3-50mu"
 
-HTTP_RETRIES = 3  # attempts per page fetch
-RETRY_WAIT_S = 2.0  # pause between attempts
 PAGE_TIMEOUT_S = 90  # one HTML page
 DOWNLOAD_TIMEOUT_S = 600  # socket timeout while streaming a ~389 MB table
 CHUNK_BYTES = 1 << 20  # 1 MiB read size for the table stream
@@ -63,22 +61,16 @@ def _record(url: str, ds: str, iso: str, nat: bool) -> dict[str, Any]:
 
 
 def _get(url: str) -> str:
-    """Fetch a page or raise after ``HTTP_RETRIES`` attempts, so a network failure is never reported as SKIP."""
-    last = None
-    for k in range(HTTP_RETRIES):
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": UA})
-            with urllib.request.urlopen(req, timeout=PAGE_TIMEOUT_S) as r:
-                return r.read().decode("utf-8", "replace")
-        except _NET_ERRORS as e:
-            last = e
-            if k < HTTP_RETRIES - 1:
-                time.sleep(RETRY_WAIT_S)
-    raise RuntimeError(
-        f"failed to fetch {url} after {HTTP_RETRIES} attempts: {last}. "
-        "Cannot tell whether ExoMolOP publishes this species; fix the "
-        "network and re-run rather than skipping."
-    ) from last
+    """Fetch a page or raise, so a network failure is never reported as SKIP."""
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": UA})
+        with urllib.request.urlopen(req, timeout=PAGE_TIMEOUT_S) as r:
+            return r.read().decode("utf-8", "replace")
+    except _NET_ERRORS as e:
+        raise RuntimeError(
+            f"failed to fetch {url}: {e}. Cannot tell whether ExoMolOP publishes this species; "
+            "fix the network and re-run rather than skipping."
+        ) from e
 
 
 # Most abundant isotope of each element, by mass number. Used to identify the
@@ -196,20 +188,25 @@ def resolve(mol: str) -> tuple[str, str, str, bool] | None:
 
 
 def _assert_grid_matches(mol: str, part: Path, dest: Path, dest_dir: Path) -> None:
-    """Check that the downloaded file ``part`` shares the grid of the tables already installed.
+    """Check that the downloaded file ``part`` is a valid table and shares the grid of the tables already installed.
 
-    ``resolve`` checks only the filename. Deletes the download before raising on a mismatch; ``dest``, which ``--force``
-    would replace, stays as it was.
+    ``resolve`` checks only the filename. Deletes the download before raising; ``dest``, which ``--force`` would
+    replace, stays as it was.
     """
     import h5py
 
+    try:
+        with h5py.File(part, "r") as f:
+            got = exomolop._validated_layout(f, part)
+            exomolop._header(f, part)
+    except (OSError, ValueError) as e:
+        part.unlink()
+        raise RuntimeError(f"{mol}: the download is not a valid k-table ({e}). It has been deleted.") from e
     peers = sorted(p for p in dest_dir.glob("*.ktable.h5") if p != dest)
     if not peers:
         return
     with h5py.File(peers[0], "r") as f:
         ref = exomolop._validated_layout(f, peers[0])
-    with h5py.File(part, "r") as f:
-        got = exomolop._validated_layout(f, part)
     bad = exomolop._grid_mismatch(got, ref)
     if bad is not None:
         part.unlink()

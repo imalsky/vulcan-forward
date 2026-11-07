@@ -25,7 +25,7 @@ else:
 
     jax.config.update("jax_enable_x64", True)
 
-from vulcan_forward.exojax_rt import _gravity_profile_invsq
+from vulcan_forward._rt_geometry import _gravity_profile_invsq
 
 
 class _FakeArt:

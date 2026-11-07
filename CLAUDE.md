@@ -9,34 +9,9 @@ contract").
 Generic rules (code, docs, git, reviews, jobs) are in the maintainer's global rules, and the shared policy is in the
 project-root `CLAUDE.md`. This file holds only what is unique to this repo.
 
-## Maintainer rules (all repos)
+## Maintainer rules
 
-These five rules are identical in the project-root CLAUDE.md and every repo's; change
-them together.
-
-- **Layout.** Keep code, data and generated files apart. Shipped code, tests, inputs,
-  fixtures and validation assets stay where the repo's CLAUDE.md puts them. Work asked
-  for outside the product (analysis, one-off scripts and checks, their figures and
-  results) goes to `scratch/<topic>/`, one folder per question; run results go to
-  `output/`, and vulcan3's own figures to `plot/`. Keep these three top-level folders
-  gitignored and never commit their contents; never put such work in `src/`, `tests/`,
-  `tools/`, `validation/`, `data/` or the repo root. A durable conclusion goes to
-  notes.md; a reusable check becomes a tracked test or validation script.
-- **Figures.** An ad hoc plot request gets 1 to 3 figures, more only when asked, from one
-  script in `scratch/<topic>/`: no helper module, style layer or extra variants.
-- **Branches.** Work in the existing checkout on `main`. Create no branch, worktree or
-  copy of the repo, and switch no branch, unless the maintainer asks.
-- **Behind main.** At the start of work in a checkout, `git fetch origin`, then
-  `git rev-list --count HEAD..origin/main`. If the count is above 0, tell the
-  maintainer at once; if the fetch fails, say the state is unknown. This alerts and does
-  not block; never pull, rebase or reset unasked. Check again before a commit, a push or
-  a job on daw or NAS.
-- **Tests.** After a change, run the tests that cover it (a file or `-k`). Before a
-  push, run the normal tier (under 10 minutes on daw; CI runs it too). Anything longer
-  (the full tier, oracle comparisons, regenerating validation data or figures) runs
-  only before a release or a production run, or when the maintainer asks. When a change
-  touches what such a run covers, name the run and its rough cost in the report; do not
-  start it unasked.
+Layout, Figures, Branches, Behind main and Tests are in the project-root `CLAUDE.md`, under "Maintainer rules".
 
 ## Docs
 
@@ -61,8 +36,9 @@ policy: the project-root `CLAUDE.md`.
 - Both tiers need single-threaded XLA as above: multi-threaded Eigen breaks the bitwise lane checks. Run them on the CPU
   (`tests/conftest.py` defaults `JAX_PLATFORMS=cpu`): on a GPU in use the suite runs out of memory.
 - Lint and types: `uvx pre-commit run --all-files`; size limits: `python3 tools/check_size_limits.py`.
-- CI (`.github/workflows/tests.yml`) runs the normal tier serially, without exojax (the RT tests skip), with vulcan3
-  from `imalsky/VULCAN3@main`: push VULCAN3 `main` first when a change here needs a newer vulcan3.
+- CI (`.github/workflows/tests.yml`) runs the normal tier serially, without exojax (the RT tests skip), and again with
+  exojax and no data tree for the 80 % coverage floor (`tests/test_rt_miniature.py`), both with vulcan3 from
+  `imalsky/VULCAN3@main`: push VULCAN3 `main` first when a change here needs a newer vulcan3.
 - Releases: the `vulcan-release` skill; the version is in `src/vulcan_forward/_version.py`.
 
 ## Rules
@@ -103,6 +79,8 @@ policy: the project-root `CLAUDE.md`.
   arguments) (notes "Cold start, abundance map, carbon repair").
 - `ConvDiag.conv_normal` is `vulcan3.conv_normal(final, cfg)`, ANDed with the tangent certificate on the jvp path. Never
   re-implement the runner's certificate terms here (notes "Convergence certificate").
+- Under an outer jit nothing can raise: a column frozen at `dt_min` comes back as `ConvDiag.termination_reason` 4, with
+  `last_delta`, and a caller that jits a solve checks it (`vulcan3.raise_if_frozen`).
 - A forward-mode derivative of the solve goes through `converged_y_jvp`, never `jax.jvp(converged_y)` (it stops when the
   column certifies and leaves a warm start's tangent unrelaxed) and never a step floor. Pass the direction in
   finite-difference-step units and divide `dy` by the step. Several directions go in as one stacked `(D, n_theta)`

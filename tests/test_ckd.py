@@ -83,8 +83,8 @@ def test_overlap_returns_a_monotone_g_ordering():
 
 
 def test_overlap_is_differentiable():
-    """The retrieval and the Fisher forecast push forward-mode tangents through
-    the whole opacity path, so the sort and the rebin must carry them.
+    """The Fisher forecast pushes forward-mode tangents through the whole opacity path, so the sort and the rebin
+    must carry them.
     """
     ng = 8
     g, w = gauss_legendre(ng)

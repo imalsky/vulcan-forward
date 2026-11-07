@@ -168,14 +168,11 @@ markers = [
 
 [tool.coverage.run]
 source = ["vulcan_forward"]
-omit = [
-    "*/fetch_exomolop.py",  # the offline fetcher needs the network; it never runs in the engine's path
-]
 
 [tool.coverage.report]
 fail_under = 80
 exclude_also = [
-    '\.\.\.',
+    '^\s*\.\.\.\s*$',
     'if typing.TYPE_CHECKING:',
     'if TYPE_CHECKING:',
 ]

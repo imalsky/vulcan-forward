@@ -5,7 +5,7 @@ column, the same accept_count and certificate. Cold, the y's agree at the conver
 inside the loop here and outside it in ``converged_y_batch``, and the two compilations of ``_prep`` can differ by a ulp.
 With fewer lanes a theta enters at the tick its lane was freed at, so agreement is again at the convergence scale, and
 the certificate must match theta for theta. The warm stage 2 of a two-stage cold solve keeps every theta certified. The
-acceptance tests at the bottom pin a consumer's batched gradient against the per-theta solve.
+acceptance tests at the bottom pin a plain jvp through the queue against the per-theta solve.
 
 The measured differences are printed (``pytest -s``). Cheap profile: nz=20, photochemistry off. Full tier
 (``VULCAN_FORWARD_RUN_FULL=1``): the gradient tests (minutes of compile and 16 GB per route) and the two
@@ -249,17 +249,13 @@ def chem_tangent():
 def test_queue_is_differentiable(chem_tangent):
     """A plain ``jax.jvp`` runs through the queue, and through the batch.
 
-    This is what lets a consumer take the WHOLE cold gradient on the batched
-    runner instead of a per-theta vmap of jvps: JAX carries the tangent
-    leaves through the refill scatters, the chunk selection and the lane
-    `lax.cond` as it does through the lockstep batch. The stopping rule is
-    unchanged -- the loop predicate reads the primal only -- so the tangent is
-    the plain jvp's, and the three routes (queue, plain batch, solo
-    ``converged_y``) agree at the convergence scale their primals agree at.
+    JAX carries the tangent leaves through the refill scatters, the chunk selection and the lane `lax.cond` as it does
+    through the lockstep batch. The stopping rule is unchanged -- the loop predicate reads the primal only -- so the
+    tangent is the plain jvp's, and the three routes (queue, plain batch, solo ``converged_y``) agree at the convergence
+    scale their primals agree at.
 
-    Forward-mode callers that need a CERTIFIED tangent still go through
-    ``converged_y_jvp``; this test pins the plain-jvp route the retrieval's
-    cold gradient uses.
+    Forward-mode callers that need a CERTIFIED tangent go through
+    ``converged_y_jvp``; this test pins the plain jvp.
     """
     chem = chem_tangent
     th = jnp.asarray(THETAS)
@@ -289,8 +285,7 @@ def test_queue_is_differentiable(chem_tangent):
         )
         assert rel < QUEUE_DY_MAX
 
-    # The contract a batched-gradient consumer relies on: one jvp through the
-    # batch is the per-theta jvp through the solo runner, at the convergence
+    # One jvp through the batch is the per-theta jvp through the solo runner, at the convergence
     # scale and with the same certificate (a lane is its own solve, so the
     # four-lane batch's first two lanes stand for a batch of two).
     for k in range(2):
@@ -535,8 +530,8 @@ def _warm_routes(chem, th, yw, r0, r1):
 def test_warm_gradient_three_routes(chem_photo):
     """The batched and queued WARM continuation gradient agree with the per-theta one.
 
-    vulcan-retrieval's warm starts: per-lane carried column and reference
-    composition; the same bars as the cold tests.
+    The shape of vulcan-retrieval's warm starts: per-lane carried column and reference composition; the same bars as
+    the cold tests.
     """
     chem = chem_photo
     th0 = jnp.asarray(THETAS)

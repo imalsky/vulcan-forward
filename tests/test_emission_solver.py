@@ -35,7 +35,7 @@ import jax.numpy as jnp
 from exojax.rt import ArtEmisPure
 from exojax.rt.planck import piBarr
 
-from vulcan_forward.exojax_rt import _boundary_temperature
+from vulcan_forward._rt_geometry import _boundary_temperature
 
 NU = jnp.asarray([2000.0, 5000.0])  # 5 um and 2 um
 NLAYER = 30
@@ -71,12 +71,10 @@ def test_boundary_temperatures_are_midpoints_with_extrapolated_ends():
 def test_the_interior_source_is_present_and_fades_with_depth():
     """The bottom term is exp(-tau_total/mu) times the interior source.
 
-    Transparent: the column returns the interior blackbody (``ibased`` returns
-    ~0 there, a see-through window read as an empty sky). tau_bottom = 3, the
-    band the consumer's gate admits and where the term matters: moving only the interior temperature moves the flux,
-    with a finite positive derivative (the term is in the graph). Opaque
-    (tau 200): the flux forgets the interior; the deepest layer still
-    radiates, so a little is allowed.
+    Transparent: the column returns the interior blackbody (``ibased`` returns ~0 there, a see-through window read as an
+    empty sky). tau_bottom = 3, the band the consumer's gate admits and where the term matters: moving only the interior
+    temperature moves the flux, with a finite positive derivative (the term is in the graph). Opaque (tau 200): the flux
+    forgets the interior; the deepest layer still radiates, so a little is allowed.
     """
     art = _art()
     T_btm = 2600.0

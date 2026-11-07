@@ -14,6 +14,7 @@ the same distribution and would return a plausible, wrong spectrum.
 from __future__ import annotations
 
 import importlib.util
+import io
 from pathlib import Path
 
 import numpy as np
@@ -26,7 +27,7 @@ import jax
 # which is itself pinned, in test_load_refuses_without_x64.
 jax.config.update("jax_enable_x64", True)
 
-from vulcan_forward import exomolop, paths
+from vulcan_forward import exomolop, fetch_exomolop, paths
 
 HAVE_H5PY = importlib.util.find_spec("h5py") is not None
 pytestmark = pytest.mark.skipif(not HAVE_H5PY, reason="h5py not installed")
@@ -330,7 +331,8 @@ def test_real_tables_reproduce_the_exo_k_reference():
     import jax.numpy as jnp
     from vulcan_forward import ckd
 
-    z = np.load(DATA / "exok_ref_overlap.npz")
+    with np.load(DATA / "exok_ref_overlap.npz") as f:
+        z = dict(f)
     meta = json.loads(bytes(np.asarray(z["meta"])))
     mols = list(meta["molecules"])
     _need_real(*mols)
@@ -383,9 +385,203 @@ def test_load_refuses_without_x64(monkeypatch):
     class _Off:
         jax_enable_x64 = False
 
-    # load_tables does `from jax import config`, i.e. getattr(jax, "config"),
+    # _require_x64 does `from jax import config`, i.e. getattr(jax, "config"),
     # so swapping the attribute is enough; jax's real Config has no setter and
     # flipping x64 globally mid-session would poison every later test.
     monkeypatch.setattr(jax, "config", _Off())
     with pytest.raises(RuntimeError, match="x64"):
         exomolop.load_tables(["H2O"], edges[0], edges[-1], verbose=False)
+
+
+# The fetcher, on recorded miniature pages and files: nothing here reaches the network.
+GRID_FILE = "1H2-16O__POKAZATEL.R1000_0.3-50mu.ktable.petitRADTRANS.h5"
+
+
+def _pages(**over):
+    """ExoMolOP's three levels for H2O: isotopologues, line lists, files."""
+    root = fetch_exomolop.ROOT
+    pages = {
+        f"{root}/H2O/": 'x <a href="1H2-16O" class="i"> <a href="1H-2H-16O" class="i"> <a href="1H2-18O" class="i">',
+        f"{root}/H2O/1H2-16O/": (
+            '<a href="BT2" class="list-group-item">BT2</a>'
+            '<a href="POKAZATEL" class="list-group-item">POKAZATEL (recommended)</a>'
+            '<a href="HotWat78" class="list-group-item">HotWat78</a>'
+        ),
+        f"{root}/H2O/1H2-16O/POKAZATEL/": (
+            f'<a href="/db/H2O/1H2-16O/POKAZATEL/{GRID_FILE}">k</a>'
+            '<a href="/db/H2O/1H2-16O/POKAZATEL/1H2-16O__POKAZATEL.R15000_0.2-30mu.ktable.petitRADTRANS.h5">k</a>'
+            '<a href="/db/H2O/1H2-16O/POKAZATEL/1H2-16O__POKAZATEL.R1000_0.3-50mu.xsec.TauREx.h5">x</a>'
+        ),
+    }
+    pages.update(over)
+    return pages
+
+
+def test_resolve_takes_the_principal_isotopologue_the_recommended_list_and_the_engine_s_grid(monkeypatch):
+    pages = _pages()
+    monkeypatch.setattr(fetch_exomolop, "_get", pages.__getitem__)
+    url, dataset, iso, natural = fetch_exomolop.resolve("H2O")
+    assert url == f"{fetch_exomolop.BASE}/db/H2O/1H2-16O/POKAZATEL/{GRID_FILE}"
+    assert (dataset, iso, natural) == ("POKAZATEL", "1H2-16O", False)
+
+
+def test_resolve_prefers_the_natural_abundance_file(monkeypatch):
+    root = fetch_exomolop.ROOT
+    nat = "1H2-16O-all__POKAZATEL.R1000_0.3-50mu.ktable.petitRADTRANS.h5"
+    files = f'<a href="/db/H2O/1H2-16O/POKAZATEL/{GRID_FILE}">k</a><a href="/db/H2O/1H2-16O/POKAZATEL/{nat}">k</a>'
+    pages = _pages(**{f"{root}/H2O/1H2-16O/POKAZATEL/": files})
+    monkeypatch.setattr(fetch_exomolop, "_get", pages.__getitem__)
+    url, *_, natural = fetch_exomolop.resolve("H2O")
+    assert url.endswith(nat)
+    assert natural is True
+
+
+@pytest.mark.parametrize(
+    ("level", "html", "match"),
+    [
+        ("{root}/H2O/", "nothing here", "no isotopologue links"),
+        ("{root}/H2O/", '<a href="13C-16O2" class="i">', "Refusing to guess"),
+        (
+            "{root}/H2O/1H2-16O/POKAZATEL/",
+            '<a href="/db/x/1H2-16O__P.R15000_0.2-30mu.ktable.petitRADTRANS.h5">k</a>',
+            "none on the R1000_0.3-50mu grid",
+        ),
+    ],
+)
+def test_resolve_refuses_what_it_cannot_identify(monkeypatch, level, html, match):
+    pages = _pages(**{level.format(root=fetch_exomolop.ROOT): html})
+    monkeypatch.setattr(fetch_exomolop, "_get", pages.__getitem__)
+    with pytest.raises(RuntimeError, match=match):
+        fetch_exomolop.resolve("H2O")
+
+
+def test_resolve_says_when_exomolop_has_no_k_table(monkeypatch):
+    root = fetch_exomolop.ROOT
+    pages = _pages(**{f"{root}/H2O/1H2-16O/POKAZATEL/": '<a href="/db/x/y.xsec.TauREx.h5">x</a>'})
+    monkeypatch.setattr(fetch_exomolop, "_get", pages.__getitem__)
+    assert fetch_exomolop.resolve("H2O") is None
+
+
+class _Response(io.BytesIO):
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+
+@pytest.fixture
+def download(data_root, monkeypatch, tmp_path):
+    """Serve ``payload`` as any table's download, and resolve every molecule to one dataset."""
+    monkeypatch.setattr(paths, "_configured_root", lambda: data_root, raising=False)
+    monkeypatch.setattr(paths, "ensure_layout", lambda: data_root)
+    monkeypatch.setattr(fetch_exomolop, "resolve", lambda _m: ("https://x/y.h5", "POKAZATEL", "1H2-16O", False))
+    source = tmp_path / "served.h5"
+
+    def serve(**kw):
+        _write(source, **kw)
+        monkeypatch.setattr(fetch_exomolop.urllib.request, "urlopen", lambda *_a, **_k: _Response(source.read_bytes()))
+
+    return serve, source
+
+
+def test_fetch_installs_a_valid_download_and_records_it(download):
+    serve, _ = download
+    serve()
+    fetch_exomolop.fetch(["H2O"])
+    assert exomolop.table_path("H2O").is_file()
+    assert not exomolop.table_path("H2O").with_name("H2O.ktable.h5.part").exists()
+    assert exomolop.provenance()["H2O"]["dataset"] == "POKAZATEL"
+
+
+def test_fetch_leaves_a_present_attributed_table_alone(download, monkeypatch):
+    serve, _ = download
+    serve()
+    fetch_exomolop.fetch(["H2O"])
+
+    def no_network(*_a, **_k):
+        raise AssertionError("a present, attributed table needs no network")
+
+    monkeypatch.setattr(fetch_exomolop.urllib.request, "urlopen", no_network)
+    monkeypatch.setattr(fetch_exomolop, "resolve", no_network)
+    fetch_exomolop.fetch(["H2O"])
+
+
+def test_a_corrupt_forced_download_cannot_replace_the_only_table(download, monkeypatch):
+    serve, source = download
+    serve()
+    fetch_exomolop.fetch(["H2O"])
+    dest = exomolop.table_path("H2O")
+    before = dest.read_bytes()
+    monkeypatch.setattr(
+        fetch_exomolop.urllib.request, "urlopen", lambda *_a, **_k: _Response(b"<html>not a table</html>")
+    )
+    with pytest.raises(RuntimeError, match="not a valid k-table"):
+        fetch_exomolop.fetch(["H2O"], force=True)
+    assert dest.read_bytes() == before
+    assert not dest.with_name("H2O.ktable.h5.part").exists()
+    assert source.exists()
+
+
+def test_a_download_on_another_grid_is_refused_and_deleted(download):
+    serve, _ = download
+    serve()
+    fetch_exomolop.fetch(["H2O"])
+    serve(nu0=101.0)
+    with pytest.raises(RuntimeError, match=r"disagrees with H2O\.ktable\.h5 on the band grid"):
+        fetch_exomolop.fetch(["CO2"])
+    assert not exomolop.table_path("CO2").exists()
+    assert not exomolop.table_path("CO2").with_name("CO2.ktable.h5.part").exists()
+
+
+def test_fetch_refuses_to_overwrite_an_unreadable_provenance_record(download):
+    serve, _ = download
+    serve()
+    record = paths.exomolop_dir() / "provenance.json"
+    record.write_text("{not json")
+    with pytest.raises(RuntimeError, match="not valid JSON"):
+        fetch_exomolop.fetch(["H2O"])
+    assert record.read_text() == "{not json"
+
+
+@pytest.mark.parametrize(
+    ("iso", "principal"),
+    [
+        ("1H2-16O", True),
+        ("12C-16O2", True),
+        ("1H2-32S", True),
+        ("13C-16O2", False),  # a minor isotope of carbon
+        ("1H-2H-16O", False),  # deuterium
+        ("1H2-99Xx", False),  # an element the table does not know
+        ("H2O", False),  # not ExoMol's isotopologue form: the caller raises rather than accept it
+    ],
+)
+def test_the_isotopologue_token_names_the_principal_form(iso, principal):
+    assert fetch_exomolop._is_principal(iso) is principal
+
+
+def test_a_forced_download_with_a_wrong_header_cannot_replace_the_table(download):
+    """Per-gram units pass the layout check and would change every cross section."""
+    serve, _ = download
+    serve()
+    fetch_exomolop.fetch(["H2O"])
+    dest = exomolop.table_path("H2O")
+    before = dest.read_bytes()
+    serve(kunits="cm^2/g")
+    with pytest.raises(RuntimeError, match="not a valid k-table"):
+        fetch_exomolop.fetch(["H2O"], force=True)
+    assert dest.read_bytes() == before
+
+
+def test_a_page_that_fails_is_a_refusal_at_the_first_attempt(monkeypatch):
+    """A retry can only hide a flaky network from the person watching; a re-run skips what already landed."""
+    calls = []
+
+    def down(_req, timeout):
+        calls.append(timeout)
+        raise OSError("unreachable")
+
+    monkeypatch.setattr(fetch_exomolop.urllib.request, "urlopen", down)
+    with pytest.raises(RuntimeError, match="unreachable"):
+        fetch_exomolop._get("https://example.invalid/page")
+    assert calls == [fetch_exomolop.PAGE_TIMEOUT_S]

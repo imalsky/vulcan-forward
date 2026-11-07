@@ -84,7 +84,7 @@ python -m pytest tests -q
 The result is only as complete as the selected reaction network, opacity
 tables, pressure grid, and cloud model. Check wavelength and temperature
 coverage before using a new molecule or atmosphere. Condensation is not
-validated for gradient inference.
+validated for inference.
 
 ## Papers and citation
 
