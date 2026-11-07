@@ -66,10 +66,10 @@ Tags: [M] measured, [E] estimated, [I] inferred.
   The deliberate physics changes since (model top, eclipse radius, emission g(r), lnR0)
   carried new fixtures.
 - The three builders return a `SimpleNamespace` whose functions are bound methods of
-  frozen, `eq=False` classes (`_Proposal`, `_ChemSolves`, `_Transmission`, `_Emission`;
+  frozen, `eq=False` classes (`_ChemSetup`, `_ChemSolves`, `_Transmission`, `_Emission`;
   the last two share `_Opacities`): jwst-transit-authority's
   contract test reads the record's keywords off the source, and each attribute stays one
-  function object for a `jax.jit` of it. `_Proposal` must not reach the runner:
+  function object for a `jax.jit` of it. `_ChemSetup` must not reach the runner:
   `OuterLoop.run_queue` compiles its methods into a program the runner holds, and JAX's
   trace caches keep them until that program dies; with `_conv_diag` on the runner's side a
   dropped model stayed alive through `gc.collect()`, where the base freed it [M].

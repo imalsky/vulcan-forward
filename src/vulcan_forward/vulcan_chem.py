@@ -263,7 +263,7 @@ def build_chem_model(
     from vulcan3.paths import resolve_data_path
     from vulcan3.state import RunState, legacy_view
 
-    from vulcan_forward._chem_model import _CarrySeed, _ChemSolves, _Proposal
+    from vulcan_forward._chem_model import _CarrySeed, _ChemSetup, _ChemSolves
 
     _assert_composition_tables(composition)
 
@@ -308,7 +308,7 @@ def build_chem_model(
     y0 = np.asarray(state0.y, dtype=np.float64)
     elem = _build_elemental(compo, sidx, y0, ni, co_mode == "fixed_O")
 
-    proposal = _Proposal(
+    setup = _ChemSetup(
         cfg=cfg,
         network=network,
         nasa9=nasa9,
@@ -329,11 +329,9 @@ def build_chem_model(
         refresh_static=refresh_static,
         phys0=phys0,
         spec_atm=spec_atm,
-        nz=nz,
-        ni=ni,
         carry=_CarrySeed.from_cfg(cfg),
     )
-    solves = _ChemSolves(proposal, integ)
+    solves = _ChemSolves(setup, integ)
 
     return SimpleNamespace(
         run_diag=solves.run_diag,
@@ -341,10 +339,10 @@ def build_chem_model(
         converged_y_batch=solves.converged_y_batch,
         converged_y_queue=solves.converged_y_queue,
         converged_y_jvp=solves.converged_y_jvp,
-        conv_normal_at_exit=proposal.conv_normal_at_exit,
-        audit_init=proposal.audit_init,
+        conv_normal_at_exit=setup.conv_normal_at_exit,
+        audit_init=setup.audit_init,
         conden_spec=conden_spec,
-        prep_pv=proposal.prep_pv,
+        prep_pv=setup.prep_pv,
         _integ=integ,
         co_bz_bound=elem.margin(y0),  # the build's initial column
         co_bz_margin=elem.margin,

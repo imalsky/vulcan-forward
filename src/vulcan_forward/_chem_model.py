@@ -1,6 +1,6 @@
-"""The model ``build_chem_model`` assembles: what a proposal starts from, and the solves that run it.
+"""The model ``build_chem_model`` assembles: what one build fixes for every proposal, and the solves that run them.
 
-``_Proposal`` rebuilds rates, composition, geometry and diffusion on-graph for one theta. ``_ChemSolves`` drives
+``_ChemSetup`` rebuilds rates, composition, geometry and diffusion on-graph for one theta. ``_ChemSolves`` drives
 vulcan3's runner from that state, solo, batched, queued or with a tangent. Imported inside ``build_chem_model``: this
 module imports vulcan3, which freezes its network at the first import.
 """
@@ -56,7 +56,7 @@ class _CarrySeed(NamedTuple):
 
 
 @dataclass(frozen=True, eq=False)
-class _Proposal:
+class _ChemSetup:
     """The arrays one build fixes, and what they give for each proposal: the initial state and the exit report.
 
     ``OuterLoop.run_queue`` keys its compiled programs on ``queue_init`` and ``queue_out``, which compare equal, so a
@@ -85,8 +85,6 @@ class _Proposal:
     refresh_static: Any
     phys0: Any
     spec_atm: Any
-    nz: int
-    ni: int
     carry: _CarrySeed
 
     def _eq_seed(self, T: Array, ratios: Array, M: Array) -> Array:
@@ -117,7 +115,8 @@ class _Proposal:
         layer-summed column ratios to H at the theta targets, not the dz-weighted inventory the element budget tracks,
         so two starts at one theta can carry different weighted inventories.
         """
-        nz, ni, spec_atm, state0 = self.nz, self.ni, self.spec_atm, self.state0
+        spec_atm, state0 = self.spec_atm, self.state0
+        nz, ni = state0.y.shape
         # One column per solve: a (1, ni) column would broadcast and seed every layer from one layer. Shapes are static,
         # so this runs under jit and vmap.
         if warm_y is not None and jnp.shape(warm_y) != (nz, ni):
@@ -235,7 +234,7 @@ class _Proposal:
         """
         ok, branch = vulcan3.conv_normal(final, self.cfg)
         flat = jnp.argmax(final.where_varies_most)
-        ni = self.ni
+        ni = self.state0.y.shape[1]
         return ConvDiag(
             accept_count=final.accept_count,
             longdy=final.longdy,
@@ -364,7 +363,7 @@ def _stack_dir(*ds: Array) -> Array:
 class _ChemSolves:
     """The routes from a proposal's start through vulcan3's runner to the converged column."""
 
-    proposal: _Proposal
+    setup: _ChemSetup
     integ: Any
 
     def run_diag(
@@ -381,7 +380,7 @@ class _ChemSolves:
         ``return_atm`` adds the theta-dependent ``AtmStatic`` the runner was driven with, the operating point a
         reverse-mode adjoint must linearize around, as a third entry.
         """
-        init, atm_T = self.proposal.seeded_prep(theta, warm_y, lnZ_ref, c_o_ref, s_o_ref)
+        init, atm_T = self.setup.seeded_prep(theta, warm_y, lnZ_ref, c_o_ref, s_o_ref)
         final = self.integ.runner(init, atm_T)
         return (final, init, atm_T) if return_atm else (final, init)
 
@@ -419,10 +418,10 @@ class _ChemSolves:
         jax.Array [nz, ni], or tuple
             Absolute number densities, cm^-3; with ``return_conv_diag``, ``(y, ConvDiag)``.
         """
-        init, atm_T = self.proposal.seeded_prep(theta, warm_y, lnZ_ref, c_o_ref, s_o_ref)
+        init, atm_T = self.setup.seeded_prep(theta, warm_y, lnZ_ref, c_o_ref, s_o_ref)
         final = self.integ.runner(init, atm_T)
         if return_conv_diag:
-            return final.y, self.proposal.conv_diag(final)
+            return final.y, self.setup.conv_diag(final)
         return final.y
 
     def converged_y_batch(
@@ -465,12 +464,12 @@ class _ChemSolves:
 
         # warm_y=None is an empty pytree node, so the same vmap covers the cold seed.
         init_b, atm_b = jax.vmap(
-            self.proposal.seeded_prep,
+            self.setup.seeded_prep,
             out_axes=(0, outer_loop.ATM_STATIC_BATCH_AXES),
         )(thetas, warm_y, *refs)
         final_b = self.integ.run_batch(init_b, atm_b)
         if return_conv_diag:
-            return final_b.y, jax.vmap(self.proposal.conv_diag)(final_b)
+            return final_b.y, jax.vmap(self.setup.conv_diag)(final_b)
         return final_b.y
 
     def converged_y_queue(
@@ -523,7 +522,7 @@ class _ChemSolves:
             If ``active`` does not have shape [N].
         """
         masked = active is not None
-        init_fn = self.proposal.queue_init_masked if masked else self.proposal.queue_init
+        init_fn = self.setup.queue_init_masked if masked else self.setup.queue_init
 
         n = int(jnp.shape(thetas)[0])
         jobs = (thetas, warm_y, *_ref_leaves(n, lnZ_ref, c_o_ref, s_o_ref))
@@ -533,7 +532,7 @@ class _ChemSolves:
                 raise ValueError(f"converged_y_queue: active must have shape ({n},), got {act.shape}")
             jobs = (*jobs, act)
         chunk_kw = {} if chunk is None else {"chunk": int(chunk)}
-        (y, cd), _n_iter = self.integ.run_queue(init_fn, jobs, int(n_lanes), self.proposal.queue_out, **chunk_kw)
+        (y, cd), _n_iter = self.integ.run_queue(init_fn, jobs, int(n_lanes), self.setup.queue_out, **chunk_kw)
         return y, cd
 
     def converged_y_jvp(
@@ -580,7 +579,7 @@ class _ChemSolves:
 
         def _seeded(th: ChemParams | Array) -> tuple[Any, Any]:
             """Return the seeded prep of one theta, for the linearization."""
-            return self.proposal.seeded_prep(th, warm_y, lnZ_ref, c_o_ref, s_o_ref)
+            return self.setup.seeded_prep(th, warm_y, lnZ_ref, c_o_ref, s_o_ref)
 
         th, tan = _float64_leaves(theta), _float64_leaves(tangent)
         if not isinstance(tan, ChemParams) and jnp.ndim(tan) == 2:
@@ -590,4 +589,4 @@ class _ChemSolves:
         else:
             (init, atm_T), (dinit, datm) = jax.jvp(_seeded, (th,), (tan,))
         final, dfinal, tl, ok = self.integ.run_jvp(init, atm_T, dinit, datm)
-        return final.y, dfinal.y, self.proposal.conv_diag(final, tangent_ok=ok, tangent_longdy=jnp.max(tl))
+        return final.y, dfinal.y, self.setup.conv_diag(final, tangent_ok=ok, tangent_longdy=jnp.max(tl))

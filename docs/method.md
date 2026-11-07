@@ -12,7 +12,8 @@ behind the rules are in `notes.md`.
 | `exomolop` | ExoMolOP k-table ingestion, header checks, provenance |
 | `fetch_exomolop` | The offline fetcher |
 | `ckd` | (T, P) interpolation of log k and the random-overlap mixture |
-| `vulcan_chem` | The chemistry driver: theta to the converged column, forward-mode differentiable |
+| `vulcan_chem` | The import-order preamble and `build_chem_model`, the chemistry driver's setup |
+| `_chem_model` | Theta to the converged column, forward-mode differentiable: a proposal's start, the solves |
 | `_chem_layout` | `ChemParams`, the positional layout, `ConvDiag` |
 | `_elemental` | The composition masks, the elemental repair, the C/O margin |
 | `interp_map` | Chemistry grid to RT grid |
