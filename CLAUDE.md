@@ -150,8 +150,9 @@ policy: the project-root `CLAUDE.md`.
 
 ## Where things live
 
-- `vulcan_chem.py`: `build_chem_model`, every solve entry point; `_chem_layout.py`: `ChemParams`, `ConvDiag`;
-  `_elemental.py`: the composition masks and the elemental repair.
+- `vulcan_chem.py`: the import-order preamble and `build_chem_model`; `_chem_model.py`: `_Proposal` (a proposal's
+  initial state and exit report) and `_ChemSolves` (every solve entry point); `_chem_layout.py`: `ChemParams`, `ConvDiag`; `_elemental.py`:
+  the composition masks and the elemental repair.
 - `exojax_rt.py`: `build_rt_model`, `build_emis_model`, emission solver; `_rt_geometry.py`: geometry anchors;
   `_rt_opacity.py`: the optical depth.
 - `ckd.py`: correlated-k interpolation and the overlap fold. `exomolop.py`: table loading and `provenance()`.

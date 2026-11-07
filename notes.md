@@ -65,6 +65,13 @@ Tags: [M] measured, [E] estimated, [I] inferred.
   vulcan-retrieval reproduced the planner's default WASP-39 b case at max|diff| = 0 [M].
   The deliberate physics changes since (model top, eclipse radius, emission g(r), lnR0)
   carried new fixtures.
+- `build_chem_model` returns a `SimpleNamespace` whose functions are bound methods of
+  frozen, `eq=False` classes (`_Proposal`, `_ChemSolves`): jwst-transit-authority's
+  contract test reads the record's keywords off the source, and each attribute stays one
+  function object for a `jax.jit` of it. `_Proposal` must not reach the runner:
+  `OuterLoop.run_queue` compiles its methods into a program the runner holds, and JAX's
+  trace caches keep them until that program dies; with `_conv_diag` on the runner's side a
+  dropped model stayed alive through `gc.collect()`, where the base freed it [M].
 - Why a separate distribution: the exact exojax pin is load-bearing, and VULCAN3 is
   standalone with vendored data; an RT stack and an external data path there would widen
   its blast radius. DAG: `vulcan3 <- vulcan-forward <- {vulcan-retrieval,
@@ -443,8 +450,7 @@ per-theta re-anchoring stay; the other items stay live as model choices.
 - `transmission_depth`, `emission_flux` and `tau_bottom` have no production caller (grep
   of vulcan-retrieval/src and vulcan-jwst-tool/src).
 - Importing `vulcan_chem` sets `OMP_NUM_THREADS=1` (`setdefault`, undocumented).
-- `build_chem_model` is one ~800-line function. `ChemParams.tp = ()` defaults to an
-  IndexError [I].
+- `ChemParams.tp = ()` defaults to an IndexError [I].
 - A non-default `VULCAN3_NETWORK` is kept when `vulcan_chem` is imported first, refused
   when `vulcan3` was.
 - No engine test sets `cfg_overrides`, `run_diag`, `use_rayleigh`,
