@@ -109,7 +109,6 @@ def bz_margin(y: ArrayLike, n_o: ArrayLike, carbon_mask: ArrayLike, o_only_mask:
         return float(np.log(1.0 + np.min(oo_z / oc_z)))
 
 
-# size-limit-ok: the closures share the one set of tables built here
 def _build_elemental(
     compo: np.ndarray, sidx: dict[str, int], y0_np: np.ndarray, ni: int, co_fixed_o: bool
 ) -> SimpleNamespace:

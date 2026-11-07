@@ -389,7 +389,6 @@ def build_chem_model(  # noqa: C901  # counts its closures
             return p
         return params_from_vector(p, n_tp_params, has_tp_eval=tp_eval is not None, extras=chem_extras)
 
-    # size-limit-ok: one proposal's state, in program order
     def _prep(
         theta: ChemParams | Array,
         warm_y: Array | None = None,
@@ -635,7 +634,6 @@ def build_chem_model(  # noqa: C901  # counts its closures
     # The pair depends only on static choices: the reference composition rides the jobs pytree.
     _queue_fns: dict[tuple[bool, bool], tuple[Callable[..., Any], Callable[..., Any]]] = {}
 
-    # size-limit-ok: 37 of its 86 lines are the numpy docs of the arguments; the code is under the limit
     def converged_y_queue(
         thetas: Array,
         n_lanes: int,
