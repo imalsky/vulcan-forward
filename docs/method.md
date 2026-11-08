@@ -13,7 +13,7 @@ behind the rules are in `notes.md`.
 | `fetch_exomolop` | The offline fetcher |
 | `ckd` | (T, P) interpolation of log k and the random-overlap mixture |
 | `vulcan_chem` | The import-order preamble and `build_chem_model`, the chemistry driver's setup |
-| `_chem_model` | Theta to the converged column, forward-mode differentiable: a proposal's start, the solves |
+| `_chem_model` | Theta to the converged column, forward-mode differentiable: `_ChemSetup` (what a build fixes, a proposal's initial state and exit report), `_ChemSolves` (every solve entry point) |
 | `_chem_layout` | `ChemParams`, the positional layout, `ConvDiag` |
 | `_elemental` | The composition masks, the elemental repair, the C/O margin |
 | `interp_map` | Chemistry grid to RT grid |
@@ -27,6 +27,13 @@ behind the rules are in `notes.md`.
 column per proposal. Rate constants and the T- and composition-dependent structure ($D_{zz}$, $v_m$, $v_s$, $K_{zz}$, the
 initial carry geometry) are rebuilt on-graph. T-dependent photolysis cross sections are refused at build, because the
 rebuild does not follow them.
+
+### Parameter vector
+
+`ChemParams(lnZ, c_o, lnKzz, tp, s_o, kzz_slope)` is the named form. `params_from_vector` and `ChemParams.to_vector` convert
+to and from the positional layout `[lnZ, c_o, lnKzz, *extras, *tp]`, where the extras are the `chem_extras` the model was
+built with (a subset of `CHEM_EXTRAS`, in its order; none by default). Without a `tp_eval` hook the tail is one entry, a
+uniform temperature offset in K. A warm continuation carries three references: `lnZ_ref`, `c_o_ref`, `s_o_ref`.
 
 ### Composition map
 
