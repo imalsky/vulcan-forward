@@ -36,9 +36,8 @@ policy: the project-root `CLAUDE.md`.
 - Both tiers need single-threaded XLA as above: multi-threaded Eigen breaks the bitwise lane checks. Run them on the CPU
   (`tests/conftest.py` defaults `JAX_PLATFORMS=cpu`): on a GPU in use the suite runs out of memory.
 - Lint and types: `uvx pre-commit run --all-files`; size limits: `python3 tools/check_size_limits.py`.
-- CI (`.github/workflows/tests.yml`) runs the normal tier serially, without exojax (the RT tests skip), and again with
-  exojax and no data tree for the 80 % coverage floor (`tests/test_rt_miniature.py`), both with vulcan3 from
-  `imalsky/VULCAN3@main`: push VULCAN3 `main` first when a change here needs a newer vulcan3.
+- CI (`.github/workflows/tests.yml`; its jobs: notes "Current state") installs vulcan3 from `imalsky/VULCAN3@main`:
+  push VULCAN3 `main` first when a change here needs a newer vulcan3.
 - Releases: the `vulcan-release` skill; the version is in `src/vulcan_forward/_version.py`.
 
 ## Rules
@@ -68,12 +67,9 @@ policy: the project-root `CLAUDE.md`.
 
 ### Chemistry solve and derivatives
 
-- `ChemParams(lnZ, c_o, lnKzz, tp, s_o, kzz_slope)` is the primitive; `params_from_vector` / `ChemParams.to_vector`
-  convert to and from the positional `[lnZ, c_o, lnKzz, *extras, *tp]` layout every entry point accepts, where the
-  extras are the `chem_extras` the model was built with (a subset of `CHEM_EXTRAS`, in its order; none by default). Keep
-  the vector path: consumers pass and differentiate that array. `_as_params` is the single normalization point; `_prep`
-  reads fields by name; without a `tp_eval` hook the tail is one entry (a uniform T offset). A warm continuation carries
-  three references (`lnZ_ref`, `c_o_ref`, `s_o_ref`).
+- `ChemParams` is the primitive, and every entry point also accepts its positional vector (layout: `docs/method.md`
+  "Parameter vector"). Keep the vector path: consumers pass and differentiate that array. `_as_params` is the single
+  normalization point; `_prep` reads fields by name.
 - Every cold solve starts from vulcan3's in-graph equilibrium seed at the proposal's own T-P and column ratios. To start
   from the build's column, pass it as a continuation: `warm_y=chem.y0, lnZ_ref=0, c_o_ref=0` (`run_diag` takes the same
   arguments) (notes "Cold start, abundance map, carbon repair").
@@ -150,14 +146,5 @@ policy: the project-root `CLAUDE.md`.
 
 ## Where things live
 
-- `vulcan_chem.py`: the import-order preamble and `build_chem_model`; `_chem_model.py`: `_ChemSetup` (what a build
-  fixes, a proposal's initial state and exit report) and `_ChemSolves` (every solve entry point); `_chem_layout.py`:
-  `ChemParams`, `ConvDiag`; `_elemental.py`: the composition masks and the elemental repair.
-- `exojax_rt.py`: `build_rt_model`, `build_emis_model`, emission solver; `_rt_geometry.py`: geometry anchors;
-  `_rt_opacity.py`: the optical depth.
-- `ckd.py`: correlated-k interpolation and the overlap fold. `exomolop.py`: table loading and `provenance()`.
-  `fetch_exomolop.py`: the offline fetcher.
-- `docs/method.md`: the methods, their sources and the glossary.
-- `interp_map.py`: chemistry grid to RT grid. `paths.py`: the data root. `constants.py`: `PROFILE_KEYS`, anchor and grid
-  constants, `MOLECULES`.
+- Module map: `docs/method.md` "Modules"; the methods, their sources and the glossary are in the same file.
 - `tests/test_contract.py`: the library contract. `tests/test_e2e_rt_reference.py`: the pRT gate.
