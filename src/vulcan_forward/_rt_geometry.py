@@ -81,7 +81,7 @@ def _radius_at(
     lnp = jnp.concatenate([lnp_art[:1] - 0.5 * d, lnp_art, _lnp_grid_bottom_boundary(lnp_art)[None]])
     C = jnp.concatenate([C[:1], C, C[-1:]])
     seg = 0.5 * (C[1:] + C[:-1]) * jnp.diff(lnp)
-    # The integral is zero at the top CENTRE.
+    # The integral is zero at the top centre.
     cum = jnp.concatenate([-seg[:1], jnp.zeros(1), jnp.cumsum(seg[1:])])
     i_ref = jnp.interp(jnp.log(p_ref_bar), lnp, cum)
     i_tgt = jnp.interp(jnp.log(p_target_bar), lnp, cum)
@@ -97,7 +97,7 @@ TAU_PHOTOSPHERE = 2.0 / 3.0
 def _photosphere_lnp(dtau_g: Array, lnp_art: Array) -> Array:
     """Return ln(pressure) where the vertical optical depth from the top reaches TAU_PHOTOSPHERE, per (g, band).
 
-    The grid's bottom boundary where it never does. Piecewise-linear in tau between layer boundaries, so it
+    Where it never does, the grid's bottom boundary. Piecewise-linear in tau between layer boundaries, so it
     differentiates through ``dtau_g``.
     """
     d = lnp_art[1] - lnp_art[0]

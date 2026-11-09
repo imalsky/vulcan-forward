@@ -246,7 +246,7 @@ class _Transmission:
         unchanged and lnM scales it. lnR0 = 0 reproduces ``transmission_depth`` (bitwise eager; under jit the folded
         gravity can move by one ulp). Both are RT-only: the chemistry's hydrostatic column is not re-solved. Holding g
         instead would make the planet e^(2 lnR0) times heavier and keep every scale height at its lnR0 = 0 value, which
-        the retrieval would pay for in T and mu.
+        a retrieval would absorb in T and mu.
 
         With ``wo_mols``, each row is bit-identical on the CPU to a separate call on the zeroed profile, reusing the
         shared fold prefix: (n-1)(n/2+2) overlap folds instead of (n+1)(n-1).
@@ -325,8 +325,8 @@ def build_rt_model(profile: Profile) -> SimpleNamespace:
     Raises
     ------
     ValueError
-        On an unknown key, a bad grid or anchor, an uncovered band, or missing geometry. A missing CIA table raises
-        ``FileNotFoundError``.
+        On an unknown key, a bad grid or anchor, an uncovered band, or missing geometry. A missing k-table or CIA table
+        raises ``FileNotFoundError``, and a molecule with no entry in the molecule table ``KeyError``.
     """
     t0 = time.time()
     _check_profile(profile)
@@ -459,7 +459,7 @@ class _Emission:
         return self.r_ref_em * jnp.exp(lnR0), self.g_ref_em * jnp.exp(-2.0 * lnR0)
 
     def _g_layers(self, T_art: Array, mmw_art: Array, lnR0: Array | float) -> Array:
-        """Return inverse-square g(r) at the layer centres, [nlayer, 1], the g(r) of the anchor and the photosphere."""
+        """Return inverse-square g(r) at the layer centres, [nlayer, 1]: the g(r) the anchor and the photosphere use."""
         lnp_em = self.lnp_em
         return _radius_at(lnp_em, T_art, mmw_art, *self._anchor(lnR0), self.p_ref_used, jnp.exp(lnp_em))[1][:, None]
 

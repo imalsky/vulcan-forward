@@ -74,9 +74,8 @@ def _ckd_dt_one(
     """Return one molecule's optical depth [nlayer, ng, nband]."""
     lk = ckd._interp_logk(pack.logk[key], pack.t_grid, pack.p_grid, T_art, P)  # (nlayer, ng, nb)
     mmr = vmr_to_mmr(vmr_key, molmass[key], mmw_art)
-    # layer_optical_depth_ckd multiplies a (nlayer, ng, nband) tensor by
-    # dParr[:, None, None] / gravity, so gravity needs the third axis too;
-    # the continuum terms stay on the 2-D (nlayer, nband) form.
+    # layer_optical_depth_ckd multiplies a (nlayer, ng, nband) tensor by dParr[:, None, None] / gravity, so gravity
+    # needs the third axis too; the continuum terms stay (nlayer, nband).
     return art.opacity_profile_xs_ckd(jnp.exp(lk), mmr, molmass[key], g_prof[..., None])
 
 
@@ -117,10 +116,9 @@ def _ckd_continuum(
             jnp.broadcast_to(xs_he[None, :], (nl, nb)), vmr_to_mmr(vmr_he, _HE_MOLMASS, mmw_art), _HE_MOLMASS, g_prof
         )
     if cloud is not None:
-        # ExoJax's shipped retrieval cloud (pRT convention, per gram of atmosphere).
+        # kappa is per gram of atmosphere (pRT convention), so dtau = kappa dP_cgs / g with no 1/m_u; exojax folds
+        # bar_cgs / m_u into its per-molecule opacity_factor instead.
         kappa_c = powerlaw_clouds(pack.nu_bands_j, kappac0=10.0 ** cloud[0], nuc0=constants.CLOUD_NUC0, alphac=cloud[1])
-        # kappa is per gram of atmosphere, so dtau = kappa * dP_cgs / g with no
-        # 1/m_u (exojax folds bar_cgs/m_u into its per-molecule opacity_factor).
         dP = jnp.asarray(art.dParr)
         cont = cont + kappa_c[None, :] * (dP[:, None] * constants.BAR_CGS / g_prof)
     if deck is not None:

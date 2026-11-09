@@ -96,7 +96,6 @@ class _ChemSetup:
         return eq_seed(T, self.p_bar, element_vector(ratios, self.ratio_idx)) * M[:, None]
 
     def _as_params(self, p: ChemParams | Array) -> ChemParams:
-        """Accept named ``ChemParams`` or a positional vector."""
         if isinstance(p, ChemParams):
             return p
         return params_from_vector(p, self.n_tp_params, has_tp_eval=self.tp_eval is not None, extras=self.chem_extras)
@@ -578,7 +577,6 @@ class _ChemSolves:
         """
 
         def _seeded(th: ChemParams | Array) -> tuple[Any, Any]:
-            """Return the seeded prep of one theta, for the linearization."""
             return self.setup.seeded_prep(th, warm_y, lnZ_ref, c_o_ref, s_o_ref)
 
         th, tan = _float64_leaves(theta), _float64_leaves(tangent)

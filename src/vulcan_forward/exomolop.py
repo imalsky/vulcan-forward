@@ -28,8 +28,8 @@ __all__ = ["K_FLOOR", "available", "load_tables", "provenance", "table_info", "t
 
 logger = logging.getLogger(__name__)
 
-# log k floor, cm^2 per molecule. The tables hold exact zeros where a species has no lines in a band, and log(0) would
-# poison the interpolation; 1e-60 cm^2 over a full column is ~1e-32 in tau.
+# Floor on k before the log, cm^2 per molecule. The tables hold exact zeros where a species has no lines in a band, and
+# log(0) would poison the interpolation; 1e-60 cm^2 over a full column is ~1e-32 in tau.
 K_FLOOR = 1.0e-60
 
 # The header values this reader is built for; anything else is refused, never reinterpreted.
@@ -39,8 +39,8 @@ METHOD = "petit_samples"
 
 # Two tables mix only if their grids agree to this relative tolerance (float64 rounding of one published grid).
 _GRID_RTOL = 1.0e-12
-# Decimals table_info rounds to before hashing: the g-samples and weights at
-# _GRID_RTOL, the log10 of the t / p / band-edge grids at 1e-10.
+# Decimals table_info rounds to before hashing: the g-samples and weights at _GRID_RTOL, the log10 of the t, p and
+# band-edge grids at 1e-10.
 _HASH_DECIMALS = round(-math.log10(_GRID_RTOL))
 _HASH_LOG_DECIMALS = 10
 # The quadrature weights must sum to 1 to this tolerance (float64 rounding).
@@ -141,8 +141,7 @@ def _validated_layout(f: h5py.File, path: Path) -> dict[str, np.ndarray]:
     return arrays
 
 
-# The arrays two tables must share to be mixed ordinate by ordinate, and the
-# name each is reported under.
+# The arrays two tables must share to be mixed ordinate by ordinate, and the name each is reported under.
 _GRID = (
     ("bin_edges", "band grid"),
     ("t", "temperature nodes"),
@@ -287,7 +286,6 @@ def _refuse_molecules(mols: list[str], tbl: dict[str, dict[str, Any]]) -> None:
             "entry per molecule: vulcan, molmass."
         )
     if len(set(mols)) != len(mols):
-        # the fold adds one opacity per list entry, so a repeat counts twice
         raise ValueError(f"molecules {mols} name a species more than once; each would add its opacity again")
     missing = [m for m in mols if not table_path(m).exists()]
     if missing:

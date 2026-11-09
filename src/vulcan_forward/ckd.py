@@ -41,12 +41,8 @@ def overlap(a: Array, b: Array, gg: Array, gw: Array) -> Array:
     """Mix two g-tables by random-overlap resort-rebin.
 
     Forms every pairwise sum with weight w_i w_j, sorts, accumulates the weight into a cumulative g, and re-interpolates
-    onto the ng-point grid. The nodes and weights are the table's split quadrature, not plain Gauss-Legendre.
-
-    The ng*ng sums of one (layer, band) cell lie along the last axis and one stable two-operand ``lax.sort`` carries the
-    weights with them. On the GPU this is ~4x faster than an argsort along the middle axis plus two gathers, with the
-    same keys, comparator, cumsum and interpolation, so the result is bitwise the same. An ulp in the cumulative g moves
-    the spectrum by up to ~1e-9, so keep the weights a sorted payload rather than re-gathering them.
+    onto the ng-point grid (Amundsen et al. 2017). The nodes and weights are the table's split quadrature, not plain
+    Gauss-Legendre.
 
     Parameters
     ----------
@@ -69,6 +65,9 @@ def overlap(a: Array, b: Array, gg: Array, gw: Array) -> Array:
     bt = jnp.swapaxes(b, 1, 2)
     s = (at[:, :, :, None] + bt[:, :, None, :]).reshape(nl, nb, ng * ng)
     w = jnp.broadcast_to((gw[:, None] * gw[None, :]).reshape(ng * ng), (nl, nb, ng * ng))
+    # One stable two-operand sort along the last axis carries the weights with the sums. On the GPU it is ~4x faster
+    # than an argsort along the middle axis plus two gathers, and bitwise the same. An ulp in the cumulative g moves the
+    # spectrum by up to ~1e-9, so the weights stay a sorted payload rather than being re-gathered.
     ss, ws = jax.lax.sort((s, w), dimension=2, num_keys=1, is_stable=True)
     cg = jnp.cumsum(ws, axis=2) - 0.5 * ws
     f = jax.vmap(jax.vmap(lambda c, v: jnp.interp(gg, c, v)))
@@ -78,9 +77,9 @@ def overlap(a: Array, b: Array, gg: Array, gw: Array) -> Array:
 def fold(dts: Array, gg: Array, gw: Array) -> Array:
     """Left-fold a stack of g-tables with ``overlap``, in stack order.
 
-    The op sequence is a Python loop's over the molecules, so primal, jvp and vjp are bitwise the loop's on the CPU;
-    other backends round inside their fusions differently. Under one ``lax.scan`` a reverse-mode gradient keeps a third
-    of the loop's memory and runs faster.
+    The op sequence is that of a Python loop over the molecules, so primal, jvp and vjp match the loop bitwise on the
+    CPU; other backends round inside their fusions differently. Under one ``lax.scan`` a reverse-mode gradient keeps a
+    third of the loop's memory and runs faster.
 
     Parameters
     ----------

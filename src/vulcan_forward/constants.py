@@ -45,16 +45,14 @@ DEFAULT_ATOM_LIST = "H,O,C,N,S"
 # ``vulcan3.load_config`` name when the profile sets no ``vulcan_cfg_name``.
 DEFAULT_CFG_NAME = "W39b"
 
-# Composition tables: mirrors of vulcan3.composition (this module stays
-# import-light); vulcan_chem checks them at build time and raises on drift.
+# Composition tables, mirrored from vulcan3.composition so this module stays import-light; vulcan_chem checks them at
+# build time and raises on drift.
 #
 # Index of each element column the Z and C/O knobs use.
 ATOM_COLS = {"H": 0, "O": 1, "C": 2, "He": 3, "N": 4, "S": 5}
 
-# Molar masses (g/mol) for every compo_array column, in column order. Used to
-# turn a VMR profile into a mean-molecular-weight profile
-# (compo_array @ this vector).
-# atom_list = (H,O,C,He,N,S,P,Na,K,Si,Fe,Ar,Ti,V,Mg,Ca,e)
+# Molar mass, g/mol, of every compo_array column, in the column order H, O, C, He, N, S, P, Na, K, Si, Fe, Ar, Ti, V,
+# Mg, Ca, e. compo_array @ ATOMIC_MASSES is each species' molar mass, from which the mean molecular weight follows.
 ATOMIC_MASSES = [
     1.008,
     15.999,
@@ -75,124 +73,93 @@ ATOMIC_MASSES = [
     5.4858e-4,
 ]
 
-# Reference wavenumber (cm^-1) for the ExoJAX powerlaw_clouds retrieval cloud:
-# kappa(nu) = kappac0 * (nu/CLOUD_NUC0)^alphac, kappac0 in cm^2 per gram of
-# atmosphere (pRT convention; alphac = 0 is a gray cloud). 2857 cm^-1 = 3.5 um.
-# This is a uniformly mixed power-law opacity ("haze slope + gray deck"
-# nuisance), NOT a physical cloud: no cloud-top pressure, condensation,
-# sedimentation, or patchiness.
+# Reference wavenumber, cm^-1, of exojax's powerlaw_clouds: kappa(nu) = kappac0 (nu / CLOUD_NUC0)^alphac, with kappac0
+# in cm^2 per gram of atmosphere (pRT convention; alphac = 0 is grey). 2857 cm^-1 is 3.5 um. A uniformly mixed nuisance
+# opacity, not a physical cloud (docs/method.md "Continua").
 CLOUD_NUC0 = 2857.0
 
-# Grey cloud deck (the alternative to the power law, profile-selected by the
-# consumer): every layer deeper than the deck pressure gets an opaque grey
-# optical depth CLOUD_DECK_TAU, switched on by a logistic step in ln P of
-# width CLOUD_DECK_WIDTH_LNP (0.02 in ln P is 0.009 dex, a sixteenth of a
-# production 67-layer RT layer) so the deck pressure stays differentiable.
-# Along the chord the deck is ~1e5 optical depths thick, so the effective
-# boundary sits ~13 widths (0.1 dex) above the deck pressure
-# (vulcan-forward tests/test_cloud_deck.py measures it).
+# Grey cloud deck, the alternative to the power law: layers deeper than the deck pressure get the optical depth
+# CLOUD_DECK_TAU, switched on by a logistic step in ln P of width CLOUD_DECK_WIDTH_LNP so the deck pressure stays
+# differentiable. 0.02 in ln P is 0.009 dex, a sixteenth of a production 67-layer RT layer. Along the chord the deck is
+# ~1e5 optical depths thick, so the effective boundary sits ~13 widths (0.1 dex) above the deck pressure
+# (tests/test_cloud_deck.py).
 CLOUD_DECK_TAU = 1.0e3
 CLOUD_DECK_WIDTH_LNP = 0.02
 
-# Reference pressure (bar) of the Kzz power law (vulcan_chem kzz_mode
-# "powerlaw"): Kzz0 is read off the config's profile there and tilted by
-# (P / P_ref)^-slope. 1 mbar is where the WASP-39 b profile value is quoted.
+# Reference pressure, bar, of the Kzz power law (kzz_mode "powerlaw"): Kzz0 is read off the config's profile there and
+# tilted by (P / P_ref)^-slope. 1 mbar is where the WASP-39 b profile value is quoted.
 KZZ_P_REF_BAR = 1.0e-3
 
-# ART pressure bounds (bar). Chemistry and RT share the model top (vulcan_chem
-# sets P_t from art_ptop_bar; interp_map refuses an uncovered ART grid). At
-# 1e-9 bar the top is converged: one decade higher moves the R=100 depth by
-# ~1 ppm (vulcan-retrieval validation/top_pressure_ladder).
-ART_PTOP_BAR = 1.0e-9  # model top
-ART_PBTM_BAR = 7.0  # grid bottom, above W39b's chemistry bottom P_b = 7.6 bar
-# (interp_map refuses an ART grid below the chemistry)
+# ART pressure bounds, bar. Chemistry and RT share the model top: vulcan_chem sets P_t from art_ptop_bar, and interp_map
+# refuses an ART grid the chemistry does not cover. At 1e-9 bar the top is converged: one decade higher moves the
+# R = 100 depth by ~1 ppm (vulcan-retrieval validation/top_pressure_ladder).
+ART_PTOP_BAR = 1.0e-9
+ART_PBTM_BAR = 7.0  # above the W39b config's chemistry bottom, P_b = 7.6 bar
 
-# Pressure (bar) at which rp_cm / gs_cgs apply: a published transit radius
-# belongs near the transmission photosphere, not the RT grid bottom where
-# exojax defines radius_btm. On WASP-39 b, re-anchoring at 1 mbar reproduces the
-# JWST ERS 3.0-5.5 um median depth to 0.4%. Override with profile["p_ref_bar"].
+# Pressure, bar, at which rp_cm and gs_cgs apply; profile["p_ref_bar"] overrides it. A published transit radius belongs
+# near the transmission photosphere, not at the RT grid bottom where exojax defines radius_btm. On WASP-39 b, anchoring
+# at 1 mbar reproduces the JWST ERS 3.0-5.5 um median depth to 0.4%.
 P_REF_BAR = 1.0e-3
 
-# The emission column probes MUCH deeper than the limb: the slant path is ~35-90x
-# the vertical one (Fortney 2005), so transmission sees ~mbar while the dayside
-# photosphere sits near 0.1 bar. Using the transit radius/gravity for emission
-# biases planet-to-star flux ratios by ~5% typically and 10-25% for low-gravity
-# hot Jupiters (Fortney, Lupu, Morley, Freedman & Hood 2019, ApJL 880, L16).
-# 0.1 bar is HyDRA's stated convention, "the mean pressure of the tau=1 surface"
-# (Gandhi & Madhusudhan 2018). This re-anchors both the column's radius and
-# gravity (exojax_rt's emission_radius); a closer approximation for an extended
-# atmosphere computes a wavelength-dependent radius at vertical tau = 2/3, as
-# POSEIDON and PLATON II do: exojax_rt's eclipse_flux_tau.
+# Pressure, bar, at which the emission column's radius and gravity are anchored: the dayside photosphere sits near
+# 0.1 bar, two decades below the limb transmission sees, and 0.1 bar is HyDRA's convention (Gandhi & Madhusudhan 2018).
+# eclipse_flux_tau refines it to the vertical tau = 2/3 radius per k-ordinate (docs/method.md "Emission anchor").
 P_REF_EMISSION_BAR = 1.0e-1
 
-# Physical constants and unit factors, cgs, local so this module stays
-# stdlib-only. K_B_CGS is CODATA 2018 (1.380649e-16). The chemistry uses
-# vulcan3.phy_const.kb = 1.38064852e-16 (CODATA 2014), upstream VULCAN's
-# value, so its rates match the reference code; the two differ by 3.5e-7
-# relative.
+# Physical constants and unit factors, cgs, local so this module stays stdlib-only. K_B_CGS is CODATA 2018; the
+# chemistry uses vulcan3.phy_const.kb = 1.38064852e-16 (CODATA 2014), upstream VULCAN's value, so its rates match the
+# reference code. The two differ by 3.5e-7 relative.
 K_B_CGS = 1.380649e-16  # Boltzmann constant, erg/K
 M_U_CGS = 1.66053906660e-24  # atomic mass unit, g (mmw is in amu)
 BAR_CGS = 1.0e6  # dyn/cm^2 per bar
 UM_PER_CM = 1.0e4  # micron per cm: wavelength (um) = UM_PER_CM / wavenumber (cm^-1)
 
-# Temperature window the consumers treat as the valid RT range: the retrieval
-# derives its T-P prior window from these (draws outside are rejected, never
-# clipped). The ExoMolOP k-tables themselves span 100-3400 K and are clamped
-# at their edges by ckd._interp_logk.
+# Temperature window, K, the consumers treat as the valid RT range: a retrieval derives its T-P prior window from it,
+# rejecting draws outside rather than clipping them. The ExoMolOP k-tables span 100-3400 K, and ckd._interp_logk clamps
+# at their edges.
 T_OPA_MIN_K = 300.0
 T_OPA_MAX_K = 3000.0
 
-# Supported wide band, 1-15 um, in wavenumber (cm^-1). The short edge is set by
-# the H2-H2 CIA table (stops at 1 um / 10000 cm^-1); the k-tables reach 50 um.
-# Consumers that want the full supported window start from these.
+# Supported wide band, 1-15 um, in wavenumber (cm^-1). The H2-H2 CIA table sets the short edge (it stops at 1 um,
+# 10000 cm^-1); the k-tables reach 50 um.
 WIDE_BAND_NU_MIN = 667.0  # 15 um
 WIDE_BAND_NU_MAX = 10000.0  # 1 um
 
-# Molecule table: VULCAN species name and molar mass (g/mol). The opacity is
-# the ExoMolOP k-table <MOL>.ktable.h5 (provenance: exomolop.provenance()).
-# molmass is the only mass the engine uses (the tables' mol_mass header is not
-# read; ExoMolOP's NO file carries 46) and each entry equals its formula mass
-# (tests/test_contract.py). Tables are the principal isotopologue except CO and
-# CO2 (natural abundance); paired with the total VMR that is an opacity
-# deficit of ~2% on the multi-carbon species and ~5-6% on the sulfur species
-# (32S is 95% of sulfur). Callers may
-# pass their own table via profile["molecule_table"].
+# Molecule table: VULCAN species name and molar mass, g/mol. The opacity is the ExoMolOP k-table <MOL>.ktable.h5, and
+# exomolop.provenance() says which one. molmass is the only mass the engine uses and equals the formula mass
+# (tests/test_contract.py); the tables' mol_mass header is not read (ExoMolOP's NO file carries 46). The tables are the
+# principal isotopologue except CO and CO2 (natural abundance); paired with the total VMR, that is an opacity deficit of
+# ~2% on the multi-carbon species and ~5-6% on the sulfur species (32S is 95% of sulfur). A caller may pass its own
+# table as profile["molecule_table"].
 MOLECULES: dict[str, dict[str, Any]] = {
     "CO": {"vulcan": "CO", "molmass": 28.010},
     "H2O": {"vulcan": "H2O", "molmass": 18.015},
     "CO2": {"vulcan": "CO2", "molmass": 44.009},
     "CH4": {"vulcan": "CH4", "molmass": 16.043},
     "SO2": {"vulcan": "SO2", "molmass": 64.058},
-    # High-C/O + sulfur discriminators: C2H2/HCN carry the signal near C/O ~ 1,
-    # H2S is the reduced-S reservoir.
+    # High-C/O and sulfur discriminators: C2H2 and HCN carry the signal near C/O ~ 1, H2S is the reduced-S reservoir.
     "HCN": {"vulcan": "HCN", "molmass": 27.026},
     "C2H2": {"vulcan": "C2H2", "molmass": 26.038},
     "H2S": {"vulcan": "H2S", "molmass": 34.076},
     # Cool-planet nitrogen carrier (e.g. WASP-107b-class).
     "NH3": {"vulcan": "NH3", "molmass": 17.031},
-    # Second equilibrium sulfur carrier (nu3 band ~4.85 um, inside G395H and
-    # PRISM). The SNCHO network names the species COS (consumers alias the
-    # token).
+    # Second equilibrium sulfur carrier (nu3 band ~4.85 um, inside G395H and PRISM). The SNCHO network names it COS.
     "OCS": {"vulcan": "COS", "molmass": 60.070},
-    # Photochemical sulfur carrier and a CH4-destruction product. ExoMolOP
-    # publishes NO k-table for either (CS2: no ExoMol line list; C2H6: page but
-    # no petitRADTRANS file), so they are listed for completeness and refused
-    # at load with the fetch hint.
+    # Photochemical sulfur carrier and a CH4-destruction product. ExoMolOP publishes no k-table for either (CS2: no
+    # ExoMol line list; C2H6: no petitRADTRANS file), so they are listed for completeness and refused at load.
     "CS2": {"vulcan": "CS2", "molmass": 76.131},
     "C2H6": {"vulcan": "C2H6", "molmass": 30.070},
     # Simple hydrocarbon: photochemical CH4-destruction product.
     "C2H4": {"vulcan": "C2H4", "molmass": 28.054},
-    # Radicals in VULCAN's SNCHO network; the published Tsai et al. 2023
-    # WASP-39 b output carries SH and SO.
+    # Radicals in VULCAN's SNCHO network; the published Tsai et al. 2023 WASP-39 b output carries SH and SO.
     "OH": {"vulcan": "OH", "molmass": 17.007},
     "SH": {"vulcan": "SH", "molmass": 33.068},
     "SO": {"vulcan": "SO", "molmass": 48.059},
     # ExoMolOP's NO table is built from HITEMP (14N-16O__HITEMP.R1000_0.3-50mu).
     "NO": {"vulcan": "NO", "molmass": 30.006},
-    # Second-tier species: listed so the menu is complete;
-    # jwst-transit-authority's EXTRA_MOLECULES_DEFAULT picks the defaults.
-    # Absent because ExoMolOP cannot supply them: O2 (another band grid), CH3OH
-    # (no petitRADTRANS file), HSO (no published list), S2 (no IR dipole), ...
+    # Second-tier species, listed so the menu is complete; jwst-transit-authority's EXTRA_MOLECULES_DEFAULT picks the
+    # defaults. Absent because ExoMolOP cannot supply them: O2 (another band grid), CH3OH (no petitRADTRANS file), HSO
+    # (no published list), S2 (no IR dipole) and others.
     "NS": {"vulcan": "NS", "molmass": 46.067},
     "CH3": {"vulcan": "CH3", "molmass": 15.035},
     "NH": {"vulcan": "NH", "molmass": 15.015},
@@ -208,8 +175,8 @@ MOLECULES: dict[str, dict[str, Any]] = {
 # The bulk gas: the CIA partner and the dominant background.
 BULK_H2_VULCAN = "H2"
 
-# Every top-level profile key the engine reads. Consumers pass ONE dict to
-# build_chem_model, build_rt_model and build_emis_model, so this is the union.
+# Every top-level profile key the engine reads. A consumer passes one dict to build_chem_model, build_rt_model and
+# build_emis_model, so this is the union.
 PROFILE_KEYS = frozenset(
     {
         # build_chem_model

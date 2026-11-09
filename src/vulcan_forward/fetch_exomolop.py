@@ -40,9 +40,8 @@ PAGE_TIMEOUT_S = 90  # one HTML page
 DOWNLOAD_TIMEOUT_S = 600  # socket timeout while streaming a ~389 MB table
 CHUNK_BYTES = 1 << 20  # 1 MiB read size for the table stream
 
-# Line-list DOIs for datasets whose k-table header carries a placeholder DOI
-# (`x.xxxx/yyyyy`, `xxxxxxx/xxxxxxxxx/xxxxxx`); provenance.json supplies them.
-# Other datasets keep their header DOI. Keyed by ExoMol dataset name.
+# Line-list DOIs, keyed by ExoMol dataset name, for the datasets whose k-table header carries a placeholder DOI
+# (`x.xxxx/yyyyy`, `xxxxxxx/xxxxxxxxx/xxxxxx`); provenance.json supplies them. Other datasets keep their header DOI.
 _DATASET_DOI = {
     "MM": "10.1093/mnras/stae148",  # CH4  Yurchenko+ 2024, MNRAS 528, 3719
     "Dozen": "10.1093/mnras/staf2135",  # CO2  Yurchenko+ 2025, MNRAS 545
@@ -73,8 +72,7 @@ def _get(url: str) -> str:
         ) from e
 
 
-# Most abundant isotope of each element, by mass number. Used to identify the
-# PRINCIPAL isotopologue among ExoMol's listings.
+# Most abundant isotope of each element, by mass number, to identify the principal isotopologue among ExoMol's listings.
 _PRINCIPAL_ISOTOPE = {
     "H": 1,
     "He": 4,
