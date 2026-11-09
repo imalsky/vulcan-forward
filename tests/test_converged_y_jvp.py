@@ -89,12 +89,12 @@ def chem_eq():
 
 
 def test_eq_seed_certifies_and_the_tangent_certificate_ends_the_run(chem_eq):
-    """The equilibrium seed lands on the theta targets (the elemental
-    projection closes it to rounding) and its cold solve certifies. From that
-    converged column, a warm continuation to another theta: the primal alone
-    certifies at some step; with a tangent along lnZ the solver runs on until
-    the tangent settles too, and stops there -- after the primal's own exit
-    and before the cap, certified (``conv_normal`` carries ``tangent_ok``).
+    """The equilibrium seed lands on the theta targets and certifies; a warm jvp then runs until its tangent settles.
+
+    The elemental projection closes the seed to rounding. From that converged column, a warm continuation to another
+    theta: the primal alone certifies at some step; with a tangent along lnZ the solver runs on until the tangent
+    settles too and stops there, after the primal's own exit and before the cap, certified (``conv_normal`` carries
+    ``tangent_ok``).
     """
     chem = chem_eq
     th0 = jnp.asarray(THETA)

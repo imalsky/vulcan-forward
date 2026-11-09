@@ -1,10 +1,8 @@
 """Correlated-k unit contracts.
 
-These run without exojax: ``vulcan_forward.ckd`` never imports it,
-so the (T, P) interpolation and the overlap are testable in a bare
-environment. The one exojax-backed test (the interpolation oracle) skips via
-``find_spec``, never ``pytest.importorskip("exojax")``, which poisons the
-import-order contract for every later module in the session.
+These run without exojax: ``vulcan_forward.ckd`` never imports it. The one exojax-backed test (the interpolation
+oracle) skips via ``find_spec``, never ``pytest.importorskip("exojax")``, which would break the import-order contract
+for every later module in the session.
 """
 
 from __future__ import annotations
@@ -17,8 +15,7 @@ import pytest
 import jax
 import jax.numpy as jnp
 
-# x64 mirrors production; without it the 1e-12 oracle agreement below would
-# read ~1e-6 and fail loudly rather than pass silently, but set it anyway.
+# x64, as in production: without it the 1e-12 oracle agreement below would read ~1e-6.
 jax.config.update("jax_enable_x64", True)
 
 HAVE_EXOJAX = importlib.util.find_spec("exojax") is not None
@@ -32,9 +29,7 @@ ROUND_TOL = 1e-12  # float64 rounding bar
 
 
 def gauss_legendre(ng):
-    """g-ordinates and weights on [0, 1]: a synthetic quadrature for these
-    unit tests (the engine takes the tables' own).
-    """
+    """g-ordinates and weights on [0, 1]: a synthetic quadrature for these unit tests (the engine takes the tables')."""
     g, w = np.polynomial.legendre.leggauss(int(ng))
     return 0.5 * (g + 1.0), 0.5 * w
 
@@ -53,15 +48,11 @@ def _mean_conservation_error(ng, sigma, seed):
 
 
 def test_overlap_nearly_conserves_the_band_mean_and_converges_in_ng():
-    """Random overlap redistributes optical depth across g-ordinates and then
-    re-interpolates ng*ng combinations back onto ng ordinates, so the
-    g-weighted mean is conserved only to the accuracy of that rebin.
+    """Random overlap rebins ng*ng combinations onto ng ordinates, so the g-weighted mean holds only to the rebin.
 
-    It has to be small, because the transit radius goes as ln(tau): a 1 percent
-    error in mean optical depth is 0.01 scale heights, about 8 km on WASP-39 b,
-    about 3 ppm of transit depth. And the rebin, the only approximation in the
-    mixture treatment, must shrink as ng rises, or the quadrature choice would
-    be unfalsifiable.
+    The error must be small, because the transit radius goes as ln(tau): 1% in mean optical depth is 0.01 scale heights,
+    about 8 km on WASP-39 b, about 3 ppm of transit depth. And the rebin, the only approximation in the mixture, must
+    shrink as ng rises, or the quadrature choice would be unfalsifiable.
     """
     err = _mean_conservation_error(16, 1.0, 0)  # ExoMolOP tables carry ng=16
     assert np.median(err) < 0.01
@@ -102,13 +93,12 @@ def test_overlap_is_differentiable():
 
 
 def test_fold_wo_is_bit_identical_to_naive_refolds():
-    """The prefix-memoized leave-one-out fold must be the EXACT op sequence of
-    a naive left fold per output -- overlap is a resort-rebin, so it is not
-    associative and a zero operand is not guaranteed to pass through as an
-    exact identity; any reordering would move the spectrum at the rebin-error
-    scale the pRT verification tolerances live at. Grouped contract: full ==
-    naive fold, every wo row == naive refold with the zero operand, order
-    matters, empty wo_idx returns the full fold only.
+    """The prefix-memoized leave-one-out fold is the exact op sequence of a naive left fold per output.
+
+    overlap is a resort-rebin, so it is not associative and a zero operand need not pass through as an identity; any
+    reordering would move the spectrum at the rebin-error scale the pRT tolerances live at. Checked: the full fold and
+    every wo row (refolded with the zero operand) equal the naive folds, order matters, and an empty wo_idx returns the
+    full fold only.
     """
     rng = np.random.default_rng(3)
     nl, ng, nb, n = 3, 8, 4, 5
@@ -142,13 +132,11 @@ def test_fold_wo_is_bit_identical_to_naive_refolds():
 
 
 def test_fold_is_bit_identical_to_the_python_loop_fold():
-    """``fold`` runs the molecule folds under one ``lax.scan`` so a gradient
-    keeps a third of the unrolled loop's memory. It must stay the naive left
-    fold's op sequence: the primal, a jvp and a vjp bitwise equal (both
-    jitted, as production runs them), with enough molecules for several scan
-    steps. Bitwise on the CPU; on GPU the two differ in the last bits
-    (XLA fuses a scan body and straight-line code differently and rounds
-    inside a fusion accordingly), so there the bar is rounding.
+    """``fold`` under one ``lax.scan`` keeps the naive left fold's op sequence: primal, jvp and vjp bitwise equal.
+
+    Both are jitted, as production runs them, with enough molecules for several scan steps. Bitwise on the CPU; on a GPU
+    XLA fuses a scan body and straight-line code differently and rounds inside each fusion, so there the bar is
+    rounding.
     """
     rng = np.random.default_rng(4)
     nl, ng, nb, n = 3, 8, 4, 5
@@ -180,9 +168,7 @@ def test_fold_is_bit_identical_to_the_python_loop_fold():
 
 
 def test_interp_logk_clamps_outside_the_table_rather_than_extrapolating():
-    """Extrapolating log k off the end of a k-table produces nonsense opacity;
-    clamping is the documented behaviour and the caller validates the span.
-    """
+    """Extrapolating log k off a k-table produces nonsense opacity, so it clamps; the caller validates the span."""
     t = jnp.asarray(np.linspace(500.0, 2000.0, 4))
     p = jnp.asarray(np.logspace(-6, 1, 3))
     logk = jnp.asarray(np.arange(4 * 3 * 2 * 1, dtype=float).reshape(4, 3, 2, 1))

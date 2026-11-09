@@ -1,14 +1,9 @@
-"""Contracts for the ExoMolOP k-table ingestion.
+"""Contracts for the ExoMolOP k-table ingestion and the fetcher.
 
-Most of these build tiny synthetic HDF5 files rather than touching the real
-389 MB tables, so the suite stays fast and runs with no data installed (this
-package must be importable and testable empty -- see test_contract.py). The
-two tests that DO need a real table skip when it is absent.
-
-The thing most worth pinning here is the refusal to mix tables that disagree
-on their band grid or quadrature. ``ckd.overlap`` combines species ordinate by
-ordinate; two tables on different g-nodes would be added as though they were
-the same distribution and would return a plausible, wrong spectrum.
+Most tests build tiny synthetic HDF5 files rather than reading the real 389 MB tables, so they run with no data
+installed; the tests that need a real table skip when it is absent. The refusal most worth pinning is to mix tables
+that disagree on their band grid or quadrature: ``ckd.overlap`` combines species ordinate by ordinate, so two tables
+on different g-nodes would be added as one distribution and return a plausible, wrong spectrum.
 """
 
 from __future__ import annotations
@@ -22,9 +17,8 @@ import pytest
 
 import jax
 
-# x64 mirrors production (vulcan_chem / exojax_rt enable it at import). Without
-# it load_tables refuses rather than silently handing back float32 tables --
-# which is itself pinned, in test_load_refuses_without_x64.
+# x64, as vulcan_chem and exojax_rt enable it at import. Without it load_tables refuses rather than hand back float32
+# tables, which test_load_refuses_without_x64 pins.
 jax.config.update("jax_enable_x64", True)
 
 from vulcan_forward import exomolop, fetch_exomolop, paths
@@ -52,9 +46,7 @@ def _write(
     method="petit_samples",
     ngauss=None,
 ):
-    """A miniature file in ExoMolOP's petitRADTRANS layout, header included
-    (the real files carry the same unit attributes and string datasets).
-    """
+    """A miniature file in ExoMolOP's petitRADTRANS layout, with the real files' unit attributes and string datasets."""
     import h5py
 
     edges = nu0 * np.exp(np.arange(nb + 1) / 1000.0)
@@ -151,7 +143,7 @@ def test_only_bands_fully_inside_the_request_are_kept():
 
 @pytest.mark.usefixtures("data_root")
 def test_zero_cross_sections_floor_instead_of_going_to_minus_infinity():
-    """Their tables carry exact zeros where a species has no lines in a band.
+    """ExoMolOP tables carry exact zeros where a species has no lines in a band.
 
     log(0) would poison the bilinear (T, P) interpolation for every layer, not just that band, so it must floor.
     """
@@ -176,11 +168,11 @@ def test_zero_cross_sections_floor_instead_of_going_to_minus_infinity():
 )
 @pytest.mark.usefixtures("data_root")
 def test_tables_that_disagree_or_carry_a_wrong_header_are_refused(kw, match):
-    """The mixing is ordinate by ordinate, so tables from different releases
-    cannot be combined, and a mislabelled header (per-gram units, a different
-    quadrature, an ngauss that does not match the samples) would change every
-    cross section -- both failures would be silent, not a crash. Refuse, and
-    name the offender.
+    """Mismatched tables and wrong headers are refused, naming the offender.
+
+    The mixing is ordinate by ordinate, so tables from different releases cannot be combined, and a mislabelled header
+    (per-gram units, a different quadrature, an ngauss that does not match the samples) would change every cross
+    section. Both failures would be silent, not a crash.
     """
     _write(exomolop.table_path("H2O"))
     _write(exomolop.table_path("CO2"), **kw)
@@ -190,10 +182,9 @@ def test_tables_that_disagree_or_carry_a_wrong_header_are_refused(kw, match):
 
 
 def test_table_info_and_provenance_report_what_is_on_disk(data_root):
-    """The metadata API reports the file verbatim -- placeholder DOIs
-    included, absent fields as None, never substituted -- and stays
-    JSON-serializable for the consumers' provenance export; both raise with
-    the fetch command when nothing is installed.
+    """The metadata API reports the file verbatim and JSON-serializable, and raises with the fetch command when empty.
+
+    Placeholder DOIs are reported as they are and absent fields as None, never substituted.
     """
     import json
 
@@ -253,14 +244,14 @@ def test_malformed_tables_are_refused(dataset, index, value):
         exomolop.load_tables(["H2O"], edges[0], edges[-1], verbose=False)
 
 
-# Against a REAL table, when one is installed.
+# Against a real table, when one is installed.
 
 
 def _need_real(*mols):
-    """Resolve at CALL time, not import time: test_contract.py
-    clears the data root to prove the library imports with no data installed,
-    so a module-level skipif marker would be evaluated against whichever
-    environment happened to exist when this module was collected.
+    """Skip unless the tables exist, resolved at call time.
+
+    test_contract.py clears the data root to prove the library imports with no data installed, so a module-level
+    skipif would be evaluated against whichever environment existed when this module was collected.
     """
     mols = mols or ("H2O",)
     try:
@@ -273,9 +264,9 @@ def _need_real(*mols):
 
 
 def test_real_tables_share_one_grid_signature():
-    """Every installed table must carry the same band grid and quadrature
-    (load_tables refuses to mix them); the signature is what a consumer
-    keys its caches on, so it must agree across the whole set.
+    """Every installed table carries the same band grid and quadrature, so one grid signature.
+
+    load_tables refuses to mix them, and a consumer keys its caches on the signature.
     """
     _need_real()
     signatures = {m: exomolop.table_info(m)["grid_sha256"] for m in exomolop.available()}
@@ -283,9 +274,7 @@ def test_real_tables_share_one_grid_signature():
 
 
 def test_real_table_uses_the_petitradtrans_split_quadrature():
-    """The quadrature is petitRADTRANS' split rule (8 points on [0, 0.9] + 8
-    on [0.9, 1.0]), not plain Gauss-Legendre: the weights split 0.9/0.1.
-    """
+    """The quadrature is petitRADTRANS' split rule, 8 points on [0, 0.9] and 8 on [0.9, 1]: weights split 0.9/0.1."""
     _need_real()
     pack = exomolop.load_tables(["H2O"], 2000.0, 2100.0, verbose=False)
     w = np.asarray(pack.gw)
@@ -299,10 +288,10 @@ def test_real_table_uses_the_petitradtrans_split_quadrature():
 
 
 def test_real_table_is_a_cross_section_per_molecule_not_per_gram():
-    """Kcoeff is cm^2 per molecule: ``opacity_profile_xs_ckd`` multiplies by mmr and divides by the molecular
-    mass, so a cm^2/g table would come out ~3.3e22 times too large. An H2O
-    band-mean cross section at 1200 K and 0.1 bar is of order 1e-23 to 1e-19
-    cm^2/molecule; per gram it would be 1e-1 to 1e3.
+    """Kcoeff is cm^2 per molecule: ``opacity_profile_xs_ckd`` multiplies by mmr and divides by the molecular mass.
+
+    A cm^2/g table would come out ~3.3e22 times too large. An H2O band-mean cross section at 1200 K and 0.1 bar is of
+    order 1e-23 to 1e-19 cm^2/molecule; per gram it would be 1e-1 to 1e3.
     """
     _need_real()
     pack = exomolop.load_tables(["H2O"], 2400.0, 2600.0, verbose=False)
@@ -319,12 +308,11 @@ def test_real_table_is_a_cross_section_per_molecule_not_per_gram():
 
 
 def test_real_tables_reproduce_the_exo_k_reference():
-    """Oracle: exo_k 1.3.1 (Leconte 2021) on the same three tables with
-    ``Ktable.RandOverlap`` (fixture tests/data/exok_ref_overlap.npz; its meta
-    carries the generating script and the conventions). The reader is
-    bitwise; the interpolation within 1e-9 (measured 2e-14); the overlap at
-    the convention gap (exo_k rebins on the upper-edge cumulative g, ours on
-    the midpoint): measured per-ordinate median 1.4e-3, p90 1.9e-2, band-mean
+    """Oracle: exo_k 1.3.1 (Leconte 2021) with ``Ktable.RandOverlap`` on the same three tables.
+
+    The fixture is tests/data/exok_ref_overlap.npz; its meta carries the generating script and the conventions. The
+    reader is bitwise; the interpolation within 1e-9 (measured 2e-14); the overlap at the convention gap (exo_k rebins
+    on the upper-edge cumulative g, ours on the midpoint): measured per-ordinate median 1.4e-3, p90 1.9e-2, band-mean
     median 2.2e-3, each asserted at 3x.
     """
     import json
@@ -377,17 +365,14 @@ def test_real_tables_reproduce_the_exo_k_reference():
 
 @pytest.mark.usefixtures("data_root")
 def test_load_refuses_without_x64(monkeypatch):
-    """float32 k-tables are a ~1e-5 relative error on every cross section that
-    would surface as an unexplained spectrum shift, never as a crash. Refuse.
-    """
+    """Without x64 the load is refused: float32 tables shift every cross section by ~1e-5 relative, without a crash."""
     _, edges, *_ = _write(exomolop.table_path("H2O"))
 
     class _Off:
         jax_enable_x64 = False
 
-    # _require_x64 does `from jax import config`, i.e. getattr(jax, "config"),
-    # so swapping the attribute is enough; jax's real Config has no setter and
-    # flipping x64 globally mid-session would poison every later test.
+    # _require_x64 does `from jax import config`, which is getattr(jax, "config"), so swapping the attribute is enough;
+    # jax's Config has no setter, and flipping x64 globally mid-session would change every later test.
     monkeypatch.setattr(jax, "config", _Off())
     with pytest.raises(RuntimeError, match="x64"):
         exomolop.load_tables(["H2O"], edges[0], edges[-1], verbose=False)

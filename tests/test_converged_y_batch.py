@@ -29,17 +29,14 @@ PROFILE = {"use_photo": False, "yconv_cri": 1.0e-2, "nz": 20}
 # [lnZ, c_o, lnKzz, T-offset]: the baseline column and a perturbed one.
 THETAS = np.array([[0.0, 0.0, 0.0, 0.0], [0.3, 0.1, 0.5, 40.0]], dtype=np.float64)
 MIX_FLOOR = 1.0e-10  # cells below this carry no observable and no certificate
-# Batch against vmap / scalar routes: two converged states at this loose
-# yconv_cri differ at the convergence scale, measured up to 6e-2 and 8e-2 across
-# Python 3.10-3.12 and numpy 1.26-2.x; a lane-mixing bug is O(1).
+# Batch against the vmap and scalar routes: two converged states at this loose yconv_cri differ at the convergence
+# scale, measured up to 6e-2 and 8e-2 across Python 3.10-3.12 and numpy 1.26-2.x; a lane-mixing bug is O(1).
 REL_MAX = 1.0e-1
 
 
 @pytest.fixture(scope="module")
 def runs():
-    """The three routes, solved once: batched, per-lane vmap, and each theta
-    beside a copy of itself (the batch's width, another neighbour).
-    """
+    """The three routes, solved once: batched, per-lane vmap, and each theta beside a copy of itself."""
     chem = vulcan_chem.build_chem_model(PROFILE)
     th = jnp.asarray(THETAS)
     y_b, cd_b = chem.converged_y_batch(th, return_conv_diag=True)
@@ -49,9 +46,8 @@ def runs():
 
 
 def test_initial_column_carries_the_theta_elemental_ratios(runs):
-    """LnZ scales every metal's ratio to H by e^lnZ and c_o scales carbon's by
-    e^c_o on top (O stays at e^lnZ, He stays put), read off the built column
-    against the baseline column, independently of the projection's targets.
+    """LnZ scales every metal's ratio to H by e^lnZ and c_o scales carbon's by e^c_o on top (O stays at e^lnZ, He stays
+    put), read off the built column against the baseline column, independently of the projection's targets.
     """
     chem = runs[0]
     lnZ, c_o = 0.3, 0.1
@@ -64,17 +60,17 @@ def test_initial_column_carries_the_theta_elemental_ratios(runs):
 
 @pytest.fixture(scope="module")
 def chem_x():
-    """The model with both optional entries, [lnZ, c_o, lnKzz, s_o, kzz_slope,
-    T-offset], and Kzz as a power law about the reference level. No solve: the
-    tests below read the built initial column and its Kzz.
+    """The model with both optional entries, [lnZ, c_o, lnKzz, s_o, kzz_slope, T-offset], and Kzz as a power law.
+
+    No solve: the tests below read the built initial column and its Kzz.
     """
     return vulcan_chem.build_chem_model({**PROFILE, "kzz_mode": "powerlaw"}, chem_extras=vulcan_chem.CHEM_EXTRAS)
 
 
 def test_sulfur_knob_moves_only_sulfur(chem_x):
-    """s_o scales sulfur's ratio to H by e^s_o on top of e^lnZ and nothing
-    else, from the cold seed and from a warm guess at another sulfur
-    reference, with every repair factor positive.
+    """s_o scales sulfur's ratio to H by e^s_o on top of e^lnZ and nothing else.
+
+    It holds from the cold seed and from a warm guess at another sulfur reference, with every repair factor positive.
     """
     lnZ, c_o, s_o = 0.3, 0.1, -0.8
     th = jnp.asarray([lnZ, c_o, 0.0, s_o, 0.0, 0.0])
@@ -93,10 +89,10 @@ def test_sulfur_knob_moves_only_sulfur(chem_x):
 
 
 def test_kzz_power_law_is_anchored_on_the_profile_at_the_reference_level(runs, chem_x):
-    """kzz_mode="powerlaw": slope 0 is a constant Kzz equal to the config
-    profile's value at the reference level (log-log interpolated), and a slope
-    tilts it as (P / P_ref)^-slope times e^lnKzz; the default mode is the
-    profile times e^lnKzz.
+    """kzz_mode="powerlaw" with slope 0 is a constant Kzz, the config profile's value at the reference level.
+
+    That value is log-log interpolated, and a slope tilts it as (P / P_ref)^-slope times e^lnKzz; the default mode is
+    the profile times e^lnKzz.
     """
     from vulcan3.atm_setup import compute_pico
     from vulcan_forward import constants
@@ -140,15 +136,12 @@ def test_batched_lanes_are_their_own_solves_and_agree_with_the_vmap(runs):
 
 
 def test_per_lane_references_match_the_scalar_calls(runs):
-    """``lnZ_ref`` / ``c_o_ref`` as (N,) arrays give every lane the reference
-    composition ITS carried column was converged at -- what the retrieval's
-    warm starts need, since each row starts from its own anchor.
+    """``lnZ_ref`` and ``c_o_ref`` as (N,) arrays give every lane the composition its own column was converged at.
 
-    Reference: the same warm continuation as a batch of ONE with the scalar
-    reference. The bound is the convergence scale (a traced reference is not the
-    folded constant of the scalar call) with the certificate lane for lane; the
-    measured difference is 0 -- subtracting a reference that rides the carry is
-    the same arithmetic as subtracting the constant.
+    A warm-starting consumer needs this, since each row starts from its own anchor. Reference: the same warm
+    continuation as a batch of one with the scalar reference. The bound is the convergence scale (a traced reference is
+    not the folded constant of the scalar call), with the certificate lane for lane; the measured difference is 0, since
+    subtracting a reference that rides the carry is the same arithmetic as subtracting the constant.
     """
     chem, y_conv, _cd_b, _y_v, _cd_v, _y_pair = runs
     th0 = jnp.asarray(THETAS)
@@ -183,10 +176,10 @@ def test_per_lane_references_match_the_scalar_calls(runs):
 
 
 def test_inputs_that_would_be_ignored_are_refused(runs):
-    """A profile key the engine does not read (a typo, or a retired knob such
-    as `warm_count_max`) would leave its default in place silently, so it
-    is refused. A warm column with the wrong trailing shape would BROADCAST --
-    (N, 1, ni) seeds every layer from one layer -- so it is refused too.
+    """A profile key the engine does not read, such as ``warm_count_max``, would change nothing, so it is refused.
+
+    A warm column with the wrong trailing shape would broadcast, (N, 1, ni) seeding every layer from one layer, so it is
+    refused too.
     """
     chem = runs[0]
     with pytest.raises(ValueError, match="'warm_count_max'"):

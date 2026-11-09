@@ -1,11 +1,9 @@
-"""Always-on sanity for the committed pRT reference fixtures (numpy-only).
+"""Checks on the committed pRT reference fixtures, numpy only.
 
-The e2e tests read their tolerances from each fixture's meta, so a fixture
-silently regenerated to looser numbers would still pass them. This file runs
-in the exojax-less light CI and pins the stats recorded inside each fixture
-EQUAL to the values hardcoded here (the one permitted duplication), the
-tolerances at 3x those stats (a [2, 4] ratio so neither side can drift), and
-the arrays finite.
+The e2e tests read their tolerances from each fixture's meta, so a fixture regenerated to looser numbers would still
+pass them. This file runs in the light CI without exojax and pins the stats recorded in each fixture equal to the
+values here (the one permitted duplication), the tolerances at 3x those stats (a [2, 4] ratio, so neither side can
+drift), and the arrays finite.
 """
 
 from __future__ import annotations
@@ -18,8 +16,7 @@ import pytest
 
 DATA = Path(__file__).parent / "data"
 
-# One authoritative measurement (build_prt_fixtures), duplicated here:
-# fixture meta and this table must agree exactly.
+# One measurement, recorded in each fixture's meta and duplicated here: the two must agree exactly.
 PINNED_STATS = {
     "prt_ref_isothermal_h2o_trans.npz": {
         "n_wl": 1610,
@@ -43,8 +40,8 @@ PINNED_STATS = {
         "max_dev_pct": 0.05851848060187681,
     },
 }
-# The provenance every pRT fixture carries: the generating script (path and
-# text), the configuration, the opacity files and the estimator behind it.
+# The provenance every pRT fixture carries: the generating script (path and text), the configuration, the opacity files
+# and the estimator behind it.
 META_KEYS = (
     "case",
     "prt_version",
@@ -82,9 +79,9 @@ def test_fixture_is_the_pinned_verification(name):
 
 
 def test_emission_fixture_unit_conversion_is_recorded_and_consistent():
-    """The pRT flux is stored BOTH ways; the per-cm^-1 array must equal the
-    per-cm-wavelength array divided by nu_tilde^2 (the documented unit trap:
-    dividing by c instead is wrong by ~1e18).
+    """The pRT flux is stored both ways, and the per-cm^-1 array is the per-cm-wavelength array over nu_tilde^2.
+
+    Dividing by c instead, the unit trap the fixture's meta records, is wrong by ~1e18.
     """
     z = np.load(DATA / "prt_ref_emission_h2o.npz")
     nutilde = 1.0e4 / np.asarray(z["wl_um"])
@@ -95,9 +92,7 @@ def test_emission_fixture_unit_conversion_is_recorded_and_consistent():
 
 
 def test_exok_fixture_carries_its_provenance():
-    """The exo_k oracle fixture (asserted against the real tables in
-    test_exomolop) keeps its version pin and its generating script.
-    """
+    """The exo_k oracle fixture, asserted against the real tables in test_exomolop, keeps its version and script."""
     meta = json.loads(bytes(np.asarray(np.load(DATA / "exok_ref_overlap.npz")["meta"])))
     assert meta["exo_k_version"] == "1.3.1"
     assert meta["script_text"].strip()

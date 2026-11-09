@@ -1,14 +1,11 @@
 """Geometry contracts for the transmission RT.
 
-Handing exojax the consumer's ``rp_cm``/``gs_cgs`` directly as
-``radius_btm``/``gravity_btm`` places them at the LOWER boundary of the bottom
-layer. A catalogue planet radius is instead the transit radius, near the
-terminator photosphere at roughly a millibar, so that stacks the whole
-column on top of a radius that already was the photospheric one.
+Handing exojax the consumer's ``rp_cm`` and ``gs_cgs`` directly as ``radius_btm`` and ``gravity_btm`` places them at
+the lower boundary of the bottom layer. A catalogue planet radius is the transit radius, near the terminator photosphere
+at roughly a millibar, so that stacks the whole column on top of a radius that already is the photospheric one.
 
-The tests are cheap: the real ``_radius_at`` / ``_anchor_to_grid_bottom``
-against an independent closed form and two physical invariants, with no line
-lists, no opacity build and no network.
+The tests run ``_radius_at`` and ``_anchor_to_grid_bottom`` against an independent closed form and two physical
+invariants, with no line lists, no opacity build and no network.
 """
 
 from __future__ import annotations
@@ -45,17 +42,14 @@ ROUND_TOL = 1e-12  # float64 rounding bar
 def _grid(n=NLAYER):
     """An ascending log-pressure grid, as exojax orders its layers.
 
-    These are layer CENTRES (exojax's ``pressure_layer_logspace``); the level
-    ``radius_btm`` is defined at is half a log-layer deeper. ``_p_boundary``
-    below is that level.
+    These are layer centres (exojax's ``pressure_layer_logspace``); ``radius_btm`` is defined half a log-layer deeper,
+    at ``_p_boundary``.
     """
     return jnp.asarray(np.log(np.logspace(np.log10(P_TOP), np.log10(P_BTM), n)))
 
 
 def _p_boundary(n=NLAYER):
-    """Pressure at the LOWER BOUNDARY of the bottom layer = p[-1] * k**-0.5,
-    which is where exojax defines radius_btm (atm/atmprof.py).
-    """
+    """Pressure at the bottom layer's lower boundary, p[-1] k^-0.5, where exojax defines radius_btm (atm/atmprof.py)."""
     lnp = np.asarray(_grid(n))
     return float(np.exp(lnp[-1] + 0.5 * (lnp[-1] - lnp[-2])))
 
@@ -66,19 +60,14 @@ def _isothermal(T=1097.0, mmw=2.502, n=NLAYER):
 
 @pytest.mark.parametrize("n", [20, 60, 100, 400])
 def test_matches_the_isothermal_closed_form_at_every_level(n):
-    """U = 1/r is linear in lnP, so an isothermal column has an exact answer:
-    1/r(p) = 1/r_ref + C ln(p/p_ref), C = k T / (mu m_u g_ref r_ref^2), with
-    GM fixed so g = g_ref (r_ref/r)^2.
+    """U = 1/r is linear in ln P, so an isothermal column has an exact answer.
 
-    Checked at the top boundary, inside the top half layer, an interior level,
-    a FIXED 1 bar level (so r(p) is the same at every layer count) and the
-    bottom boundary: the integration nodes must reach half a layer beyond
-    both end centres (``jnp.interp`` clamps outside them, which would return
-    the top-centre radius and no derivative in the top half layer).
-    ``_anchor_to_grid_bottom`` must land on the bottom layer's LOWER
-    BOUNDARY, not its centre, at any resolution: anchoring to the centre makes
-    the transit depth depend on art_nlayer. Deeper is then smaller and
-    heavier by construction, and the correction scales with H/Rp.
+    1/r(p) = 1/r_ref + C ln(p/p_ref), C = k T / (mu m_u g_ref r_ref^2), with GM fixed so g = g_ref (r_ref/r)^2. Checked
+    at the top boundary, inside the top half layer, an interior level, a fixed 1 bar level (so r(p) is the same at every
+    layer count) and the bottom boundary: the integration nodes must reach half a layer beyond both end centres, or
+    ``jnp.interp`` would clamp and return the top-centre radius, with no derivative, in the top half layer.
+    ``_anchor_to_grid_bottom`` must land on the bottom layer's lower boundary, not its centre, at any resolution:
+    anchoring to the centre makes the transit depth depend on art_nlayer.
     """
     T, mmw, r_ref, g_ref, p_ref = 1097.0, 2.502, 1.279 * R_JUP_CM, 422.0, 1.0e-3
     lnp = _grid(n)
@@ -105,10 +94,10 @@ def test_matches_the_isothermal_closed_form_at_every_level(n):
 
 
 def test_a_hotter_deep_atmosphere_pushes_the_bottom_radius_down():
-    """The correction uses the REAL T(p), not a constant: a puffier deep
-    column means more altitude between the bottom and the mbar level, hence
-    a smaller bottom radius. If T were ever dropped from the integrand this
-    test fails.
+    """The correction uses the column's T(p), not a constant.
+
+    A puffier deep column puts more altitude between the bottom and the mbar level, so the bottom radius is smaller; a
+    T dropped from the integrand fails this.
     """
     lnp = _grid()
     _, mi = _isothermal()

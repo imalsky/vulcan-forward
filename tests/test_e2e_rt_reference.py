@@ -56,8 +56,8 @@ from vulcan_forward import _rt_geometry, constants, exojax_rt
 
 DATA = Path(__file__).parent / "data"
 RSTAR_W39 = 0.932 * 6.957e10
-# The emission cases' profile. pRT ran constant g = 1e3; a huge rp makes the
-# hydrostatic g-variation over the column < 1e-4 relative (meta records it).
+# The emission cases' profile. pRT ran constant g = 1e3; a huge rp keeps the hydrostatic g-variation over the column
+# below 1e-4 relative (meta records it).
 EMIS_PROF = {
     "molecules": ["H2O"],
     "nu_min": 1.0e4 / 5.0,
@@ -71,9 +71,8 @@ EMIS_PROF = {
     "rstar_cm": RSTAR_W39,
 }
 ROUND_TOL = 1e-12  # float64 rounding bar
-# Eclipse flux against the gray closed form: _photosphere_lnp interpolates
-# ln P linearly in tau between layer boundaries (80 layers); the worst of the
-# three cases measures 1.6e-4, a deterministic discretization error.
+# Eclipse flux against the grey closed form: _photosphere_lnp interpolates ln P linearly in tau between layer boundaries
+# (80 layers); the worst of the three cases measures 1.6e-4, a deterministic discretization error.
 ECLIPSE_RTOL = 2e-4
 
 
@@ -104,9 +103,9 @@ def _assert_stats(r, meta, label):
 
 
 def test_the_profile_pressure_bounds_reach_the_grid():
-    """`art_ptop_bar` must reach the grid through the profile, and a bottom
-    deeper than the k-table ceiling is refused (the deep clamp is
-    under-broadened).
+    """``art_ptop_bar`` reaches the grid through the profile, and a bottom below the k-table ceiling is refused.
+
+    The deep clamp would be under-broadened.
     """
     base = {
         "molecules": ["H2O"],
@@ -221,13 +220,11 @@ def test_transmission_w39b_8species_matches_prt():
 
 
 def test_emission_isothermal_atmosphere_radiates_pi_planck():
-    """Absolute physics check, no reference code involved: an isothermal
-    pure-absorption column must emit exactly pi*B(T) at every wavenumber,
-    INDEPENDENT of its opacity (the source equals the sink everywhere, so k
-    cancels). Measured through the full public path with real H2O k-tables:
-    machine precision, max |ratio-1| = 6.7e-16 at VMR 1e-3 and 1e-5 alike.
-    A g-weight normalization error, a flux unit slip, or a wrong boundary
-    temperature each break this by orders of magnitude.
+    """An isothermal pure-absorption column emits pi*B(T) at every wavenumber, whatever its opacity.
+
+    The source equals the sink everywhere, so k cancels; no reference code is involved. Through the full public path
+    with real H2O k-tables: max |ratio-1| = 6.7e-16 at VMR 1e-3 and 1e-5 alike. A g-weight normalization error, a flux
+    unit slip or a wrong boundary temperature each break this by orders of magnitude.
     """
     prof = EMIS_PROF
     nlay = prof["art_nlayer"]
@@ -257,11 +254,13 @@ def test_emission_isothermal_atmosphere_radiates_pi_planck():
 
 
 def test_wo_batch_is_bit_identical_to_separate_solves():
-    """The leave-one-out batch must reproduce, bitwise, what separate single solves return: the full spectrum
-    unchanged, and every wo row equal to a from-scratch solve with that molecule's VMR zeroed. It also pins the two fold
-    implementations together: the batch's full spectrum comes from the leave-one-out Python-loop prefix, a single solve
-    from ckd.fold's scan, so up to four molecules make the scan take several steps. Grouped: transmission full + rows,
-    lnR0 at fixed mass for both observables, emission flux/tau full + rows, and the unknown-molecule refusal.
+    """The leave-one-out batch reproduces separate single solves bitwise.
+
+    The full spectrum is the plain call's, and every wo row is a from-scratch solve with that molecule's VMR zeroed. It
+    also pins the two fold implementations together: the batch's full spectrum comes from the leave-one-out Python-loop
+    prefix, a single solve from ckd.fold's scan, so up to four molecules make the scan take several steps. Covered:
+    transmission full and rows, lnR0 at fixed mass for both observables, emission flux and tau full and rows, and the
+    unknown-molecule refusal.
     """
     mols = ["H2O"] + [m for m in ("CO2", "CO", "CH4") if exomolop.table_path(m).exists()]
     prof = {**EMIS_PROF, "molecules": mols, "art_nlayer": 40, "rp_cm": 7.1492e9}
@@ -286,9 +285,8 @@ def test_wo_batch_is_bit_identical_to_separate_solves():
         assert np.array_equal(
             np.asarray(d_wo[i]), np.asarray(trt.transmission_depth_r(wo_vmr(m), zeros, T, mmw, 0.0, vmr_he=zeros))
         ), m
-    # lnR0 is a radius change at fixed planet mass: the depth of a model quoted
-    # at rp_cm * e^h with gravity gs_cgs * e^(-2h). A fixed-g scaling misses
-    # this by the scale-height change, ~2h of the annulus.
+    # lnR0 is a radius change at fixed planet mass: the depth of a model quoted at rp_cm e^h with gravity
+    # gs_cgs e^(-2h). A fixed-g scaling misses this by the scale-height change, ~2h of the annulus.
     h = 1.0e-2
     d_h = np.asarray(trt.transmission_depth_r(vmr, zeros, T, mmw, h, vmr_he=zeros))
     trt_h = exojax_rt.build_rt_model(
@@ -297,9 +295,8 @@ def test_wo_batch_is_bit_identical_to_separate_solves():
     np.testing.assert_allclose(
         d_h, np.asarray(trt_h.transmission_depth(vmr, zeros, T, mmw, vmr_he=zeros)), rtol=ROUND_TOL, atol=0.0
     )
-    # lnM is a mass change at the scaled radius: the depth of a model quoted at
-    # rp_cm * e^h with gravity gs_cgs * e^(m - 2h); lnM = 0 is the lnR0 path
-    # bit for bit.
+    # lnM is a mass change at the scaled radius: the depth of a model quoted at rp_cm e^h with gravity
+    # gs_cgs e^(m - 2h); lnM = 0 is the lnR0 path bit for bit.
     m = 0.1
     d_hm = np.asarray(trt.transmission_depth_r(vmr, zeros, T, mmw, h, vmr_he=zeros, lnM=m))
     trt_hm = exojax_rt.build_rt_model(
@@ -309,9 +306,8 @@ def test_wo_batch_is_bit_identical_to_separate_solves():
         d_hm, np.asarray(trt_hm.transmission_depth(vmr, zeros, T, mmw, vmr_he=zeros)), rtol=ROUND_TOL, atol=0.0
     )
     assert np.array_equal(d_h, np.asarray(trt.transmission_depth_r(vmr, zeros, T, mmw, h, vmr_he=zeros, lnM=0.0)))
-    # Emission follows the same fixed-mass convention: the eclipse flux, its
-    # bottom optical depth and the prefactor radius at lnR0 = h are those of
-    # the model built at rp_cm * e^h, gs_cgs * e^(-2h).
+    # Emission follows the same fixed-mass convention: the eclipse flux, its bottom optical depth and the prefactor
+    # radius at lnR0 = h are those of the model built at rp_cm e^h, gs_cgs e^(-2h).
     emod_h = exojax_rt.build_emis_model(
         trt_h, {**prof, "rp_cm": prof["rp_cm"] * np.exp(h), "gs_cgs": prof["gs_cgs"] * np.exp(-2.0 * h)}
     )
@@ -353,17 +349,17 @@ def test_emission_h2o_matches_prt():
     o = np.argsort(wl)
     wl, flux = wl[o], flux[o]
     m = (wl > 3.0 * 1.01) & (wl < 5.0 * 0.99)
-    # fixture stores pRT flux already converted to this engine's per-cm^-1
-    # convention (the conversion and the unit trap are documented in meta)
+    # the fixture stores the pRT flux already in this engine's per-cm^-1 convention; its meta records the conversion
     r = flux[m] / np.interp(wl[m], z["wl_um"], z["prt_flux_per_cm1"])
     _assert_stats(r, meta, "H2O emission flux vs pRT")
 
 
 def test_eclipse_flux_carries_the_tau_two_thirds_photospheric_radius():
-    """Gray isothermal column (the alpha = 0 cloud deck is the only opacity):
-    tau(P) = kappa int dP / g(r), with the inverse-square g(r) of the same hydrostatic integral the anchor uses, so the
-    photosphere sits where that integral reaches 2/3, and the eclipse flux must be pi*B(T) times (R(P_phot)/R_em)^2. The
-    plain emission flux stays pi*B(T): the radius enters the eclipse quantity only.
+    """In a grey isothermal column the eclipse flux is pi*B(T) times (R(P_phot)/R_em)^2.
+
+    The alpha = 0 power-law cloud is the only opacity, so tau(P) = kappa int dP / g(r), with the inverse-square g(r) of
+    the hydrostatic integral the anchor uses, and the photosphere sits where it reaches 2/3. The plain emission flux
+    stays pi*B(T): the radius enters the eclipse quantity only.
     """
     prof = {**EMIS_PROF, "rp_cm": 1.2 * 7.1492e9, "gs_cgs": 500.0}
     nlay = prof["art_nlayer"]
@@ -382,10 +378,9 @@ def test_eclipse_flux_carries_the_tau_two_thirds_photospheric_radius():
         return 1.0 / (1.0 / prof["rp_cm"] + C * np.log(p / emod.p_ref_bar))
 
     assert float(r_em) == pytest.approx(r_iso(emod.p_ref_emission_bar), rel=ROUND_TOL)
-    # tau is zero at the grid's TOP BOUNDARY (half a layer above the first
-    # centre; exojax's dParr[0] spans p0 k^0.5 .. p0 k^-0.5). Third point:
-    # inside the top half layer, where a clamped integrator would return the
-    # top-centre radius.
+    # tau is zero at the grid's top boundary, half a layer above the first centre (exojax's dParr[0] spans p0 k^0.5 to
+    # p0 k^-0.5). The third point lies inside the top half layer, where a clamped integrator would return the top-centre
+    # radius.
     p0 = float(emod.p_art_bar[0])
     dl = float(np.log(emod.p_art_bar[1] / emod.p_art_bar[0]))
     p_top = p0 * np.exp(-0.5 * dl)

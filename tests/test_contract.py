@@ -1,13 +1,8 @@
-"""Contract tests for the shared engine.
+"""The engine's library contract.
 
-These are the engine's library properties, pinned here rather than left as
-prose: the package imports with no data installed, its
-data-root contract fails loudly instead of guessing, the molecule table is
-injectable, and planet geometry is required rather than defaulted to WASP-39 b.
-
-Dependency-light -- no jax, no exojax, no vulcan3 -- so this
-file runs anywhere. The physics itself is validated by the consumers' suites
-against real spectra.
+The package imports with no data installed, its data-root contract fails loudly instead of guessing, the molecule
+table is injectable, and planet geometry is required rather than defaulted to WASP-39 b. The file needs no jax, exojax
+or vulcan3 beyond the tests that skip without them.
 """
 
 from __future__ import annotations
@@ -30,8 +25,7 @@ def test_every_molmass_matches_its_own_formula():
 
     weights = {"H": 1.008, "C": 12.011, "N": 14.007, "O": 15.999, "S": 32.06}
     for name, entry in constants.MOLECULES.items():
-        # the two fields the correlated-k path reads; what each table is lives
-        # in the k-table tree's provenance.json
+        # the two fields the correlated-k path reads; what each table is lives in the k-table tree's provenance.json
         assert set(entry) == {"vulcan", "molmass"}, name
         want = sum(weights[el] * (int(n) if n else 1) for el, n in re.findall(r"([A-Z][a-z]?)(\d*)", name) if el)
         assert entry["molmass"] == pytest.approx(want, abs=5e-4), name
@@ -39,9 +33,7 @@ def test_every_molmass_matches_its_own_formula():
 
 @pytest.fixture
 def paths(monkeypatch):
-    """vulcan_forward.paths with no data root, cache override or
-    set_data_root in effect; monkeypatch restores all three afterwards.
-    """
+    """vulcan_forward.paths with no data root, cache override or set_data_root in effect, restored afterwards."""
     from vulcan_forward import paths
 
     monkeypatch.delenv(paths.ENV_ROOT, raising=False)
@@ -67,8 +59,8 @@ def test_data_root_and_per_tree_overrides(paths, tmp_path, monkeypatch):
 
     assert paths.opacity_cache_dir() == root / "opacity_cache"
     assert paths.cia_h2he_file().name == "H2-He_2011.cia"
-    # no existence check on the k-table tree: datacheck wants the path even
-    # when nothing is installed, to report per-molecule MISSING items
+    # no existence check on the k-table tree: a consumer's data check wants the path even when nothing is installed, to
+    # report each missing molecule
     assert paths.exomolop_dir() == root / "exomolop"
 
     # the per-tree override relocates the cache without moving the rest
@@ -123,11 +115,7 @@ def test_import_order_guard_is_documented_and_live():
 
 
 def test_ensure_layout_creates_the_trees(paths, tmp_path, monkeypatch):
-    """A setup tool must be able to CREATE the layout.
-
-    data_root() is strict, but a fetch command knows the directories
-    should exist.
-    """
+    """A fetch command creates the layout that the strict data_root() refuses to guess."""
     root = tmp_path / "made-by-setup"
     monkeypatch.setenv(paths.ENV_ROOT, str(root))
 
@@ -146,11 +134,9 @@ def test_ensure_layout_creates_the_trees(paths, tmp_path, monkeypatch):
 
 
 def _import_in_clean_cwd(modules, tmp_path):
-    """Import `modules` in a fresh process whose CWD is an EMPTY directory.
+    """Import ``modules`` in a fresh process whose working directory is empty; return it and the CompletedProcess.
 
-    Returns (that directory, the CompletedProcess). Run out-of-process
-    because import side effects are one-shot: a module already imported by
-    this pytest session would appear clean no matter what it does.
+    Out of process because import side effects are one-shot: a module this session already imported would look clean.
     """
     import subprocess
 
@@ -167,10 +153,9 @@ def _import_in_clean_cwd(modules, tmp_path):
 
 
 def test_importing_the_engine_writes_nothing_to_the_callers_cwd(tmp_path):
-    """A LIBRARY must not litter the directory its caller happens to be in.
+    """A library must not write into the directory its caller happens to be in.
 
-    The light modules are checked first because they are the ones a consumer
-    imports merely to read a constant or resolve a path.
+    These are the light modules a consumer imports merely to read a constant or resolve a path.
     """
     work, r = _import_in_clean_cwd(
         ["vulcan_forward.constants", "vulcan_forward.paths", "vulcan_forward.interp_map"], tmp_path
@@ -185,9 +170,9 @@ def test_importing_the_engine_writes_nothing_to_the_callers_cwd(tmp_path):
 
 
 def test_exomolop_helpers_and_provenance_import_without_jax_or_h5py(tmp_path):
-    """jwst_tool.datacheck reads the table paths and the provenance record
-    stdlib-side, so neither jax nor h5py may be needed to reach them. Run
-    out-of-process with both blocked: this session has already imported jax.
+    """A consumer's data check reads the table paths and the provenance record with neither jax nor h5py installed.
+
+    Run out of process with both blocked: this session has already imported jax.
     """
     import json
     import subprocess

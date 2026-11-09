@@ -60,8 +60,9 @@ MINI_NU0, MINI_BANDS = 2370.0, 400
 
 @pytest.fixture(scope="module")
 def rt_ins(tmp_path_factory):
-    """(rt model, gas-free isothermal inputs) over a band straddling 3.5 um; the gas is absent, so a miniature table's
-    band grid is all that is read.
+    """(rt model, gas-free isothermal inputs) over a band straddling 3.5 um.
+
+    With no gas, a miniature table's band grid is all that is read.
     """
     with miniature_root(tmp_path_factory.mktemp("mini_cloud"), ["H2O"], MINI_BANDS, MINI_NU0):
         rt = build_rt_model(
@@ -97,12 +98,11 @@ def rt_cloud_only(rt_ins):
 
 
 def test_grey_deck_puts_the_transit_radius_at_the_deck(rt_ins):
-    """An opaque grey deck at P_deck in a gas-free isothermal column is
-    band-independent to the last bit and puts the transit radius at the
-    deck's hydrostatic radius R0 + H ln(P0 / P_deck), above it by the switch
-    width times the ~13 e-folds the deck is thick along the chord (0.26 H at
-    the shipped width), within half a scale height. A deck three decades
-    below the grid bottom leaves the deck-free spectrum unchanged.
+    """An opaque grey deck in a gas-free isothermal column puts the transit radius at the deck, band-independently.
+
+    The radius is the deck's hydrostatic radius R0 + H ln(P0 / P_deck), plus the switch width times the ~13 e-folds the
+    deck is thick along the chord (0.26 H at the shipped width), within half a scale height, and equal to the last bit
+    across the band. A deck three decades below the grid bottom leaves the deck-free spectrum as it is.
     """
     rt, ins = rt_ins
     base = np.asarray(rt.transmission_depth(**ins))
@@ -137,12 +137,10 @@ def _kappa(nu, c0, alpha):
 def test_depth_matches_closed_form(rt_cloud_only, c0, alpha):
     """The transit radius must match Heng & Kitzmann to a few 1e-2 H.
 
-    The residual is dominated by the engine's inverse-square gravity, which
-    the constant-g closed form does not carry. Measured worst case over these
-    four decks: 1.04e-2 H; the gate is 3x that. A grey deck (alpha = 0) must
-    also be band-independent to the last bit: a wrong power, a wrong
-    reference wavenumber, or a continuum that fails to broadcast identically
-    over the g-ordinates would leak a wavelength dependence.
+    The engine's inverse-square gravity, which the constant-g closed form does not carry, dominates the residual:
+    measured worst case over these four decks 1.04e-2 H, gated at 3x that. A grey deck (alpha = 0) must also be
+    band-independent to the last bit: a wrong power, a wrong reference wavenumber, or a continuum that fails to
+    broadcast identically over the g-ordinates would leak a wavelength dependence.
     """
     depth_of, nu = rt_cloud_only
     depth = np.asarray(depth_of(jnp.array([c0, alpha])))
@@ -154,10 +152,9 @@ def test_depth_matches_closed_form(rt_cloud_only, c0, alpha):
 
 
 def test_alpha_derivative_vanishes_at_the_reference_wavenumber(rt_cloud_only):
-    """d(depth)/d(alpha) is proportional to ln(nu/nu0), so it must cross zero EXACTLY at CLOUD_NUC0 and nowhere else.
+    """d(depth)/d(alpha) is proportional to ln(nu/nu0), so it crosses zero at CLOUD_NUC0 and nowhere else.
 
-    A reference-wavenumber or sign error cannot survive this, and it needs no
-    tolerance on the derivative's magnitude.
+    A reference-wavenumber or sign error cannot survive this, and it needs no tolerance on the derivative's magnitude.
     """
     depth_of, nu = rt_cloud_only
     g = np.asarray(jax.jvp(depth_of, (jnp.array([-1.0, 2.0]),), (jnp.array([0.0, 1.0]),))[1])
@@ -170,11 +167,10 @@ def test_alpha_derivative_vanishes_at_the_reference_wavenumber(rt_cloud_only):
 
 
 def test_kappa_gradient_matches_the_analytic_derivative(rt_cloud_only):
-    """AD against an EXACT derivative, not a finite difference.
+    """AD against an exact derivative, not a finite difference.
 
-    dR_eff/dlog10(kappa0) = H ln(10) (1 - exp(-tau0)), independent of
-    wavelength, alpha, R0, P0 and kappa0 itself. Measured 1.61e-3 relative;
-    the gate is 3x that.
+    dR_eff/dlog10(kappa0) = H ln(10) (1 - exp(-tau0)), independent of wavelength, alpha, R0, P0 and kappa0 itself.
+    Measured 1.61e-3 relative; the gate is 3x that.
     """
     depth_of, nu = rt_cloud_only
     c0, alpha = -1.0, 2.0

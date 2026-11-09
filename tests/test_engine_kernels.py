@@ -1,8 +1,6 @@
-"""The engine kernel that fails SILENTLY when wrong.
+"""``interp_map.make_to_art``: a wrong interpolation still returns a plausible profile, and nothing downstream notices.
 
-`interp_map.make_to_art` returns a plausible profile when its interpolation is
-wrong, and nothing downstream notices. It needs jax (it returns a jnp
-interpolator) and runs in this repo's light CI.
+It needs jax (it returns a jnp interpolator) and runs in the light CI.
 """
 
 from __future__ import annotations
@@ -11,11 +9,10 @@ import numpy as np
 import pytest
 
 
-# interp_map.make_to_art
 jnp = pytest.importorskip("jax.numpy", reason="make_to_art returns a jnp interpolator")
 
-# x64 on before the first jnp array, as vulcan_chem does in production;
-# make_to_art inherits the process precision (float32 agrees only to ~1e-7).
+# x64 on before the first jnp array, as vulcan_chem does in production: make_to_art inherits the process precision
+# (float32 agrees only to ~1e-7).
 import jax
 
 jax.config.update("jax_enable_x64", True)
@@ -30,7 +27,7 @@ def _to_art(p_vulcan, p_art):
 
 
 def test_to_art_is_exact_on_the_source_grid():
-    """Interpolating a profile onto its OWN pressures must return it."""
+    """Interpolating a profile onto its own pressures must return it."""
     p = np.logspace(-6, 1, 40)  # bar, ascending
     prof = jnp.asarray(np.linspace(-3.0, -8.0, 40))
     out = np.asarray(_to_art(p, p)(prof))
@@ -40,9 +37,8 @@ def test_to_art_is_exact_on_the_source_grid():
 def test_to_art_interpolates_linearly_in_log_pressure():
     """A profile linear in log10(P) must stay linear after mapping.
 
-    This is the property the whole module exists for: VMRs are interpolated in
-    log-pressure, not in pressure. A pressure-linear implementation would pass
-    the identity test above and fail here.
+    VMRs are interpolated in log pressure, not in pressure: a pressure-linear implementation would pass the identity
+    test above and fail here.
     """
     p_v = np.logspace(-6, 1, 30)
     prof = jnp.asarray(2.0 * np.log10(p_v) + 5.0)
@@ -52,11 +48,10 @@ def test_to_art_interpolates_linearly_in_log_pressure():
 
 
 def test_to_art_accepts_a_descending_source_grid():
-    """`p_bar_vulcan` is documented as "any monotonic order"; prove it.
+    """``p_bar_vulcan`` may come in either monotonic order.
 
-    VULCAN hands pressures bottom-to-top or top-to-bottom depending on the
-    caller, and the argsort inside make_to_art is what makes both work. A
-    regression here would silently REVERSE every profile.
+    VULCAN hands pressures bottom-to-top or top-to-bottom depending on the caller, and the argsort inside make_to_art
+    makes both work. A regression here would silently reverse every profile.
     """
     p_up = np.logspace(-6, 1, 30)
     prof_up = 2.0 * np.log10(p_up) + 5.0

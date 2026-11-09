@@ -1,13 +1,12 @@
 """The fixed-O C/O seed map's positivity margin, and the ChemParams layout.
 
-One invariant: the margin is the worst layer's ln(1 + O_only/O_in_C), exactly
-0 once some layer holds no O-only carrier, NaN (refused by ``not m > x``)
-once a layer holds no oxygen at all. The engine evaluates it on the build
-column (``co_bz_bound``) and on the converged column the AD tangent starts
-from (``co_bz_margin``); both route through this function.
+One invariant: the margin is the worst layer's ln(1 + O_only/O_in_C), exactly 0 once some layer holds no O-only
+carrier, NaN (refused by ``not m > x``) once a layer holds no oxygen at all. The engine evaluates it on the build column
+(``co_bz_bound``) and on the converged column a tangent starts from (``co_bz_margin``); both route through this
+function.
 
-The ChemParams test sits here because this module imports vulcan_chem before
-anything imports exojax, as the import-order guard requires.
+The ChemParams tests sit here because this module imports vulcan_chem before anything imports exojax, as the
+import-order guard requires.
 """
 
 import numpy as np
@@ -38,9 +37,7 @@ def test_margin_is_the_worst_layer_and_vanishes_without_o_only_carriers():
 
 
 def test_chem_params_named_api_matches_the_vector_form():
-    """The engine's primitive is named ChemParams; the positional vector stays
-    supported as the adapter a sampler or a jvp needs.
-    """
+    """The engine's primitive is ChemParams; the positional vector stays as the form a sampler or a jvp needs."""
     # with a tp_eval hook the tail is that hook's parameter block
     theta = [0.5, -0.25, 1.5, 1200.0, -1.0]
     p = params_from_vector(theta, n_tp_params=2, has_tp_eval=True)
@@ -60,9 +57,9 @@ def test_chem_params_named_api_matches_the_vector_form():
 
 
 def test_optional_chemistry_entries_follow_the_declared_layout():
-    """With ``extras`` the vector carries s_o and/or kzz_slope between lnKzz
-    and the T-P block, in CHEM_EXTRAS order; without them both read 0 and the
-    classic layout is unchanged. A wrong order or an unknown name is refused.
+    """With ``extras`` the vector carries s_o, kzz_slope or both between lnKzz and the T-P block, in CHEM_EXTRAS order.
+
+    Without them both read 0 and the base layout holds. A wrong order or an unknown name is refused.
     """
     theta = [0.5, -0.25, 1.5, 0.7, -0.3, 1200.0, -1.0]
     p = params_from_vector(theta, n_tp_params=2, has_tp_eval=True, extras=CHEM_EXTRAS)

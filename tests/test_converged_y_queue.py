@@ -9,7 +9,7 @@ acceptance tests at the bottom pin a plain jvp through the queue against the per
 
 The measured differences are printed (``pytest -s``). Cheap profile: nz=20, photochemistry off. Full tier
 (``VULCAN_FORWARD_RUN_FULL=1``): the gradient tests (minutes of compile and 16 GB per route) and the two
-convergence-scale comparisons calibrated on daw that failed on the GitHub runner's CPU.
+convergence-scale comparisons that, calibrated on the development workstation, failed on the GitHub runner's CPU.
 """
 
 from __future__ import annotations
@@ -35,27 +35,24 @@ FULL = pytest.mark.skipif(
 
 # dt_max: the production step cap (vulcan-retrieval's case sets 1e11 s).
 PROFILE = {"use_photo": False, "yconv_cri": 1.0e-2, "nz": 20, "dt_max": 1.0e11}
-# [lnZ, c_o, lnKzz, T-offset]: the baseline column and three perturbed ones,
-# heterogeneous enough that they do not all converge at the same tick.
+# [lnZ, c_o, lnKzz, T-offset]: the baseline column and three perturbed ones, heterogeneous enough that they do not all
+# converge at the same tick.
 THETAS = np.array(
     [[0.0, 0.0, 0.0, 0.0], [0.3, 0.1, 0.5, 40.0], [-0.3, -0.1, 0.0, -40.0], [0.1, 0.0, 0.2, 80.0]], dtype=np.float64
 )
 MIX_FLOOR = 1.0e-10  # cells below this carry no observable and no certificate
-# Queue against batch: two certified solves agree at the convergence scale
-# (yconv_min 0.1), as in test_converged_y_batch. The difference moves with
-# bit-level input changes on every job (a 1e-12 lnZ nudge spans 0.4e-2 to
-# 7e-2), so no theta has margin under a tighter bar; a lane-mixing bug is O(1).
+# Queue against batch: two certified solves agree at the convergence scale (yconv_min 0.1), as in
+# test_converged_y_batch. The difference moves with bit-level input changes on every job (a 1e-12 lnZ nudge spans
+# 0.4e-2 to 7e-2), so no theta has margin under a tighter bar; a lane-mixing bug is O(1).
 REL_MAX = 1.0e-1
 # The queued tangent vs the batched one, on every job.
 QUEUE_DY_MAX = 1.0e-2
-# dt_max for the tangent comparison. At the production cap a plain jvp's tangent has
-# no stable value: a 1e-14 lnZ nudge moves queue-vs-batch by up to O(1) on any job, so
-# the 1e-2 bar judges a bit pattern (notes "Batched routes"). At this cap 19 nudges
-# read <= 1.5e-5 on every job, also on the refilled jobs, which stop a step apart.
+# dt_max for the tangent comparison. At the production cap a plain jvp's tangent has no stable value: a 1e-14 lnZ nudge
+# moves queue-vs-batch by up to O(1) on any job, so the 1e-2 bar would judge a bit pattern (notes "Batched routes"). At
+# this cap 19 nudges read <= 1.5e-5 on every job, the refilled jobs included, which stop a step apart.
 TANGENT_DT_MAX = 1.0e7
-# Two-stage check: the species a W39b spectrum reads, split into the ones that
-# are PINNED and the ones only PRINTED, which carry the slow chemistry the two
-# arms disagree on.
+# Two-stage check: the species a W39b spectrum reads, split into the pinned ones and the ones only printed, which carry
+# the slow chemistry the two arms disagree on.
 PINNED_SPECIES = ("H2O", "CO", "H2", "He")
 PRINTED_SPECIES = ("CO2", "CH4", "SO2")
 SPECIES_FLOOR = 1.0e-6  # layers below this carry no opacity
@@ -77,13 +74,12 @@ def ref(chem):
 def _report(tag, y_q, cd_q, y_b, cd_b):
     """Print and check the queue-vs-batch difference job by job."""
     y_q = np.asarray(y_q)
-    # Certified in BOTH arms: equal certificates alone would pass with both
-    # arms uncertified.
+    # Certified in both arms: equal certificates alone would pass with both arms uncertified.
     assert bool(np.all(np.asarray(cd_q.conv_normal)))
     assert bool(np.all(np.asarray(cd_b.conv_normal)))
     assert np.array_equal(np.asarray(cd_q.conv_normal), np.asarray(cd_b.conv_normal))
-    # conv_branch is not compared: with an ultratrace controlling cell the same
-    # accept count can certify tight in one compilation and loose in another.
+    # conv_branch is not compared: with an ultratrace controlling cell the same accept count can certify tight in one
+    # compilation and loose in another.
     for k in range(THETAS.shape[0]):
         mix_b = y_b[k] / y_b[k].sum(axis=1, keepdims=True)
         obs = mix_b > MIX_FLOOR
@@ -111,12 +107,10 @@ def test_queue_agrees_with_the_batch_with_and_without_refill(chem, ref):
     y_b, cd_b = ref
     th = jnp.asarray(THETAS)
     y_q, cd_q = chem.converged_y_queue(th, n_lanes=THETAS.shape[0])
-    # The same call signature reuses the same compiled program: the init_fn /
-    # out_fn pair is memoized, so run_queue's cache does not grow per call.
-    # The second call takes the thetas REVERSED, which no frozen first-call
-    # result could pass: with n_lanes >= N nothing refills, every lane starts
-    # at tick 0 and is independent of its neighbours, so the answer must be
-    # the first call's, permuted, job for job.
+    # The same call signature reuses the same compiled program: the init_fn and out_fn pair is memoized, so run_queue's
+    # cache does not grow per call. The second call takes the thetas reversed, which no frozen first-call result could
+    # pass: with n_lanes >= N nothing refills, every lane starts at tick 0 and is independent of its neighbours, so the
+    # answer must be the first call's, permuted, job for job.
     n_programs = len(chem._integ._vrunner_queue)
     y_q2, cd_q2 = chem.converged_y_queue(th[::-1], n_lanes=THETAS.shape[0])
     y_q2, y_q = np.asarray(y_q2), np.asarray(y_q)
@@ -144,15 +138,12 @@ def test_queue_agrees_with_the_batch_with_and_without_refill(chem, ref):
 
 
 def test_two_stage_warm_queue_keeps_the_observed_species(chem):
-    """The shape vulcan-retrieval's cold path runs: stage 1 at baseline
-    composition (batched once, shared), stage 2 warm-started from its columns
-    and queued on 2 lanes.
+    """The shape vulcan-retrieval's cold path runs: stage 1 at baseline composition, stage 2 warm-started and queued.
 
-    Pins the certificate and the observed species. From a converged warm start
-    the loose branch can fire early, so the arms certify at different depths;
-    CO2/CH4/SO2 and slow sulfur differ at the percent level and are printed
-    only. The production gate for cold_lanes is the GPU bench's per-draw
-    log-likelihood comparison.
+    Stage 1 is batched once and shared; stage 2 starts from its columns on 2 lanes. Pins the certificate and the
+    observed species. From a converged warm start the loose branch can fire early, so the arms certify at different
+    depths; CO2, CH4, SO2 and slow sulfur differ at the percent level and are printed only. The production gate for
+    cold_lanes is the GPU bench's per-draw log-likelihood comparison.
     """
     th = jnp.asarray(THETAS)
     y1 = chem.converged_y_batch(th.at[:, 0].set(0.0).at[:, 1].set(0.0))
@@ -192,12 +183,11 @@ def test_two_stage_warm_queue_keeps_the_observed_species(chem):
 
 
 def test_masked_jobs_take_no_step(chem):
-    """``active``: a masked job's lane starts done, so it takes no step (zero
-    accepted steps, never certified) and its lane goes to the next job. A
-    masked SUFFIX -- how vulcan-retrieval pads a short chunk -- leaves the
-    active jobs' schedule alone: their step counts and certificates are the
-    unmasked queue's, and their columns agree to roundoff (on the GPU the
-    retrieval's real-mix check pins them bitwise).
+    """``active``: a masked job's lane starts done, takes no step, never certifies and goes to the next job.
+
+    A masked suffix, which is how vulcan-retrieval pads a short chunk, leaves the active jobs' schedule alone: their
+    step counts and certificates are the unmasked queue's, and their columns agree to roundoff (on the GPU
+    vulcan-retrieval's real-mix check pins them bitwise).
     """
     th = jnp.asarray(THETAS)
     y0 = jnp.broadcast_to(jnp.asarray(chem.y0), (THETAS.shape[0], *chem.y0.shape))
@@ -231,9 +221,8 @@ def test_masked_jobs_take_no_step(chem):
 def _dy_rel(dy, dy_ref, mix):
     """max|dy - dy_ref| / max|dy_ref| over the cells the spectrum can see.
 
-    Two AD routes are compared against the DIRECTION's own scale, never
-    component by component: a cell whose tangent is accidentally tiny turns
-    floating-point accumulation into a meaningless ratio.
+    Two AD routes are compared against the direction's own scale, never component by component: a cell whose tangent is
+    accidentally tiny turns floating-point accumulation into a meaningless ratio.
     """
     obs = mix > MIX_FLOOR
     return float(np.abs(dy - dy_ref)[obs].max() / np.abs(dy_ref[obs]).max())
@@ -249,13 +238,10 @@ def chem_tangent():
 def test_queue_is_differentiable(chem_tangent):
     """A plain ``jax.jvp`` runs through the queue, and through the batch.
 
-    JAX carries the tangent leaves through the refill scatters, the chunk selection and the lane `lax.cond` as it does
-    through the lockstep batch. The stopping rule is unchanged -- the loop predicate reads the primal only -- so the
-    tangent is the plain jvp's, and the three routes (queue, plain batch, solo ``converged_y``) agree at the convergence
-    scale their primals agree at.
-
-    Forward-mode callers that need a CERTIFIED tangent go through
-    ``converged_y_jvp``; this test pins the plain jvp.
+    JAX carries the tangent leaves through the refill scatters, the chunk selection and the lane ``lax.cond`` as it does
+    through the lockstep batch. The loop predicate reads the primal only, so the tangent is the plain jvp's, and the
+    three routes (queue, plain batch, solo ``converged_y``) agree at the convergence scale their primals agree at. A
+    caller that needs a certified tangent uses ``converged_y_jvp``.
     """
     chem = chem_tangent
     th = jnp.asarray(THETAS)
@@ -285,9 +271,8 @@ def test_queue_is_differentiable(chem_tangent):
         )
         assert rel < QUEUE_DY_MAX
 
-    # One jvp through the batch is the per-theta jvp through the solo runner, at the convergence
-    # scale and with the same certificate (a lane is its own solve, so the
-    # four-lane batch's first two lanes stand for a batch of two).
+    # One jvp through the batch is the per-theta jvp through the solo runner, at the convergence scale and with the same
+    # certificate (a lane is its own solve, so the four-lane batch's first two lanes stand for a batch of two).
     for k in range(2):
         (y_s, cd_s), (dy_s, _ds) = jax.jvp(lambda t: chem.converged_y(t, return_conv_diag=True), (th[k],), (v[k],))
         y_s, dy_s = np.asarray(y_s), np.asarray(dy_s)
@@ -304,9 +289,8 @@ def test_queue_is_differentiable(chem_tangent):
         assert rel < REL_MAX
 
 
-# Gradient acceptance tests (solo, batch, queue; plus the queue reversed) for
-# the two-stage cold gradient with photochemistry on, which exercises the
-# tick-keyed photolysis and refresh cadences.
+# Gradient acceptance tests (solo, batch, queue, and the queue reversed) for the two-stage cold gradient with
+# photochemistry on, which exercises the tick-keyed photolysis and refresh cadences.
 PHOTO_PROFILE = {"use_photo": True, "yconv_cri": 1.0e-2, "nz": 20}
 # A small step away from the carried column, per direction.
 WARM_DELTA = np.array([0.05, 0.02, 0.1, 5.0], dtype=np.float64)
@@ -316,8 +300,8 @@ COL_MED = 1.0e-3
 DY_STACK_MAX = 2.0e-4
 
 
-# Function scope: a model keeps every program compiled on it (~16 GB per
-# route), so each test builds its own and frees them when it ends.
+# Function scope: a model keeps every program compiled on it (~16 GB per route), so each test builds its own and frees
+# them when it ends.
 @pytest.fixture
 def chem_photo():
     return vulcan_chem.build_chem_model(PHOTO_PROFILE)
@@ -333,8 +317,9 @@ def _stack_thetas(outs):
 
 
 def _two_stage_routes(chem, th, routes):
-    """The two-stage cold map on each named route ("solo", "batch", "queue",
-    "queue-rev"), each ``(y (N, nz, ni), ConvDiag over N, dy (N, D, nz, ni))``.
+    """The two-stage cold map on each named route ("solo", "batch", "queue", "queue-rev").
+
+    Each is ``(y (N, nz, ni), ConvDiag over N, dy (N, D, nz, ni))``.
     """
     n_dir = th.shape[1]
     eye = jnp.eye(n_dir, dtype=jnp.float64)
@@ -406,9 +391,7 @@ def _check_routes(prefix, out):
 
 
 def _assert_spread(solo):
-    """Not vacuous: the four thetas are heterogeneous, so their columns differ
-    by far more than any route-to-route difference the tests allow.
-    """
+    """Not vacuous: the four thetas' columns differ by far more than any route-to-route difference the tests allow."""
     y0 = np.asarray(solo[0])
     mix = y0[0] / y0[0].sum(axis=1, keepdims=True)
     spread = float((np.abs(y0[1] - y0[0]) / np.maximum(np.abs(y0[0]), 1e-300))[mix > MIX_FLOOR].max())
@@ -419,12 +402,10 @@ def _assert_spread(solo):
 def _cmp(tag, a, b, n_dir):
     """Print and bound one route pair. ``b`` is the reference.
 
-    The column is judged over the cells the spectrum can see; the tangent by the
-    DIRECTION STACK's own scale (max|ddy| over all directions / max|dy| over all
-    directions). Per-direction ratios are PRINTED with each direction's share of
-    that scale, not asserted: the lnKzz tangent is ~1e-6 of the lnZ tangent here,
-    and a norm-relative error on a direction that carries no signal is
-    floating-point accumulation, not disagreement.
+    The column is judged over the cells the spectrum can see; the tangent by the direction stack's own scale (max|ddy|
+    over all directions / max|dy| over all directions). Per-direction ratios are printed with each direction's share of
+    that scale, not asserted: the lnKzz tangent is ~1e-6 of the lnZ tangent here, and a norm-relative error on a
+    direction that carries no signal is floating-point accumulation, not disagreement.
     """
     ya, cda, dya = np.asarray(a[0]), a[1], np.asarray(a[2])
     yb, cdb, dyb = np.asarray(b[0]), b[1], np.asarray(b[2])
@@ -452,10 +433,9 @@ def _cmp(tag, a, b, n_dir):
         assert stack < DY_STACK_MAX
 
 
-# The cold map is split by route: each compiled route holds ~16 GB, and one
-# test running all four peaked at 35 GB. queue-vs-batch is not asserted: both
-# are bounded against the solo route, solved once per worker as arrays (its
-# model and programs are freed when the fixture returns).
+# The cold map is split by route: each compiled route holds ~16 GB, and one test running all four peaked at 35 GB.
+# queue-vs-batch is not asserted: both are bounded against the solo route, solved once per worker as arrays (its model
+# and programs are freed when the fixture returns).
 @pytest.fixture(scope="module")
 def cold_solo():
     chem = vulcan_chem.build_chem_model(PHOTO_PROFILE)
@@ -465,9 +445,9 @@ def cold_solo():
 
 @FULL
 def test_two_stage_cold_gradient_batch_matches_solo(chem_photo, cold_solo):
-    """The batched cold GRADIENT agrees with the per-theta one: every theta
-    certified, tangents finite, columns and the direction stack at the
-    convergence scale.
+    """The batched cold gradient agrees with the per-theta one.
+
+    Every theta certifies, tangents are finite, and columns and the direction stack agree at the convergence scale.
     """
     out = {"solo": cold_solo, **_two_stage_routes(chem_photo, jnp.asarray(THETAS), ("batch",))}
     _check_routes("", out)
@@ -477,9 +457,9 @@ def test_two_stage_cold_gradient_batch_matches_solo(chem_photo, cold_solo):
 
 @FULL
 def test_two_stage_cold_gradient_queue_matches_solo(chem_photo, cold_solo):
-    """The queued cold GRADIENT agrees with the per-theta one, and with
-    itself with the thetas queued in reverse order (refilled lanes take other
-    jobs at other ticks).
+    """The queued cold gradient agrees with the per-theta one, and with itself on the thetas in reverse order.
+
+    Reversed, the refilled lanes take other jobs at other ticks.
     """
     out = {"solo": cold_solo, **_two_stage_routes(chem_photo, jnp.asarray(THETAS), ("queue", "queue-rev"))}
     _check_routes("", out)
@@ -489,13 +469,11 @@ def test_two_stage_cold_gradient_queue_matches_solo(chem_photo, cold_solo):
 
 
 def _warm_routes(chem, th, yw, r0, r1):
-    """(solo, batch, queue, queue-reversed) results of the WARM
-    continuation map -- each theta from its OWN carried column ``yw`` at its OWN reference composition (r0, r1) -- as
-    ``(y (N, nz, ni), ConvDiag over N, dy (N, D, nz, ni))``.
+    """(solo, batch, queue, queue-reversed) results of the warm continuation map, each ``(y, ConvDiag, dy)``.
 
-    The carried column and the references are CONSTANTS of the map (the
-    consumer differentiates with respect to theta only), so they ride in as
-    values and only theta carries a tangent.
+    Each theta starts from its own carried column ``yw`` at its own reference composition (r0, r1); y is (N, nz, ni),
+    the ConvDiag is over N, dy is (N, D, nz, ni). The carried column and the references are constants of the map (the
+    consumer differentiates with respect to theta only), so they ride in as values and only theta carries a tangent.
     """
     n_dir = th.shape[1]
     eye = jnp.eye(n_dir, dtype=jnp.float64)
@@ -528,7 +506,7 @@ def _warm_routes(chem, th, yw, r0, r1):
 
 @FULL
 def test_warm_gradient_three_routes(chem_photo):
-    """The batched and queued WARM continuation gradient agree with the per-theta one.
+    """The batched and queued warm continuation gradient agree with the per-theta one.
 
     The shape of vulcan-retrieval's warm starts: per-lane carried column and reference composition; the same bars as
     the cold tests.
@@ -537,8 +515,7 @@ def test_warm_gradient_three_routes(chem_photo):
     th0 = jnp.asarray(THETAS)
     th1 = jnp.asarray(THETAS + WARM_DELTA[None, :])
     n_dir = int(th1.shape[1])
-    # the carried cloud: each theta's own converged column, with the reference
-    # composition it was converged at (distinct per lane)
+    # each theta's own converged column, with the reference composition it was converged at (distinct per lane)
     yw, cd0 = chem.converged_y_batch(th0, return_conv_diag=True)
     assert bool(np.all(np.asarray(cd0.conv_normal))), "carried columns not certified"
     r0, r1 = th0[:, 0], th0[:, 1]

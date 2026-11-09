@@ -1,16 +1,10 @@
 """Contracts for the emission solver's bottom boundary.
 
-exojax's ``ibased`` solver drops the bottom-boundary term entirely ("with no
-surface", its own docstring). Every photon entering the model column from
-below is lost, so any wavelength that sees through the grid bottom is
-underestimated.
-
-The engine runs ``ibased_linsap`` instead, which carries the interior source
-and is also the more accurate scheme at production layer counts. These tests pin the
-part that can regress silently: that the term is present, that it vanishes when
-the column is opaque, and that the boundary temperatures fed to it are right.
-
-Cheap by construction -- no line lists, no opacity build, no chemistry.
+exojax's ``ibased`` solver drops the bottom-boundary term ("with no surface", its own docstring): every photon entering
+the column from below is lost, so any wavelength that sees through the grid bottom is underestimated. The engine runs
+``ibased_linsap``, which carries the interior source and is also the more accurate scheme at production layer counts.
+These tests pin what can regress silently: the term is present, it vanishes when the column is opaque, and the boundary
+temperatures fed to it are right. No line lists, no opacity build, no chemistry.
 """
 
 from __future__ import annotations
@@ -62,7 +56,7 @@ def test_boundary_temperatures_are_midpoints_with_extrapolated_ends():
     got = np.asarray(_boundary_temperature(T))
     assert got.shape == (5,)
     assert got[1:-1] == pytest.approx([150.0, 300.0, 600.0])
-    # ends carry the local gradient, they are NOT clamped to the end centre
+    # the ends carry the local gradient, not the end centre's value
     assert got[0] == pytest.approx(50.0)
     assert got[-1] == pytest.approx(1000.0)
     assert got[-1] > float(T[-1]), "the deep end must extrapolate, not clamp"
@@ -101,15 +95,10 @@ def test_the_interior_source_is_present_and_fades_with_depth():
     assert np.max(np.abs(hot - cool) / hot) < 0.02
 
 
-# Correlated-k emission
-#
-# exojax's own ArtEmisPure.run_ckd hard-codes the "ibased" solver, which drops
-# the interior source.
-# _run_emis_ckd_linsap is upstream's flatten-solve-reweight with "ibased_linsap"
-# in its place. The tests below pin the two things that can regress silently:
-# the flatten/tile index convention (a transpose here mixes bands into
-# g-ordinates and still returns plausible numbers), and the presence of the
-# interior term.
+# Correlated-k emission. exojax's ArtEmisPure.run_ckd hard-codes the "ibased" solver, which drops the interior source;
+# _run_emis_ckd_linsap is upstream's flatten-solve-reweight with "ibased_linsap" in its place. The tests below pin the
+# flatten and tile index convention (a transpose mixes bands into g-ordinates and still returns plausible numbers) and
+# the presence of the interior term.
 
 from vulcan_forward.exojax_rt import _run_emis_ckd_linsap
 
@@ -121,13 +110,11 @@ def _gquad(ng=16):
 
 
 def test_ckd_emission_matches_line_by_line_when_every_g_is_identical():
-    """If k does not vary across the band, the k-distribution is degenerate and
-    the CKD flux MUST equal exojax's plain single-k flux on the same bands.
+    """With k constant across the band the k-distribution is degenerate, so the CKD flux equals the single-k flux.
 
-    This is the index-convention test. dtau is reshaped (nlayer, ng*nband) and
-    the source is tiled along its last axis; if either side flattened
-    band-major instead of g-major, bands would be paired with the wrong source
-    and this identity would break. Measured max relative difference: 3.3e-16.
+    The index-convention test: dtau is reshaped (nlayer, ng*nband) and the source is tiled along its last axis. If
+    either side flattened band-major instead of g-major, bands would pair with the wrong source and this identity would
+    break. Measured max relative difference: 3.3e-16.
     """
     art = _art()
     ng = 16
@@ -144,9 +131,9 @@ def test_ckd_emission_matches_line_by_line_when_every_g_is_identical():
 
 
 def test_ckd_emission_keeps_the_interior_source_upstream_run_ckd_drops():
-    """ArtEmisPure.run_ckd's "ibased" solver loses the interior blackbody on a
-    thin column (22-99% less flux over the band); the engine's linsap path
-    must not.
+    """ArtEmisPure.run_ckd's "ibased" solver loses the interior blackbody on a thin column; the linsap path keeps it.
+
+    The loss is 22-99% of the flux over the band.
     """
     art = _art()
     art_ibased = ArtEmisPure(
@@ -166,8 +153,8 @@ def test_ckd_emission_keeps_the_interior_source_upstream_run_ckd_drops():
 def test_ckd_emission_is_not_the_same_as_using_the_band_mean_opacity():
     """Sanity that the k-distribution is doing work.
 
-    A real k(g) spread at FIXED band-mean optical depth must give a different flux from running that mean directly --
-    that gap (measured 24-38% here) is the grey within-band averaging error correlated-k exists to remove.
+    A real k(g) spread at fixed band-mean optical depth must give a different flux from running that mean directly: the
+    gap (measured 24-38% here) is the grey within-band averaging error correlated-k exists to remove.
     """
     art = _art()
     ng = 16
@@ -188,8 +175,8 @@ def test_ckd_emission_is_not_the_same_as_using_the_band_mean_opacity():
 def test_ckd_emission_tangent_sign_follows_the_lapse_rate():
     """Differentiability plus a physics check in one.
 
-    More opacity moves the photosphere UP; on a normal profile that is into cooler gas so the flux dims, and on an
-    inversion it is into hotter gas so the flux brightens.
+    More opacity moves the photosphere up: on a normal profile into cooler gas, so the flux dims, and on an inversion
+    into hotter gas, so the flux brightens.
     """
     art = _art()
     ng = 8
@@ -198,7 +185,7 @@ def test_ckd_emission_tangent_sign_follows_the_lapse_rate():
     base = np.abs(rng.lognormal(-3.0, 1.5, size=(NLAYER, NU.size)))
     dtau_g = jnp.asarray(np.repeat(base[:, None, :], ng, axis=1))
 
-    # index 0 is the TOP of exojax's column
+    # index 0 is the top of exojax's column
     for t_top, t_btm in ((900.0, 2600.0), (2600.0, 900.0)):
         Tb = _boundary_temperature(jnp.asarray(np.linspace(t_top, t_btm, NLAYER)))
 
