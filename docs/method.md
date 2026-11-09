@@ -98,9 +98,10 @@ value adds identically to every g-ordinate.
 ### Fetching tables
 
 `fetch_exomolop` resolves URLs by walking ExoMolOP's three levels of pages, because filenames follow no one pattern. The
-isotopologue must be the principal one, and an unknown naming form raises. The dataset ExoMol marks recommended wins
-when there is one. Within it the natural-abundance file wins over the principal isotopologue, because VULCAN tracks a total
-molecular VMR. Only the R1000 0.3-50 um product is accepted, since all tables in a mixture must share a band grid.
+isotopologue must be the principal one, and an unknown naming form raises. The dataset ExoMol marks recommended wins;
+with none marked, or several, the last one listed wins. Within it the natural-abundance file wins over the principal
+isotopologue, because VULCAN tracks a total molecular VMR. Only the R1000 0.3-50 um product is accepted, since all
+tables in a mixture must share a band grid.
 
 ## Grid map
 
@@ -148,7 +149,7 @@ $g n_b + b$ on both sides. The g-weights multiply the flux, because the k-distri
 | `lnKzz`, `kzz_slope`, `Kzz0` | ln of the eddy-diffusion multiple, the power-law slope, the baseline $K_{zz}$ |
 | `Dzz` | Molecular diffusion coefficient |
 | `T`, `T_art`, `Ti` | Temperature on the chemistry grid, on the ART grid, at interfaces |
-| `P`, `dP`, `logP_*` | Pressure, a layer's pressure thickness, log10 pressure |
+| `P`, `dP`, `logP_*`, `lnp_*` | Pressure, a layer's pressure thickness, log10 pressure, natural-log pressure |
 | `M`, `Mn` | Total number density per layer |
 | `Hp_i`, `Hpi_i` | Scale height at cells and at interfaces |
 | `A0`, `A`, `B`, `Bs`, `E_np`, `Msys` | Column element totals and the matrices of the elemental repair |
