@@ -18,7 +18,7 @@ Tags: [M] measured, [E] estimated, [I] inferred.
   release under that name; carries `conv_normal` and `validate_overrides`),
   `jax>=0.6.2`, `numpy>=1.26`, `h5py>=3.9`.
 - Consumers: vulcan-retrieval floors `>=0.30.0` and its `requirements-hpc.txt` pins
-  `0accd36`; jwst-transit-authority (the planner) floors `>=0.29.0` and pins `32adc85`
+  `50bef74`; jwst-transit-authority (the planner) floors `>=0.29.0` and pins `0accd36`
   in `deploy/pins.env`.
 - Production: the WASP-39b baseline v2 nautilus run used `d26e9d3` (0.28.0, tag
   `w39b-baseline-v2`). All three W39b production runs carry the 0.27.2 carbon repair
@@ -441,6 +441,8 @@ per-theta re-anchoring stay; the other items stay live as model choices.
 
 ## Known and deliberately untracked
 
+- 0.30.0 is on `main` with no TestPyPI release and no tag (not tracked, the maintainer decided): the consumers
+  install the commit they pin.
 - The 151 commits dated before 2026-10-13 were made on other machines; NAS holds no
   provenance for them beyond "Provenance audit" [M: `git log`].
 - The photolysis-cadence switch threshold stays at VULCAN3's derived 1.0 when a profile
