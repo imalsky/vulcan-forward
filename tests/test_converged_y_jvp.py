@@ -8,8 +8,8 @@ same primal state; otherwise the two derivatives are of different functions. A s
 there the tangent certificate decides when the run stops.
 
 Cheap profile: nz=20, photochemistry off. Full tier (``VULCAN_FORWARD_RUN_FULL=1``): compiling the tangent runner takes
-2 min per tangent shape, and the free-endpoint warm jvp ran to its cap with a diverged tangent on the GitHub runner's
-CPU.
+2 min per tangent shape. The free-endpoint model runs the production step cap: with ``dt_max`` left at the engine's
+1e15 s its warm jvp can run to the cap with a diverged tangent (notes "Convergence certificate").
 """
 
 from __future__ import annotations
@@ -79,7 +79,14 @@ def test_stacked_directions_reproduce_the_single_direction_tangents(runs):
 
 # The endpoint is free here: count_min is low enough that the certificate, not
 # the floor, ends a warm continuation, and count_max far above any exit.
-SETTLE_PROFILE = {"use_photo": False, "yconv_cri": 1.0e-2, "nz": 20, "count_min": 10, "count_max": 3000}
+SETTLE_PROFILE = {
+    "use_photo": False,
+    "yconv_cri": 1.0e-2,
+    "nz": 20,
+    "count_min": 10,
+    "count_max": 3000,
+    "dt_max": 1.0e11,
+}
 THETA_WARM = np.array([0.3, 0.1, 0.5, 40.0], dtype=np.float64)
 
 

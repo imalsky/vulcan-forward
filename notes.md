@@ -260,7 +260,11 @@ Tags: [M] measured, [E] estimated, [I] inferred.
   rules) and D primal integrations; 3 directions 2.4 s stacked vs 3.4 s vmap [M]. The
   planner's AD rows call it.
 - A warm tangent blowing up after the primal converged, dt uncapped, is the settled
-  uncapped-dt case in VULCAN3's notes, not a new defect.
+  uncapped-dt case in VULCAN3's notes, not a new defect. The free-endpoint jvp test hit it
+  once VULCAN3's collision limit counted M: at `dt_max` 1e15 the warm jvp ran to its
+  3000-step cap, `tangent_longdy` 1.2e154 (81 steps, 0.070 before that change); at the
+  production cap 1e11 it settles in 252 steps, 0.038 (81, 0.070 before) [M, daw CPU]. So
+  that test's profile runs 1e11, as the queue profile does.
 
 ## Batched routes (`converged_y_batch`, `converged_y_queue`)
 
