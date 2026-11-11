@@ -49,21 +49,20 @@ policy: the project-root `CLAUDE.md`.
 ### Library and data contract
 
 - A check that cannot run says so.
-- Stay a library: importable with no data installed, never writing to the caller's cwd, never resolving a path from its
-  own `__file__`. `exomolop`'s path helpers and `provenance()` import without jax or h5py. Each property has a test in
-  `tests/test_contract.py`; keep them.
+- Stay a library (`oracle.md` "A well-behaved library"). `exomolop`'s path helpers and `provenance()` import without
+  jax or h5py. Each property has a test in `tests/test_contract.py`; keep them.
 - Data root: `$VULCAN_FORWARD_DATA` or `paths.set_data_root`, resolved on use, never at import. `<root>/exomolop/` holds
   the k-tables and `provenance.json`; `<root>/opacity_cache` holds the CIA tables (`$VULCAN_FORWARD_OPACITY_CACHE`
-  overrides it). Never fetch tables at run time.
+  overrides it). Never fetch tables at run time (`oracle.md` "A well-behaved library").
 - `constants.MOLECULES` carries only `vulcan` and `molmass`. What a table is comes from `exomolop.provenance()` (written
   by the fetcher), its header from `exomolop.table_info()`: provenance is recorded, never asked of the caller.
 - The molecule table is injectable (`profile['molecule_table']`): never tell a consumer to edit a constant inside the
   engine.
-- Nothing that belongs to a case has a default: `build_chem_model` needs `network`, `atom_list` and
-  `vulcan_cfg_name`; `build_rt_model` needs `rp_cm`, `gs_cgs`, `rstar_cm`, `p_ref_bar` and `art_pbtm_bar`. Never add a
-  default planet, network or column. A fixed number is a named constant in `constants.py` with its unit and reason,
-  under that file's four headings; a setting stated twice, or where it cannot act, is refused (notes "Import order,
-  profile keys and refusals").
+- A case states its own settings (`oracle.md` "A well-behaved library"): `build_chem_model` needs `network`,
+  `atom_list` and `vulcan_cfg_name`; `build_rt_model` needs `rp_cm`, `gs_cgs`, `rstar_cm`, `p_ref_bar` and
+  `art_pbtm_bar`. Never add a default planet, network or column. A fixed number is a named constant in
+  `constants.py` with its unit and reason, under that file's four headings; a setting stated twice, or where it cannot
+  act, is refused (notes "Import order, profile keys and refusals").
 - With photochemistry on, keep the two star refusals in `vulcan_chem`: the case states `r_star`, `orbit_radius` and
   `sflux_file` itself, never through vulcan3's `default.yaml`, and `r_star` matches `rstar_cm` (notes "Import order,
   profile keys and refusals").
@@ -155,10 +154,10 @@ policy: the project-root `CLAUDE.md`.
 
 ### Changes and tests
 
-- Bit-identical gate: a refactor claiming to be behavior-neutral must reproduce jwst-transit-authority's default WASP-39
-  b case (forced fresh solve) as solved on the code before the change: `wl_um`, `depth`, `depth_wo`, `T`, `p_bar`,
-  max|diff| = 0. jwst's e2e reference test is a tolerance band, not this gate. Deliberate physics changes carry new
-  fixtures (notes "Library and data contract").
+- Bit-identical gate: a refactor claiming to be behavior-neutral runs the reference `oracle.md` "Neutral changes are
+  exact" names, forcing a fresh solve, and compares `wl_um`, `depth`, `depth_wo`, `T` and `p_bar` at max|diff| = 0.
+  jwst's e2e reference test is a tolerance band, not this gate. Deliberate physics changes carry new fixtures (notes
+  "Library and data contract").
 - A test that compiles a tangent runner or takes minutes goes in the full tier (`skipif` on `VULCAN_FORWARD_RUN_FULL`).
 - Never `pytest.importorskip("exojax")` in a test module (it breaks the import-order contract for every later module):
   use `importlib.util.find_spec` and import `vulcan_chem` first. The repeated test-module preamble is deliberate: never

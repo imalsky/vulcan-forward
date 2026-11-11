@@ -44,13 +44,16 @@ files, within the tolerances its tests set.
 - **Batched solves.** A batched or queued solve certifies as a single solve does and agrees with
   it at the convergence scale (notes "Batched routes").
 - **Neutral changes are exact.** A change that claims to alter no behaviour reproduces the
-  reference spectrum with zero difference (notes "Library and data contract"). A deliberate
-  physics change carries new reference files.
+  reference with zero difference: jwst-transit-authority's default WASP-39 b case, solved fresh on
+  the code before the change, in wavelength, depth, the depth with each leave-one-out molecule
+  removed, temperature and pressure (notes "Library and data contract"). A deliberate physics
+  change carries new reference files.
 - **The ExoJAX pin is deliberate.** The version moves only with the RT and derivative tests and a
   spectrum comparison against the old version on fixed inputs.
 - **A well-behaved library.** No data read at import, nothing written to the caller's folder, no
-  default planet (`tests/test_contract.py`). Unknown settings, missing opacity tables and pressure
-  anchors outside the grid are refused.
+  path taken from its own install folder, and no default planet or column (`tests/test_contract.py`).
+  No default network: what belongs to a case, the case states. No table is fetched at run time.
+  Unknown settings, missing opacity tables and pressure anchors outside the grid are refused.
 - **Settings are visible.** A number that changes a result is a named setting the user can read and
   change in the configuration, with its unit and its reason. It is not a value buried in the code.
   A physical constant or a numerical guard that is fixed on purpose is a named constant with its
@@ -76,7 +79,7 @@ refuses; where it cannot, the consumer says so beside its result.
 - Photolysis switched off over part of the spectrum because the stellar file is short.
 - Rayleigh scattering off, or a cloud on, when the caller did not ask for it.
 - A clamped pressure grid, a clamped temperature, or a see-through column, accepted.
-- A default planet.
+- A default planet, network or column.
 - A number that changes a result, hidden in the code where the user cannot see or set it.
 - A change that claims to be neutral and moves the reference spectrum.
 - An ExoJAX version change without the checks.
