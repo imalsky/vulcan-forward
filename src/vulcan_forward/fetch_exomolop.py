@@ -18,7 +18,7 @@ import time
 import urllib.request
 from typing import TYPE_CHECKING, Any
 
-from vulcan_forward import exomolop, paths
+from vulcan_forward import constants, exomolop, paths
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -33,9 +33,6 @@ _NET_ERRORS = (http.client.HTTPException, OSError)
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
 BASE = "https://www.exomol.com"
 ROOT = f"{BASE}/data/data-types/opacity"
-# The one product this engine can mix: every table in a correlated-k mixture must share a band grid.
-GRID_TOKEN = "R1000_0.3-50mu"
-
 PAGE_TIMEOUT_S = 90  # one HTML page
 DOWNLOAD_TIMEOUT_S = 600  # socket timeout while streaming a ~389 MB table
 CHUNK_BYTES = 1 << 20  # 1 MiB read size for the table stream
@@ -172,11 +169,11 @@ def resolve(mol: str) -> tuple[str, str, str, bool] | None:
     if not prt:
         return None
     # A species can have other petitRADTRANS products: O2's only k-table is R15000_0.2-30mu, 11.8 GB on another grid.
-    on_grid = [h for h in prt if GRID_TOKEN in h]
+    on_grid = [h for h in prt if constants.EXOMOLOP_GRID_TOKEN in h]
     if not on_grid:
         raise RuntimeError(
             f"{mol}: ExoMolOP has petitRADTRANS files for {iso}/{ds} but "
-            f"none on the {GRID_TOKEN} grid this engine uses "
+            f"none on the {constants.EXOMOLOP_GRID_TOKEN} grid this engine uses "
             f"(found {[h.rsplit('/', 1)[1] for h in prt]}). A different "
             "resolution or wavelength span is NOT a drop-in substitute -- "
             "every table in a mixture must share one band grid."

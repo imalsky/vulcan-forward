@@ -21,7 +21,7 @@ import jax
 # tables, which test_load_refuses_without_x64 pins.
 jax.config.update("jax_enable_x64", True)
 
-from vulcan_forward import exomolop, fetch_exomolop, paths
+from vulcan_forward import constants, exomolop, fetch_exomolop, paths
 
 HAVE_H5PY = importlib.util.find_spec("h5py") is not None
 pytestmark = pytest.mark.skipif(not HAVE_H5PY, reason="h5py not installed")
@@ -151,7 +151,7 @@ def test_zero_cross_sections_floor_instead_of_going_to_minus_infinity():
     pack = exomolop.load_tables(["H2O"], edges[0], edges[-1], verbose=False)
     lk = np.asarray(pack.logk["H2O"])
     assert np.all(np.isfinite(lk))
-    assert lk.min() == pytest.approx(np.log(exomolop.K_FLOOR))
+    assert lk.min() == pytest.approx(np.log(constants.K_FLOOR))
 
 
 @pytest.mark.parametrize(
@@ -368,8 +368,6 @@ def test_core_molecule_ranges_are_where_the_table_absorbs(molecule):
     """``constants.CORE_MOLECULE_BANDS_UM`` against its rule: at 1000 K and 1 mbar, the R = 100 band-mean cross-section
     is at least 1 % of its 1-15 um peak. Every such band lies in a listed range, and every listed range holds one.
     """
-    from vulcan_forward import constants
-
     _need_real(molecule)
     k, grid = exomolop._read_bands(molecule, constants.WIDE_BAND_NU_MIN, constants.WIDE_BAND_NU_MAX)
     i_t = int(np.argmin(np.abs(grid["t"] - 1000.0)))

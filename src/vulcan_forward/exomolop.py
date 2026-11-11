@@ -24,27 +24,19 @@ if TYPE_CHECKING:
 
     import h5py
 
-__all__ = ["K_FLOOR", "available", "load_tables", "provenance", "table_info", "table_path"]
+__all__ = ["available", "load_tables", "provenance", "table_info", "table_path"]
 
 logger = logging.getLogger(__name__)
-
-# Floor on k before the log, cm^2 per molecule. The tables hold exact zeros where a species has no lines in a band, and
-# log(0) would poison the interpolation; 1e-60 cm^2 over a full column is ~1e-32 in tau.
-K_FLOOR = 1.0e-60
 
 # The header values this reader is built for; anything else is refused, never reinterpreted.
 KCOEFF_UNITS = "cm^2/molecule"
 P_UNITS = "bar"
 METHOD = "petit_samples"
 
-# Two tables mix only if their grids agree to this relative tolerance (float64 rounding of one published grid).
-_GRID_RTOL = 1.0e-12
-# Decimals table_info rounds to before hashing: the g-samples and weights at _GRID_RTOL, the log10 of the t, p and
-# band-edge grids at 1e-10.
-_HASH_DECIMALS = round(-math.log10(_GRID_RTOL))
+# Decimals table_info rounds to before hashing: the g-samples and weights at constants.GRID_RTOL, the log10 of the t,
+# p and band-edge grids at 1e-10.
+_HASH_DECIMALS = round(-math.log10(constants.GRID_RTOL))
 _HASH_LOG_DECIMALS = 10
-# The quadrature weights must sum to 1 to this tolerance (float64 rounding).
-_WEIGHT_SUM_RTOL, _WEIGHT_SUM_ATOL = 1.0e-10, 1.0e-12
 
 
 def table_path(molecule: str) -> Path:
@@ -132,7 +124,7 @@ def _validated_layout(f: h5py.File, path: Path) -> dict[str, np.ndarray]:
     weights = arrays["weights"]
     if np.any(weights <= 0.0) or weights.shape != arrays["samples"].shape:
         raise ValueError(f"{path}: weights must be positive and match samples")
-    if not np.isclose(np.sum(weights), 1.0, rtol=_WEIGHT_SUM_RTOL, atol=_WEIGHT_SUM_ATOL):
+    if not np.isclose(np.sum(weights), 1.0, rtol=constants.WEIGHT_SUM_RTOL, atol=constants.WEIGHT_SUM_ATOL):
         raise ValueError(f"{path}: quadrature weights sum to {np.sum(weights):.17g}, not 1")
 
     expected = (arrays["p"].size, arrays["t"].size, arrays["bin_edges"].size - 1, arrays["samples"].size)
@@ -152,9 +144,9 @@ _GRID = (
 
 
 def _grid_mismatch(a: dict[str, np.ndarray], b: dict[str, np.ndarray]) -> str | None:
-    """Name the first ``_GRID`` array on which two layouts disagree at ``_GRID_RTOL``, or return None."""
+    """Name the first ``_GRID`` array on which two layouts disagree at ``constants.GRID_RTOL``, or return None."""
     for key, name in _GRID:
-        if a[key].shape != b[key].shape or not np.allclose(a[key], b[key], rtol=_GRID_RTOL, atol=0.0):
+        if a[key].shape != b[key].shape or not np.allclose(a[key], b[key], rtol=constants.GRID_RTOL, atol=0.0):
             return name
     return None
 
@@ -235,8 +227,8 @@ def table_info(molecule: str) -> dict[str, Any]:
         arrays = _validated_layout(f, path)
         rec = _header(f, path)
         t, p, e = (arrays[k] for k in ("t", "p", "bin_edges"))
-        # Round before hashing to absorb float noise; values within _GRID_RTOL can still round apart. The band grid is
-        # hashed whole, not the slice load_tables compares.
+        # Round before hashing to absorb float noise; values within constants.GRID_RTOL can still round apart. The band
+        # grid is hashed whole, not the slice load_tables compares.
         digest = hashlib.sha256()
         for key in ("t", "p", "bin_edges", "samples", "weights"):
             values = arrays[key]
@@ -400,7 +392,7 @@ def load_tables(
                 "ExoMolOP release."
             )
         # (n_P, n_T, n_band, n_g) -> (n_T, n_P, n_g, n_band)
-        out[m] = jnp.asarray(np.log(np.maximum(k, K_FLOOR)).transpose(1, 0, 3, 2))
+        out[m] = jnp.asarray(np.log(np.maximum(k, constants.K_FLOOR)).transpose(1, 0, 3, 2))
 
     if ref is None:
         raise ValueError("load_tables needs at least one molecule; got an empty list")

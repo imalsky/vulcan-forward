@@ -15,9 +15,12 @@ __all__ = [
     "ART_PBTM_BAR",
     "ART_PTOP_BAR",
     "ATOMIC_MASSES",
+    "ATOMIC_MASS_TOL_G_MOL",
     "ATOM_COLS",
     "BAR_CGS",
     "BULK_H2_VULCAN",
+    "CIA_H2H2_FILE",
+    "CIA_H2HE_FILE",
     "CLOUD_DECK_TAU",
     "CLOUD_DECK_WIDTH_LNP",
     "CLOUD_NUC0",
@@ -25,17 +28,27 @@ __all__ = [
     "DEFAULT_ATOM_LIST",
     "DEFAULT_CFG_NAME",
     "DEFAULT_NETWORK",
+    "ELEMENTAL_REPAIR",
+    "ELEMENTAL_REPAIR_ITERS",
+    "EMISSION_NSTREAM",
+    "EXOMOLOP_GRID_TOKEN",
+    "GRID_RTOL",
     "KZZ_P_REF_BAR",
     "K_B_CGS",
+    "K_FLOOR",
     "MOLECULES",
     "M_U_CGS",
     "PROFILE_KEYS",
     "P_REF_BAR",
     "P_REF_EMISSION_BAR",
     "REQUIRED_MOLECULES",
+    "TAU_PHOTOSPHERE",
+    "TOP_MATCH_RTOL",
     "T_OPA_MAX_K",
     "T_OPA_MIN_K",
     "UM_PER_CM",
+    "WEIGHT_SUM_ATOL",
+    "WEIGHT_SUM_RTOL",
     "WIDE_BAND_NU_MAX",
     "WIDE_BAND_NU_MIN",
     "check_band",
@@ -43,11 +56,15 @@ __all__ = [
     "check_profile_keys",
 ]
 
-# In the environment before the first ``import vulcan3``, which freezes them; ``vulcan_chem`` applies them.
-DEFAULT_NETWORK = "thermo/SNCHO_photo_network_2025.txt"
-DEFAULT_ATOM_LIST = "H,O,C,N,S"
-# ``vulcan3.load_config`` name when the profile sets no ``vulcan_cfg_name``.
-DEFAULT_CFG_NAME = "W39b"
+# ---- 1. Physical constants and unit factors ----
+
+# Physical constants and unit factors, cgs, local so this module stays stdlib-only. K_B_CGS is CODATA 2018; the
+# chemistry uses vulcan3.phy_const.kb = 1.38064852e-16 (CODATA 2014), upstream VULCAN's value, so its rates match the
+# reference code. The two differ by 3.5e-7 relative.
+K_B_CGS = 1.380649e-16  # Boltzmann constant, erg/K
+M_U_CGS = 1.66053906660e-24  # atomic mass unit, g (mmw is in amu)
+BAR_CGS = 1.0e6  # dyn/cm^2 per bar
+UM_PER_CM = 1.0e4  # micron per cm: wavelength (um) = UM_PER_CM / wavenumber (cm^-1)
 
 # Composition tables, mirrored from vulcan3.composition so this module stays import-light; vulcan_chem checks them at
 # build time and raises on drift.
@@ -77,6 +94,31 @@ ATOMIC_MASSES = [
     5.4858e-4,
 ]
 
+# ---- 2. Fixed model choices: not settable, each with its reason ----
+
+# Supported wide band, 1-15 um, in wavenumber (cm^-1). The H2-H2 CIA table sets the short edge (it stops at 1 um,
+# 10000 cm^-1); the k-tables reach 50 um.
+WIDE_BAND_NU_MIN = 667.0  # 15 um
+WIDE_BAND_NU_MAX = 10000.0  # 1 um
+
+# Temperature window, K, the consumers treat as the valid RT range: a retrieval derives its T-P prior window from it,
+# rejecting draws outside rather than clipping them. The ExoMolOP k-tables span 100-3400 K, and ckd._interp_logk clamps
+# at their edges.
+T_OPA_MIN_K = 300.0
+T_OPA_MAX_K = 3000.0
+
+# Pressure, bar, at which the emission column's radius and gravity are anchored: the dayside photosphere sits near
+# 0.1 bar, two decades below the limb transmission sees, and 0.1 bar is HyDRA's convention (Gandhi & Madhusudhan 2018).
+# eclipse_flux_tau refines it to the vertical tau = 2/3 radius per k-ordinate (docs/method.md "Emission anchor").
+P_REF_EMISSION_BAR = 1.0e-1
+
+# Vertical optical depth of the emitting photosphere (Fortney et al. 2019): the eclipse-depth prefactor is the radius
+# where tau = 2/3 at each wavelength, not one radius for the band.
+TAU_PHOTOSPHERE = 2.0 / 3.0
+
+# Gauss-Legendre streams of the emission solve: exojax ArtEmisPure's default.
+EMISSION_NSTREAM = 8
+
 # Reference wavenumber, cm^-1, of exojax's powerlaw_clouds: kappa(nu) = kappac0 (nu / CLOUD_NUC0)^alphac, with kappac0
 # in cm^2 per gram of atmosphere (pRT convention; alphac = 0 is grey). 2857 cm^-1 is 3.5 um. A uniformly mixed nuisance
 # opacity, not a physical cloud (docs/method.md "Continua").
@@ -90,9 +132,44 @@ CLOUD_NUC0 = 2857.0
 CLOUD_DECK_TAU = 1.0e3
 CLOUD_DECK_WIDTH_LNP = 0.02
 
-# Reference pressure, bar, of the Kzz power law (kzz_mode "powerlaw"): Kzz0 is read off the config's profile there and
-# tilted by (P / P_ref)^-slope. 1 mbar is where the WASP-39 b profile value is quoted.
-KZZ_P_REF_BAR = 1.0e-3
+# Floor on k before the log, cm^2 per molecule. The tables hold exact zeros where a species has no lines in a band, and
+# log(0) would poison the interpolation; 1e-60 cm^2 over a full column is ~1e-32 in tau.
+K_FLOOR = 1.0e-60
+
+# The two collision-induced-absorption tables, HITRAN CIA 2011 (hitran.org/data/CIA/main/), in paths.opacity_cache_dir.
+# H2-H2 covers 200-3000 K and 20-10000 cm^-1, H2-He 200-9900 K: they set T_OPA_MAX_K and WIDE_BAND_NU_MAX.
+CIA_H2H2_FILE = "H2-H2_2011.cia"
+CIA_H2HE_FILE = "H2-He_2011.cia"
+
+# The ExoMolOP band grid this engine reads: R = 1000 over 0.3-50 um, 16 g-ordinates per band, never rebinned.
+EXOMOLOP_GRID_TOKEN = "R1000_0.3-50mu"
+
+# Element -> adjuster species, scaled by one common factor per element: its dominant carriers in H2-dominated gas, so
+# the linear repair stays small and well-conditioned. Carbon needs CO and CH4 together: below 900 K CH4 holds the carbon
+# and CO only 1e-3 of it, so a CO-only repair of a 1% carbon error drives CO negative. H is the reference element.
+ELEMENTAL_REPAIR = (("He", ("He",)), ("O", ("H2O",)), ("C", ("CO", "CH4")), ("N", ("N2",)), ("S", ("H2S",)))
+# Renormalize-and-repair passes: one takes a warm guess's 1e-1 residual to 1e-10, two reach machine precision.
+ELEMENTAL_REPAIR_ITERS = 3
+
+# ---- 3. Numerical tolerances ----
+
+# Two k-tables mix only if their grids agree to this relative tolerance (float64 rounding of one published grid).
+GRID_RTOL = 1.0e-12
+# The quadrature weights of a k-table must sum to 1 to this tolerance (float64 rounding).
+WEIGHT_SUM_RTOL, WEIGHT_SUM_ATOL = 1.0e-10, 1.0e-12
+# Relative slack on the chemistry top: an ART top that equals it up to rounding is not a clamp.
+TOP_MATCH_RTOL = 1.0e-9
+# g/mol. vulcan3's mass column carries mild rounding (O as 16.0, the electron as 1e-3); a swapped element differs by at
+# least 1 g/mol.
+ATOMIC_MASS_TOL_G_MOL = 0.01
+
+# ---- 4. Defaults a caller may override through the profile ----
+
+# In the environment before the first ``import vulcan3``, which freezes them; ``vulcan_chem`` applies them.
+DEFAULT_NETWORK = "thermo/SNCHO_photo_network_2025.txt"
+DEFAULT_ATOM_LIST = "H,O,C,N,S"
+# ``vulcan3.load_config`` name when the profile sets no ``vulcan_cfg_name``.
+DEFAULT_CFG_NAME = "W39b"
 
 # ART pressure bounds, bar. Chemistry and RT share the model top: vulcan_chem sets P_t from art_ptop_bar, and interp_map
 # refuses an ART grid the chemistry does not cover. At 1e-9 bar the top is converged: one decade higher moves the
@@ -105,29 +182,9 @@ ART_PBTM_BAR = 7.0  # above the W39b config's chemistry bottom, P_b = 7.6 bar
 # at 1 mbar reproduces the JWST ERS 3.0-5.5 um median depth to 0.4%.
 P_REF_BAR = 1.0e-3
 
-# Pressure, bar, at which the emission column's radius and gravity are anchored: the dayside photosphere sits near
-# 0.1 bar, two decades below the limb transmission sees, and 0.1 bar is HyDRA's convention (Gandhi & Madhusudhan 2018).
-# eclipse_flux_tau refines it to the vertical tau = 2/3 radius per k-ordinate (docs/method.md "Emission anchor").
-P_REF_EMISSION_BAR = 1.0e-1
-
-# Physical constants and unit factors, cgs, local so this module stays stdlib-only. K_B_CGS is CODATA 2018; the
-# chemistry uses vulcan3.phy_const.kb = 1.38064852e-16 (CODATA 2014), upstream VULCAN's value, so its rates match the
-# reference code. The two differ by 3.5e-7 relative.
-K_B_CGS = 1.380649e-16  # Boltzmann constant, erg/K
-M_U_CGS = 1.66053906660e-24  # atomic mass unit, g (mmw is in amu)
-BAR_CGS = 1.0e6  # dyn/cm^2 per bar
-UM_PER_CM = 1.0e4  # micron per cm: wavelength (um) = UM_PER_CM / wavenumber (cm^-1)
-
-# Temperature window, K, the consumers treat as the valid RT range: a retrieval derives its T-P prior window from it,
-# rejecting draws outside rather than clipping them. The ExoMolOP k-tables span 100-3400 K, and ckd._interp_logk clamps
-# at their edges.
-T_OPA_MIN_K = 300.0
-T_OPA_MAX_K = 3000.0
-
-# Supported wide band, 1-15 um, in wavenumber (cm^-1). The H2-H2 CIA table sets the short edge (it stops at 1 um,
-# 10000 cm^-1); the k-tables reach 50 um.
-WIDE_BAND_NU_MIN = 667.0  # 15 um
-WIDE_BAND_NU_MAX = 10000.0  # 1 um
+# Reference pressure, bar, of the Kzz power law (kzz_mode "powerlaw"): Kzz0 is read off the config's profile there and
+# tilted by (P / P_ref)^-slope. 1 mbar is where the WASP-39 b profile value is quoted.
+KZZ_P_REF_BAR = 1.0e-3
 
 # Molecule table: VULCAN species name and molar mass, g/mol. The opacity is the ExoMolOP k-table <MOL>.ktable.h5, and
 # exomolop.provenance() says which one. molmass is the only mass the engine uses and equals the formula mass

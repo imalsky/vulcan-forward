@@ -89,13 +89,8 @@ def _radius_at(
     return r, g_ref * (r_ref / r) ** 2
 
 
-# Vertical optical depth of the emitting photosphere (Fortney et al. 2019): the eclipse-depth prefactor is the radius
-# where tau = 2/3 at each wavelength, not one radius for the band.
-TAU_PHOTOSPHERE = 2.0 / 3.0
-
-
 def _photosphere_lnp(dtau_g: Array, lnp_art: Array) -> Array:
-    """Return ln(pressure) where the vertical optical depth from the top reaches TAU_PHOTOSPHERE, per (g, band).
+    """Return ln(pressure) where the vertical optical depth from the top reaches tau = 2/3, per (g, band).
 
     Where it never does, the grid's bottom boundary. Piecewise-linear in tau between layer boundaries, so it
     differentiates through ``dtau_g``.
@@ -104,5 +99,5 @@ def _photosphere_lnp(dtau_g: Array, lnp_art: Array) -> Array:
     lnp_b = jnp.concatenate([lnp_art[:1] - 0.5 * d, lnp_art + 0.5 * d])
     tau_b = jnp.concatenate([jnp.zeros((1, *dtau_g.shape[1:])), jnp.cumsum(dtau_g, axis=0)])
     cols = tau_b.reshape(tau_b.shape[0], -1).T  # (ng*nband, nlayer+1)
-    lnp = jax.vmap(lambda t: jnp.interp(TAU_PHOTOSPHERE, t, lnp_b))(cols)
+    lnp = jax.vmap(lambda t: jnp.interp(constants.TAU_PHOTOSPHERE, t, lnp_b))(cols)
     return lnp.reshape(dtau_g.shape[1:])

@@ -23,17 +23,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Element -> adjuster species, scaled by one common factor per element: its dominant carriers in H2-dominated gas, so
-# the linear repair stays small and well-conditioned. Carbon needs CO and CH4 together: below 900 K CH4 holds the carbon
-# and CO only 1e-3 of it, so a CO-only repair of a 1% carbon error drives CO negative. H is the reference element.
-_ELEMENTAL_REPAIR = (("He", ("He",)), ("O", ("H2O",)), ("C", ("CO", "CH4")), ("N", ("N2",)), ("S", ("H2S",)))
-# Renormalize-and-repair passes: one takes a warm guess's 1e-1 residual to 1e-10, two reach machine precision.
-_ELEMENTAL_REPAIR_ITERS = 3
-
-# g/mol. The package's mass column carries mild rounding (O as 16.0, the electron as 1e-3); a swapped element differs by
-# at least 1 g/mol.
-_ATOMIC_MASS_TOL_G_MOL = 0.01
-
 
 def _assert_composition_tables(composition: ModuleType) -> None:
     """Check ``constants.ATOM_COLS`` and ``constants.ATOMIC_MASSES`` against the table vulcan3 loaded.
@@ -62,7 +51,7 @@ def _assert_composition_tables(composition: ModuleType) -> None:
     for col, atom in enumerate(atom_list):
         if atom in compo_row:
             table_mass = float(compo[compo_row.index(atom)]["mass"])
-            if abs(table_mass - float(constants.ATOMIC_MASSES[col])) > _ATOMIC_MASS_TOL_G_MOL:
+            if abs(table_mass - float(constants.ATOMIC_MASSES[col])) > constants.ATOMIC_MASS_TOL_G_MOL:
                 raise RuntimeError(
                     f"constants.ATOMIC_MASSES[{col}] = {constants.ATOMIC_MASSES[col]} "
                     f"for {atom!r} but the package composition table's {atom!r} "
@@ -129,7 +118,7 @@ def _build_elemental(
     )
     elem_pairs = [
         (e, tuple(sp for sp in sps if sp in sidx))
-        for e, sps in _ELEMENTAL_REPAIR
+        for e, sps in constants.ELEMENTAL_REPAIR
         if any(sp in sidx for sp in sps) and compo[:, constants.ATOM_COLS[e]].sum() > 0
     ]
     _elem_cols = [constants.ATOM_COLS["H"]] + [constants.ATOM_COLS[e] for e, _ in elem_pairs]
@@ -142,7 +131,7 @@ def _build_elemental(
     rep_slots = [np.flatnonzero(rep_group == k).tolist() for k in range(len(elem_pairs))]
     A0 = y0_np @ E_np  # (nz, 1 + nrep), layer sums with no dz weight
     A0 = A0.sum(axis=0)
-    missing = [sp for _, sps in _ELEMENTAL_REPAIR for sp in sps if sp not in sidx]
+    missing = [sp for _, sps in constants.ELEMENTAL_REPAIR for sp in sps if sp not in sidx]
     if not elem_pairs:
         raise RuntimeError("elemental mode: no repair species found in the network")
     R0_ratios = A0[1:] / A0[0]
@@ -187,7 +176,7 @@ def _build_elemental(
         targets = _targets(lnZ, c_o, s_o)  # (nrep,)
         y = y_in * (M / jnp.sum(y_in, axis=1))[:, None]
         min_adj = jnp.asarray(1.0, dtype=jnp.float64)
-        for _ in range(_ELEMENTAL_REPAIR_ITERS):
+        for _ in range(constants.ELEMENTAL_REPAIR_ITERS):
             A = jnp.einsum("zi,ie->e", y, E_mat)  # [H, e1..] column totals
             col_tot = jnp.sum(y[:, rep_cols_j], axis=0)  # adjuster columns
             Bs = E_mat[rep_cols_j, :].T * col_tot[None, :]  # per adjuster species

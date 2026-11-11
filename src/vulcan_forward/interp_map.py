@@ -11,15 +11,14 @@ from typing import TYPE_CHECKING
 import jax.numpy as jnp
 import numpy as np
 
+from vulcan_forward import constants
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from jax import Array
 
 __all__ = ["make_to_art"]
-
-# Relative slack on the chemistry top: an ART top that equals it up to rounding is not a clamp.
-_TOP_MATCH_RTOL = 1.0e-9
 
 
 def make_to_art(p_bar_vulcan: np.ndarray, p_bar_art: np.ndarray) -> Callable[[Array], Array]:
@@ -51,7 +50,7 @@ def make_to_art(p_bar_vulcan: np.ndarray, p_bar_art: np.ndarray) -> Callable[[Ar
     order_j = jnp.asarray(order)
 
     p_top_v, p_btm_v = float(np.min(p_bar_vulcan)), float(np.max(p_bar_vulcan))
-    n_top_clamp = int(np.sum(np.asarray(p_bar_art) < p_top_v * (1.0 - _TOP_MATCH_RTOL)))
+    n_top_clamp = int(np.sum(np.asarray(p_bar_art) < p_top_v * (1.0 - constants.TOP_MATCH_RTOL)))
     n_btm_clamp = int(np.sum(np.asarray(p_bar_art) > p_btm_v))
     if n_btm_clamp:
         raise ValueError(

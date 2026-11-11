@@ -46,9 +46,6 @@ __all__ = ["build_emis_model", "build_rt_model"]
 
 logger = logging.getLogger(__name__)
 
-# exojax ArtEmisPure's default stream count.
-_EMISSION_NSTREAM = 8
-
 
 def _check_profile(profile: Profile) -> None:
     """Refuse unknown keys and any ``opacity_mode`` other than "exomolop"."""
@@ -754,7 +751,7 @@ def build_emis_model(trt: SimpleNamespace, profile: Profile) -> SimpleNamespace:
         pressure_btm=trt.art_pbtm_bar,
         nlayer=art_nlayer,
         rtsolver="ibased_linsap",
-        nstream=_EMISSION_NSTREAM,
+        nstream=constants.EMISSION_NSTREAM,
     )
     lnp_em = jnp.asarray(np.log(np.asarray(art.pressure)))
     logger.info("[rt] ArtEmisPure %d layers (shares opacities)", art_nlayer)

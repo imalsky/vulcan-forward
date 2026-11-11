@@ -10,6 +10,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from vulcan_forward import constants
+
 __all__ = [
     "ENV_OPACITY_CACHE",
     "ENV_ROOT",
@@ -104,9 +106,9 @@ def exomolop_dir() -> Path:
 
 def cia_h2h2_file() -> Path:
     """Return the H2-H2 CIA table path, which ``build_rt_model`` requires (hitran.org/data/CIA/main/, 24 MB)."""
-    return opacity_cache_dir() / "H2-H2_2011.cia"
+    return opacity_cache_dir() / constants.CIA_H2H2_FILE
 
 
 def cia_h2he_file() -> Path:
     """Return the H2-He CIA table path, which ``build_rt_model`` requires (hitran.org/data/CIA/main/, 147 MB)."""
-    return opacity_cache_dir() / "H2-He_2011.cia"
+    return opacity_cache_dir() / constants.CIA_H2HE_FILE
