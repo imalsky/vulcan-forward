@@ -221,6 +221,26 @@ def test_the_eclipse_flux_at_fixed_mass_is_the_model_rebuilt_there(models):
     assert np.all(np.asarray(thick) > np.asarray(thin))
 
 
+def test_the_eclipse_photosphere_accounts_for_the_whole_eclipse_flux(models):
+    """Every ordinate's term adds up to its band's eclipse flux, a thicker column emits from higher up, and an opaque
+    deck caps the photosphere at the deck.
+    """
+    _, em = models
+    T = jnp.linspace(800.0, 1800.0, NLAYER)
+    thin, thick = _vmr(1.0e-5, 0.0), _vmr(1.0e-2, 1.0e-2)
+    p_thin, terms = em.eclipse_photosphere(thin, HALF, T, MMW, vmr_he=HALF)
+    flux, _ = em.eclipse_flux_tau(thin, HALF, T, MMW, vmr_he=HALF)
+    np.testing.assert_allclose(np.asarray(terms).sum(axis=0), np.asarray(flux), rtol=ROUND_TOL, atol=0.0)
+    assert np.all(np.asarray(terms) > 0.0)
+    p_thick, _ = em.eclipse_photosphere(thick, HALF, T, MMW, vmr_he=HALF)
+    assert np.all(np.asarray(p_thick) <= np.asarray(p_thin))
+    assert np.any(np.asarray(p_thick) < np.asarray(p_thin))
+    p_deck, _ = em.eclipse_photosphere(thin, HALF, T, MMW, vmr_he=HALF, deck=-2.0)
+    # tau reaches 2/3 inside the deck's first layer, so within one layer of the deck pressure
+    assert np.all(np.asarray(p_deck) <= 1.1e-2)
+    assert np.all(np.asarray(p_deck) < np.asarray(p_thin).max())
+
+
 @pytest.mark.usefixtures("root")
 @pytest.mark.parametrize(
     ("over", "match"),

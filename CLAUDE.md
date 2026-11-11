@@ -110,7 +110,8 @@ policy: the project-root `CLAUDE.md`.
   depth depends on `art_nlayer` (notes "Geometry and anchors").
 - Emission anchors radius and gravity at the constant `constants.P_REF_EMISSION_BAR` (not a profile key);
   `emission_radius()` gives the consumer's prefactor radius. The eclipse prefactor is the tau = 2/3 radius per
-  k-ordinate (`eclipse_flux_tau`).
+  k-ordinate (`eclipse_flux_tau`); `eclipse_photosphere` gives a consumer each ordinate's photospheric pressure and
+  flux term.
 - lnR0 is a radius change at fixed GM in both observables: `transmission_depth_r` and every emission function take
   `lnR0` and re-anchor. A consumer passes it through and never multiplies a depth by e^(2 lnR0).
 - Validate every anchor pressure against the grid span (`jnp.interp` clamps silently). A clamped chemistry top or bottom

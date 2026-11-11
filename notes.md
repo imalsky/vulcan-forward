@@ -283,6 +283,9 @@ Tags: [M] measured, [E] estimated, [I] inferred.
   1-15 um differs by at most 1.8e-4 (rms 1.1e-4) on two rising profiles and 1.3e-3 (rms 3.3e-4) on a 2400-1200 K
   inversion; 16 streams differ by 9e-6 and 1.3e-4. An isothermal column agrees to 1e-14 [M, daw CPU, 80 layers,
   H2O, CO2, CO, CH4, SO2].
+- `eclipse_photosphere` returns, per k-ordinate and band, the tau = 2/3 pressure and the ordinate's term of the
+  eclipse flux (w_g F_g (R_phot,g / R_em)^2; a band's terms add up to its `eclipse_flux_tau` value), so a consumer can
+  ask which pressures an eclipse probes without reading the engine's internals.
 - A grey deck is available in emission (`deck=`, the transmission deck's meaning): the opaque layers emit at the
   temperature of the level they sit at. On a gas-free column the flux is pi B(T) at a level within 0.2 dex above the
   deck pressure and does not see the temperature below it (`tests/test_cloud_deck.py`).

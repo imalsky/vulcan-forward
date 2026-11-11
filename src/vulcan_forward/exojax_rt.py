@@ -62,14 +62,19 @@ def _run_emis_ckd_linsap(
     ``weight_g`` [ng, nband] multiplies each g-ordinate's flux first: the photospheric-radius factor of
     ``eclipse_flux_tau``.
     """
+    flux = _emis_ckd_ordinates(art, dtau_g, T_boundary, nu_bands)
+    if weight_g is not None:
+        flux = flux * weight_g
+    return jnp.einsum("g,gb->b", gw, flux)
+
+
+def _emis_ckd_ordinates(art: ArtEmisPure, dtau_g: Array, T_boundary: Array, nu_bands: Array) -> Array:
+    """Return the emergent flux of every k-ordinate, [ng, nband], before the g-weights."""
     nlayer, ng, nband = dtau_g.shape
     # piBarr -> (nlayer + 1, nband); tile the last axis to (nlayer + 1, ng*nband)
     src = jnp.tile(piBarr(T_boundary, nu_bands), ng)
     flux = rtrun_emis_pureabs_ibased_linsap(dtau_g.reshape((nlayer, ng * nband)), src, art.mus, art.weights)
-    flux = flux.reshape((ng, nband))
-    if weight_g is not None:
-        flux = flux * weight_g
-    return jnp.einsum("g,gb->b", gw, flux)
+    return flux.reshape((ng, nband))
 
 
 # The settings the RT needs and has no default for: they belong to the caller's planet and column.
@@ -601,6 +606,31 @@ class _Emission:
         tau_wo = jnp.stack([t for _, t in rows]) if rows else jnp.zeros((0, nb))
         return flux, tau, flux_wo, tau_wo
 
+    def eclipse_photosphere(
+        self,
+        vmr: dict[str, Array],
+        vmr_h2: Array,
+        T_art: Array,
+        mmw_art: Array,
+        vmr_he: Array | None = None,
+        cloud: Array | None = None,
+        lnR0: Array | float = 0.0,
+        deck: Array | float | None = None,
+    ) -> tuple[Array, Array]:
+        """Return where the eclipse flux comes from: each k-ordinate's photospheric pressure and its share of the flux.
+
+        Two arrays [ng, nband]: the pressure, bar, where the vertical optical depth reaches 2/3 (the grid bottom where
+        it never does), and the ordinate's term of ``eclipse_flux_tau``'s sum, w_g F_g (R_phot,g / R_em)^2, in
+        erg s^-1 cm^-2 / cm^-1, so a band's terms add up to its eclipse flux. Takes ``emission_flux``'s arguments.
+        """
+        vmr_he = _require_he(vmr_he)
+        dtau_g = self._dtau(vmr, vmr_h2, vmr_he, T_art, mmw_art, self._g_layers(T_art, mmw_art, lnR0), cloud, deck)
+        p_phot = jnp.exp(_photosphere_lnp(dtau_g, self.lnp_em))
+        r_em, _ = self._emission_anchor(T_art, mmw_art, lnR0)
+        r_phot, _ = _radius_at(self.lnp_em, T_art, mmw_art, *self._anchor(lnR0), self.p_ref_used, p_phot)
+        flux = _emis_ckd_ordinates(self.art, dtau_g, _boundary_temperature(T_art), self.nu_grid)
+        return p_phot, self.opacities.ckd_pack.gw[:, None] * flux * (r_phot / r_em) ** 2
+
     def emission_flux_tau(
         self,
         vmr: dict[str, Array],
@@ -684,7 +714,8 @@ def build_emis_model(trt: SimpleNamespace, profile: Profile) -> SimpleNamespace:
     Returns
     -------
     types.SimpleNamespace
-        ``emission_flux``, ``emission_flux_tau``, ``eclipse_flux_tau``, ``emission_radius``, ``tau_bottom``,
+        ``emission_flux``, ``emission_flux_tau``, ``eclipse_flux_tau``, ``eclipse_photosphere``, ``emission_radius``,
+        ``tau_bottom``,
         ``nu_grid``, ``nu_edges``, ``wl_um``, ``p_art_bar``, ``art_pbtm_bar``, ``art_ptop_bar``, ``art_nlayer``,
         ``p_ref_emission_bar``, ``p_ref_bar``, ``molecules``.
 
@@ -741,6 +772,7 @@ def build_emis_model(trt: SimpleNamespace, profile: Profile) -> SimpleNamespace:
         emission_flux=model.emission_flux,
         emission_flux_tau=model.emission_flux_tau,
         eclipse_flux_tau=model.eclipse_flux_tau,
+        eclipse_photosphere=model.eclipse_photosphere,
         emission_radius=model.emission_radius,
         tau_bottom=model.tau_bottom,
         nu_grid=np.asarray(nu_grid),
