@@ -71,6 +71,11 @@ _FROZEN_ENV = {"network": "VULCAN3_NETWORK", "atom_list": "VULCAN3_ATOM_LIST"}
 _TOP_LEVEL_CFG_KEYS = ("use_photo", "yconv_cri", "nz", "count_min", "count_max", "dt_max", "yconv_min")
 
 
+def _atom_names(atom_list: str | Iterable[str]) -> list[str]:
+    """Return the element names of a comma-separated string or a sequence."""
+    return [a.strip() for a in (atom_list.split(",") if isinstance(atom_list, str) else atom_list)]
+
+
 def select_network(network: str, atom_list: str | Iterable[str]) -> None:
     """Hand the kinetics network and its atom list to vulcan3, which freezes both at its first import.
 
@@ -89,8 +94,7 @@ def select_network(network: str, atom_list: str | Iterable[str]) -> None:
     RuntimeError
         If the environment, or a vulcan3 that is already imported, holds another network or atom list.
     """
-    atoms = [a.strip() for a in (atom_list.split(",") if isinstance(atom_list, str) else atom_list)]
-    want = {"network": str(network), "atom_list": ",".join(atoms)}
+    want = {"network": str(network), "atom_list": ",".join(_atom_names(atom_list))}
     if "vulcan3" in sys.modules:
         from vulcan3.config import default_config
         from vulcan3.paths import resolve_data_path
@@ -184,9 +188,7 @@ def _configured_cfg(profile: Profile) -> Any:
     cfg = vulcan3.load_config(profile["vulcan_cfg_name"])
     # vulcan3's pre-loop setup compares these with what it froze at import, so it is the profile's pair it checks.
     cfg.network = str(profile["network"])
-    cfg.atom_list = (
-        [a.strip() for a in atoms.split(",")] if isinstance(atoms := profile["atom_list"], str) else list(atoms)
-    )
+    cfg.atom_list = _atom_names(profile["atom_list"])
     cfg.use_print_prog = False
     cfg.use_photo = bool(profile["use_photo"])
     cfg.yconv_cri = float(profile["yconv_cri"])
