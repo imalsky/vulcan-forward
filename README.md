@@ -20,7 +20,7 @@ vulcan-forward      chemistry driver and radiative transfer
 
 The model uses correlated-k opacity from the published ExoMolOP tables. It
 includes molecular absorption, H2-H2 and H2-He collision-induced absorption,
-optional H2/He Rayleigh scattering (transmission only), and optional cloud
+H2/He Rayleigh scattering (transmission only, on by default), and optional cloud
 opacity. The main model parameters are metallicity, C/O, eddy diffusion, and
 temperature-profile parameters.
 
