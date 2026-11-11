@@ -24,6 +24,8 @@ dependencies = [
     # conv_normal (ConvDiag's certificate) and validate_overrides (the
     # cfg_overrides check).
     "vulcan3>=0.18.0",
+    # The build reads the case's vulcan3 config file to see which star keys it states itself.
+    "PyYAML>=6",
     # Core, not an extra: every consumer reads ExoMolOP HDF5 k-tables; the
     # import stays function-local, so the package imports without data.
     "h5py>=3.9",

@@ -71,6 +71,8 @@ _FROZEN_ENV = {"network": "VULCAN3_NETWORK", "atom_list": "VULCAN3_ATOM_LIST"}
 _OPTIONAL_CFG_KEYS = {"nz": int, "count_min": int, "count_max": int, "dt_max": float, "yconv_min": float}
 # Every top-level profile key that is also a vulcan3 config key: stated in cfg_overrides too, it would be set twice.
 _TOP_LEVEL_CFG_KEYS = ("use_photo", "yconv_cri", *_OPTIONAL_CFG_KEYS)
+# The star the photochemistry reads from the vulcan3 config, and only the photochemistry: a case states each itself.
+_STAR_CFG_KEYS = ("r_star", "orbit_radius", "sflux_file")
 
 
 def _atom_names(atom_list: str | Iterable[str]) -> list[str]:
@@ -175,6 +177,43 @@ def _check_one_planet(cfg: Any, profile: Profile) -> None:
         )
 
 
+def _check_star_stated(profile: Profile, overrides: dict[str, Any]) -> None:
+    """Refuse a case that leaves the photochemistry's star to vulcan3's default.yaml.
+
+    A config file overlays default.yaml, so a star key the file omits takes that file's star with no message. The case
+    states a key when its own file or ``cfg_overrides`` holds it, whatever the value.
+    """
+    import yaml
+    from vulcan3.config import _read_text  # the file load_config merged, resolved the same way
+
+    stated = set(yaml.safe_load(_read_text(profile["vulcan_cfg_name"]))) | set(overrides)
+    missing = [k for k in _STAR_CFG_KEYS if k not in stated]
+    if missing:
+        raise ValueError(
+            f"the vulcan3 config {profile['vulcan_cfg_name']!r} and cfg_overrides do not state {missing}: the "
+            "photochemistry would take the star of vulcan3's default.yaml. State r_star (R_Sun), orbit_radius (au) and "
+            "sflux_file in the config file or in cfg_overrides."
+        )
+
+
+def _check_one_star(cfg: Any, profile: Profile) -> None:
+    """Refuse a photochemistry star whose radius disagrees with the RT's in the same profile."""
+    from vulcan3.phy_const import r_sun  # the solar radius the photochemistry scales r_star by, cm
+
+    if "rstar_cm" not in profile:
+        logger.info("[chem] no rstar_cm in the profile: the chemistry star is not compared with an RT one")
+        return
+    r_chem = float(cfg.r_star) * r_sun
+    r_rt = float(profile["rstar_cm"])
+    if abs(r_chem / r_rt - 1.0) > constants.RSTAR_MATCH_RTOL:
+        raise ValueError(
+            f"the chemistry and the RT describe different stars: r_star = {float(cfg.r_star):g} R_Sun = "
+            f"{r_chem:.4e} cm from the vulcan3 config against rstar_cm = {r_rt:.4e} cm from the profile, "
+            f"{100.0 * (r_chem / r_rt - 1.0):+.1f} % apart (allowed {100.0 * constants.RSTAR_MATCH_RTOL:g} %). Set "
+            "r_star in the config or cfg_overrides, or correct rstar_cm."
+        )
+
+
 def _configured_cfg(profile: Profile) -> Any:
     """Load the VULCAN config the profile names and apply the profile to it, refusing what the rebuild cannot follow."""
     missing = [k for k in _CHEMISTRY_KEYS if not profile.get(k)]
@@ -202,6 +241,9 @@ def _configured_cfg(profile: Profile) -> Any:
     for _k, _v in overrides.items():
         setattr(cfg, _k, _v)
     _check_one_planet(cfg, profile)
+    if cfg.use_photo:  # nothing else reads the star
+        _check_star_stated(profile, overrides)
+        _check_one_star(cfg, profile)
 
     if list(cfg.T_cross_sp or []):
         raise ValueError(
@@ -416,7 +458,8 @@ def build_chem_model(
     Raises
     ------
     ValueError
-        On an unknown key or mode, unsupported T-dependent cross sections, or a condensing species with no reaction.
+        On an unknown key or mode, unsupported T-dependent cross sections, a condensing species with no reaction, or,
+        with photochemistry on, a star the case does not state or whose radius is not the RT's.
         Condensation with ``use_sat_surfaceH2O``, which a live T(P) does not rebuild, raises ``NotImplementedError``.
     """
     t0 = time.time()

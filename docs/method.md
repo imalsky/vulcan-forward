@@ -26,7 +26,8 @@ behind the rules are in `notes.md`.
 `build_chem_model` runs VULCAN 3 (a JAX port of VULCAN; Tsai et al. 2021) once for its pre-loop, then re-converges the
 column per proposal. Rate constants and the T- and composition-dependent structure ($D_{zz}$, $v_m$, $v_s$, $K_{zz}$, the
 initial carry geometry) are rebuilt on-graph. T-dependent photolysis cross sections are refused at build, because the
-rebuild does not follow them.
+rebuild does not follow them. With photochemistry on, the case's own config file or `cfg_overrides` must state the star
+the photolysis reads (`r_star`, `orbit_radius`, `sflux_file`), and `r_star` must be the RT's `rstar_cm`.
 
 ### Parameter vector
 

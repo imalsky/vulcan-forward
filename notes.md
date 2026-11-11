@@ -8,7 +8,9 @@ Tags: [M] measured, [E] estimated, [I] inferred.
 
 ## Current state
 
-- Version 0.31.0 in the working tree: 0.30.0 plus a breaking interface change. The profile names the chemistry
+- Version 0.31.1 in the working tree: 0.31.0 plus the refusal, with photochemistry on, of a star the case does not
+  state or whose radius is not the RT's ("Import order, profile keys and refusals"). 0.31.0: 0.30.0 plus a breaking
+  interface change. The profile names the chemistry
   (`network`, `atom_list`, `vulcan_cfg_name`) and the RT column (`art_pbtm_bar`, `p_ref_bar`): the engine fills none
   in, and `opacity_mode` is gone ("Import order, profile keys and refusals"). 0.30.0 on `main`, the only branch, is
   0.29.0 plus the WASP-39b v5 engine options,
@@ -107,6 +109,15 @@ Tags: [M] measured, [E] estimated, [I] inferred.
 - One planet: `G Mp` of the vulcan3 config (after overrides) and `gs_cgs rp_cm^2` of the profile must agree to
   `constants.GM_MATCH_RTOL`, 2 % (the maintainer decided). The shipped WASP-39 b pair agrees to 3e-6 [M]. A retrieval
   that samples the RT mass is checked at its base values only.
+- One star, with photochemistry on: the case states `r_star`, `orbit_radius` and `sflux_file` itself, in its vulcan3
+  config file or in `cfg_overrides`. `load_config` overlays vulcan3's `default.yaml` (HD 189733's star) and keeps no
+  record of what the file omitted, so the build reads the file's own top-level keys through `vulcan3.config._read_text`,
+  the same resolution `load_config` uses; a value is not compared, so a case naming `default` states HD 189733. Then
+  `r_star` times vulcan3's `r_sun` (6.957e10 cm, the factor in the photolysis flux) must agree with `rstar_cm` to
+  `constants.RSTAR_MATCH_RTOL`, 1 %; a profile with no `rstar_cm` is not compared. With photochemistry off vulcan3
+  reads none of the three (`load_stellar_flux` and `read_sflux` sit behind `use_photo`), so nothing is required. Every
+  shipped case agrees exactly: the WASP-39 b retrieval runs (0.932), the six survey cases and the tool [M]. 1 % cannot
+  separate two published radii of one star (WASP-39: 0.932 and 0.939 R_Sun, 0.75 % apart) [I].
 - The start column is checked after the elemental repair (`_chem_model._physical_start`): a repair factor at or below
   zero, or a negative or non-finite density, is an error when eager and a NaN column under jit, which comes back
   uncertified. Without the check a warm start with one negative density froze vulcan3 at `dt_min` in 132 s
@@ -127,8 +138,10 @@ Tags: [M] measured, [E] estimated, [I] inferred.
   geometry, out-of-grid anchor, clamped chemistry top or bottom, an absent CIA table (exojax would fetch it behind a
   downloader that swallows failures), CIA span, `art_pbtm_bar`
   deeper than the table's 100 bar ceiling, unknown profile key, unknown `co_mode`,
-  repeated molecule, a non-empty `T_cross_sp`. The last because `_prep` leaves the
-  T-dependent cross sections at the baseline; no shipped config sets it.
+  repeated molecule, an unstated or mismatched star, a non-empty `T_cross_sp`. The last because `_prep` leaves the
+  T-dependent cross sections at the baseline; no shipped config sets it. The engine keeps room-temperature cross
+  sections, as VULCAN 2 does (the maintainer decided): its hot-Jupiter configs leave `T_cross_sp = []` (`vulcan_cfg.py`,
+  `cfg_examples/vulcan_cfg_HD189.py`, `cfg_HD189.txt`, `cfg_HD209.txt`); only the Earth example sets a list.
   (`use_fix_all_bot`, dead in upstream master, is no longer a vulcan3 key.)
 
 ## Opacity: correlated-k on ExoMolOP

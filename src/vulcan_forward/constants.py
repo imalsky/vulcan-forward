@@ -39,6 +39,7 @@ __all__ = [
     "P_REF_EMISSION_BAR",
     "RAYLEIGH_KING_FACTOR",
     "REQUIRED_MOLECULES",
+    "RSTAR_MATCH_RTOL",
     "TAU_PHOTOSPHERE",
     "TOP_MATCH_RTOL",
     "T_OPA_MAX_K",
@@ -168,6 +169,10 @@ TOP_MATCH_RTOL = 1.0e-9
 # and gs_cgs rp_cm^2 must agree to this relative tolerance, or the two halves model different planets. 2 % is above
 # the rounding of a published mass and far below a wrong planet.
 GM_MATCH_RTOL = 0.02
+# The photochemistry takes the star's radius from the vulcan3 config (r_star, R_Sun) and the RT from the profile
+# (rstar_cm): one radius stated twice, which must agree to this relative tolerance. 1 % covers another solar-radius
+# constant (6.955e10 to 6.96e10 cm, 0.07 % apart) and a radius rounded to two figures in a config file (up to 0.7 %).
+RSTAR_MATCH_RTOL = 0.01
 # g/mol. vulcan3's mass column carries mild rounding (O as 16.0, the electron as 1e-3); a swapped element differs by at
 # least 1 g/mol.
 ATOMIC_MASS_TOL_G_MOL = 0.01

@@ -64,6 +64,9 @@ policy: the project-root `CLAUDE.md`.
   default planet, network or column. A fixed number is a named constant in `constants.py` with its unit and reason,
   under that file's four headings; a setting stated twice, or where it cannot act, is refused (notes "Import order,
   profile keys and refusals").
+- With photochemistry on, keep the two star refusals in `vulcan_chem`: the case states `r_star`, `orbit_radius` and
+  `sflux_file` itself, never through vulcan3's `default.yaml`, and `r_star` matches `rstar_cm` (notes "Import order,
+  profile keys and refusals").
 - Every builder calls `constants.check_profile_keys`, which refuses any key outside `constants.PROFILE_KEYS`. A new
   profile reader adds its key there; deleting a reader removes it. `cfg_overrides` keys pass
   `vulcan3.validate_overrides` before they apply (notes "Import order, profile keys and refusals").

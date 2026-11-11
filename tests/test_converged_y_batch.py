@@ -208,16 +208,39 @@ def test_inputs_that_would_be_ignored_are_refused(runs):
         ({"kzz_p_ref_bar": 1.0e-3}, "only the power law reads the reference pressure"),
         ({"kzz_mode": "powerlaw"}, "needs kzz_p_ref_bar"),
         ({"rp_cm": 9.1e9, "gs_cgs": 4220.0}, "the chemistry and the RT describe different planets"),
+        ({"use_photo": True, "rstar_cm": 7.0e10}, "the chemistry and the RT describe different stars"),
     ],
 )
 def test_the_chemistry_is_named_by_the_profile_and_stated_once(change, match):
     """The network, its atoms and the config have no default; a setting stated twice, or one the build would ignore, or
-    a planet that is not the RT's, is refused before any solve.
+    a planet or star that is not the RT's, is refused before any solve.
     """
     with pytest.raises((ValueError, RuntimeError), match=match):
         vulcan_chem.build_chem_model({**PROFILE, **change})
-    # WASP-39 b's own radius and gravity pass the one-planet check
-    vulcan_chem._configured_cfg({**PROFILE, "rp_cm": 9143826800.0, "gs_cgs": 422.0})
+    # WASP-39 b's own radius, gravity and star pass the one-planet and one-star checks
+    vulcan_chem._configured_cfg(
+        {**PROFILE, "use_photo": True, "rp_cm": 9143826800.0, "gs_cgs": 422.0, "rstar_cm": 64839240000.0}
+    )
+
+
+@pytest.mark.usefixtures("runs")  # vulcan3 is imported on this module's network
+def test_a_star_the_case_does_not_state_is_refused(tmp_path):
+    """A config file that omits the star would take default.yaml's star; the case must state it, in its file or in
+    cfg_overrides. Photochemistry off reads no star, so nothing is required then.
+    """
+    from importlib import resources
+
+    star = {"r_star": 0.932, "orbit_radius": 0.04828, "sflux_file": "atm/stellar_flux/sflux-W39b_Tsai2023.txt"}
+    w39b = resources.files("vulcan3").joinpath("configs", "W39b.yaml").read_text().splitlines()
+    unstated = tmp_path / "no_star.yaml"
+    unstated.write_text("\n".join(line for line in w39b if line.split(":")[0] not in star) + "\n")
+    case = {**PROFILE, "vulcan_cfg_name": str(unstated), "use_photo": True}
+    with pytest.raises(ValueError, match=r"do not state \['r_star', 'orbit_radius', 'sflux_file'\]"):
+        vulcan_chem._configured_cfg(case)
+    with pytest.raises(ValueError, match=r"do not state \['orbit_radius'\]"):
+        vulcan_chem._configured_cfg({**case, "cfg_overrides": {"r_star": 0.932, "sflux_file": star["sflux_file"]}})
+    assert vulcan_chem._configured_cfg({**case, "cfg_overrides": star}).r_star == star["r_star"]
+    vulcan_chem._configured_cfg({**case, "use_photo": False})
 
 
 def test_the_start_check_covers_the_repair_factor_and_a_differentiated_call():
