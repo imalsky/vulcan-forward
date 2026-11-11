@@ -39,6 +39,27 @@ PINNED_STATS = {
         "rms_pct": 0.020925888022426987,
         "max_dev_pct": 0.05851848060187681,
     },
+    "prt_ref_cont_cia_trans.npz": {
+        "n_wl": 1610,
+        "arrays": ("wl_um", "prt_depth_ppm", "prt_depth_lines_ppm"),
+        "mean_ratio": 1.0001640857168206,
+        "rms_pct": 0.008556764845931937,
+        "max_dev_pct": 0.024197258783675846,
+    },
+    "prt_ref_cont_cia_rayleigh_trans.npz": {
+        "n_wl": 1610,
+        "arrays": ("wl_um", "prt_depth_ppm", "prt_depth_lines_ppm"),
+        "mean_ratio": 1.0001875190146878,
+        "rms_pct": 0.012574879561867154,
+        "max_dev_pct": 0.03643460992686087,
+    },
+    "prt_ref_cont_cia_emission.npz": {
+        "n_wl": 1610,
+        "arrays": ("wl_um", "prt_flux_per_cm1", "prt_flux_lambda", "prt_flux_lines_per_cm1"),
+        "mean_ratio": 0.9994702524880127,
+        "rms_pct": 0.05154383190118808,
+        "max_dev_pct": 0.1781082417189661,
+    },
 }
 # The provenance every pRT fixture carries: the generating script (path and text), the configuration, the opacity files
 # and the estimator behind it.
@@ -78,12 +99,13 @@ def test_fixture_is_the_pinned_verification(name):
         assert 2.0 <= tol[key] / st[key] <= 4.0, (name, key)
 
 
-def test_emission_fixture_unit_conversion_is_recorded_and_consistent():
+@pytest.mark.parametrize("name", ["prt_ref_emission_h2o.npz", "prt_ref_cont_cia_emission.npz"])
+def test_emission_fixture_unit_conversion_is_recorded_and_consistent(name):
     """The pRT flux is stored both ways, and the per-cm^-1 array is the per-cm-wavelength array over nu_tilde^2.
 
     Dividing by c instead, the unit trap the fixture's meta records, is wrong by ~1e18.
     """
-    z = np.load(DATA / "prt_ref_emission_h2o.npz")
+    z = np.load(DATA / name)
     nutilde = 1.0e4 / np.asarray(z["wl_um"])
     want = np.asarray(z["prt_flux_lambda"]) / nutilde**2
     assert np.allclose(np.asarray(z["prt_flux_per_cm1"]), want, rtol=1e-12)
