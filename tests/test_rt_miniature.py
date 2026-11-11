@@ -291,7 +291,8 @@ def test_emission_refuses_a_profile_that_names_another_column(models, over):
         exojax_rt.build_emis_model(rt, {**PROFILE, **over})
 
 
-def test_rayleigh_is_on_unless_the_profile_turns_it_off(models, root):  # noqa: ARG001  # the data root must be in place
+@pytest.mark.usefixtures("root")
+def test_rayleigh_is_on_unless_the_profile_turns_it_off(models):
     """H2 and He alone: the default build carries Rayleigh, and it deepens every band."""
     rt, _ = models
 
@@ -339,6 +340,9 @@ def test_a_column_the_model_does_not_cover_is_refused(models, what, value, match
     for observable in (depth, flux):
         with pytest.raises(ValueError, match=match):
             observable(bad)
+        # an eager jvp: the test is concrete while the values carry tangents, and the refusal is still this one
+        with pytest.raises(ValueError, match=match):
+            jax.jvp(lambda s, obs=observable: obs({k: v * s for k, v in bad.items()}), (1.0,), (1.0,))
         jitted = jax.jit(observable)
         assert np.all(np.isnan(np.asarray(jitted(bad))))
         assert np.all(np.isfinite(np.asarray(jitted(good))))
@@ -347,7 +351,7 @@ def test_a_column_the_model_does_not_cover_is_refused(models, what, value, match
 def test_a_column_at_either_edge_of_the_temperature_window_is_modelled(models):
     """The window is closed: a layer at 200 K or at 3000 K, the edges of the opacity data, gives a finite spectrum."""
     rt, em = models
-    for edge in (constants.T_OPA_MIN_K, constants.T_OPA_MAX_K, 250.0):
+    for edge in (constants.T_OPA_MIN_K, constants.T_OPA_MAX_K):
         T = T_ISO.at[3].set(edge)
         assert np.all(np.isfinite(np.asarray(rt.transmission_depth(_vmr(), HALF, T, MMW, vmr_he=HALF))))
         assert np.all(np.isfinite(np.asarray(em.emission_flux(_vmr(), HALF, T, MMW, vmr_he=HALF))))

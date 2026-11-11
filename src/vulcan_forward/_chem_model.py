@@ -301,7 +301,7 @@ class _ChemSetup:
 
         Takes ``converged_y``'s warm arguments. Returns ``density_closure_max_rel``, the achieved, baseline and target
         ``*_ratios_to_H``, ``dln_CO_achieved`` and with sulfur ``dln_SO_achieved``, ``ratio_max_rel_err``,
-        ``min_repair_factor`` (must be > 0) and ``atom_ini_max_rel_err``.
+        ``min_repair_factor`` (always > 0: a start with a smaller one is refused) and ``atom_ini_max_rel_err``.
         """
         elem = self.elem
         names, baseline = elem.names, elem.R0_ratios
@@ -387,10 +387,12 @@ def _certified(y: Array, cd: ConvDiag) -> Array:
     """
     ok = cd.conv_normal
     if not isinstance(ok, jax.core.Tracer) and not bool(jnp.all(ok)):
+        # Under an eager jvp the certificate is concrete while longdy carries a tangent, which has no array form.
+        fields = {"accepted steps": cd.accept_count, "longdy": cd.longdy, "termination_reason": cd.termination_reason}
+        found = ", ".join(f"{k} {np.asarray(v)}" for k, v in fields.items() if not isinstance(v, jax.core.Tracer))
         raise RuntimeError(
-            f"the chemistry column did not certify: accepted steps {np.asarray(cd.accept_count)}, longdy "
-            f"{np.asarray(cd.longdy)}, termination_reason {np.asarray(cd.termination_reason)}. Take the diagnostics "
-            "with return_conv_diag=True and decide, or pass allow_uncertified=True to accept the column as it is."
+            f"the chemistry column did not certify: {found}. Take the diagnostics with return_conv_diag=True and "
+            "decide, or pass allow_uncertified=True to accept the column as it is."
         )
     return jnp.where(ok[..., None, None], y, jnp.nan)
 

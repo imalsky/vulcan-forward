@@ -560,23 +560,12 @@ class _Emission:
     ) -> tuple[Array, ...]:
         """Return flux and bottom optical depth from one optical-depth build, with the leave-one-out rows when asked."""
         vmr_he = _require_he(vmr_he)
-        r_em, _ = self._emission_anchor(T_art, mmw_art, lnR0)
         g_em = self._g_layers(T_art, mmw_art, lnR0)
-        art, lnp_em = self.art, self.lnp_em
+        art = self.art
 
         def _finish(dtau_g: Array) -> tuple[Array, Array]:
             """Map an optical depth to (flux, bottom optical depth)."""
-            w = None
-            if photosphere:
-                r_phot, _ = _radius_at(
-                    lnp_em,
-                    T_art,
-                    mmw_art,
-                    *self._anchor(lnR0),
-                    self.p_ref_used,
-                    jnp.exp(_photosphere_lnp(dtau_g, lnp_em)),
-                )
-                w = (r_phot / r_em) ** 2
+            w = self._photosphere(dtau_g, T_art, mmw_art, lnR0)[1] if photosphere else None
             return (
                 _run_emis_ckd_linsap(
                     art, dtau_g, _boundary_temperature(T_art), self.nu_grid, self.opacities.ckd_pack.gw, weight_g=w
@@ -606,6 +595,13 @@ class _Emission:
         tau_wo = jnp.stack([t for _, t in rows]) if rows else jnp.zeros((0, nb))
         return flux, tau, flux_wo, tau_wo
 
+    def _photosphere(self, dtau_g: Array, T_art: Array, mmw_art: Array, lnR0: Array | float) -> tuple[Array, Array]:
+        """Return each ordinate's tau = 2/3 pressure, bar, and its area factor (R_phot / R_em)^2, both [ng, nband]."""
+        p_phot = jnp.exp(_photosphere_lnp(dtau_g, self.lnp_em))
+        r_em, _ = self._emission_anchor(T_art, mmw_art, lnR0)
+        r_phot, _ = _radius_at(self.lnp_em, T_art, mmw_art, *self._anchor(lnR0), self.p_ref_used, p_phot)
+        return p_phot, (r_phot / r_em) ** 2
+
     def eclipse_photosphere(
         self,
         vmr: dict[str, Array],
@@ -625,11 +621,9 @@ class _Emission:
         """
         vmr_he = _require_he(vmr_he)
         dtau_g = self._dtau(vmr, vmr_h2, vmr_he, T_art, mmw_art, self._g_layers(T_art, mmw_art, lnR0), cloud, deck)
-        p_phot = jnp.exp(_photosphere_lnp(dtau_g, self.lnp_em))
-        r_em, _ = self._emission_anchor(T_art, mmw_art, lnR0)
-        r_phot, _ = _radius_at(self.lnp_em, T_art, mmw_art, *self._anchor(lnR0), self.p_ref_used, p_phot)
+        p_phot, area = self._photosphere(dtau_g, T_art, mmw_art, lnR0)
         flux = _emis_ckd_ordinates(self.art, dtau_g, _boundary_temperature(T_art), self.nu_grid)
-        return p_phot, self.opacities.ckd_pack.gw[:, None] * flux * (r_phot / r_em) ** 2
+        return p_phot, self.opacities.ckd_pack.gw[:, None] * flux * area
 
     def emission_flux_tau(
         self,
@@ -674,8 +668,9 @@ class _Emission:
         tuple of jax.Array
             ``(flux, tau_bottom)``; with ``wo_mols``, ``(flux, tau_bottom, flux_wo, tau_wo)``.
         """
-        args = (vmr, vmr_h2, T_art, mmw_art, vmr_he, cloud, wo_mols)
-        return self._flux_tau(*args, photosphere=False, lnR0=lnR0, deck=deck)
+        return self._flux_tau(
+            vmr, vmr_h2, T_art, mmw_art, vmr_he, cloud, wo_mols, photosphere=False, lnR0=lnR0, deck=deck
+        )
 
     def eclipse_flux_tau(
         self,
@@ -694,8 +689,9 @@ class _Emission:
         The flux is sum_g w_g F_g (R_phot,g / R_em)^2 per band, so eclipse depth = flux / F_star x (R_em / R_star)^2
         with R_em from ``emission_radius``.
         """
-        args = (vmr, vmr_h2, T_art, mmw_art, vmr_he, cloud, wo_mols)
-        return self._flux_tau(*args, photosphere=True, lnR0=lnR0, deck=deck)
+        return self._flux_tau(
+            vmr, vmr_h2, T_art, mmw_art, vmr_he, cloud, wo_mols, photosphere=True, lnR0=lnR0, deck=deck
+        )
 
 
 def build_emis_model(trt: SimpleNamespace, profile: Profile) -> SimpleNamespace:

@@ -257,8 +257,7 @@ CORE_MOLECULE_BANDS_UM: dict[str, tuple[tuple[float, float], ...]] = {
     "SO": ((4.3, 4.8), (8.2, 10.1)),
 }
 # The oxygen, carbon and nitrogen carriers every such atmosphere holds. HCN, C2H2 and the sulfur gases depend on the
-# planet (a quench level, C/O, a sulfur-bearing network), so leaving one out is reported, not refused: the maintainer's
-# choice.
+# planet (a quench level, C/O, a sulfur-bearing network), so leaving one out is reported, not refused.
 REQUIRED_MOLECULES = frozenset({"H2O", "CO2", "CO", "CH4", "NH3"})
 
 # The bulk gas: the CIA partner and the dominant background.

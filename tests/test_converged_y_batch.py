@@ -87,10 +87,8 @@ def test_sulfur_knob_moves_only_sulfur(chem_x):
     for e in got:
         np.testing.assert_allclose(got[e] / base[e], want.get(e, np.exp(lnZ)), rtol=1e-10, err_msg=e)
     assert abs(audit["dln_SO_achieved"] - s_o) < 1e-10
-    assert audit["min_repair_factor"] > 0
     assert audit["ratio_max_rel_err"] < 1e-9
     warm = chem_x.audit_init(th, warm_y=jnp.asarray(chem_x.y0), lnZ_ref=0.0, c_o_ref=0.0, s_o_ref=0.4)
-    assert warm["min_repair_factor"] > 0
     assert warm["ratio_max_rel_err"] < 1e-9
     assert abs(warm["dln_SO_achieved"] - s_o) < 1e-10
 
@@ -244,12 +242,16 @@ def test_the_start_check_covers_the_repair_factor_and_a_differentiated_call():
 
 
 def test_a_start_column_that_is_not_physical_is_refused(runs):
-    """A warm start with a negative density: an error when eager, an uncertified NaN column under jit."""
+    """A warm start with a negative density: an error when eager (from the audit too), an uncertified NaN column
+    under jit.
+    """
     chem, y_b = runs[0], runs[1]
     th = jnp.asarray(THETAS[1])
     bad = jnp.asarray(y_b[0]).at[3, chem.sidx["H2O"]].set(-1.0e5)
     with pytest.raises(ValueError, match="start column is not physical"):
         chem.converged_y(th, warm_y=bad)
+    with pytest.raises(ValueError, match="start column is not physical"):
+        chem.audit_init(th, warm_y=bad)
     y, cd = jax.jit(lambda t: chem.converged_y(t, warm_y=bad, return_conv_diag=True))(th)
     assert not bool(cd.conv_normal)
     assert np.all(np.isnan(np.asarray(y)))
@@ -267,6 +269,20 @@ def test_an_uncertified_column_is_never_returned_as_converged():
         chem.converged_y_batch(jnp.asarray(THETAS))
     assert np.all(np.isnan(np.asarray(jax.jit(chem.converged_y)(th))))
     assert np.array_equal(np.asarray(chem.converged_y(th, allow_uncertified=True)), np.asarray(y))
+
+
+def test_the_certified_return_gives_its_own_error_under_an_eager_jvp():
+    """The certificate is concrete while its diagnostics carry tangents: the refusal is still the engine's message."""
+    from vulcan_forward._chem_layout import ConvDiag
+    from vulcan_forward._chem_model import _certified
+
+    def solve(x):
+        fields = dict.fromkeys(ConvDiag._fields, jnp.asarray(0))
+        cd = ConvDiag(**{**fields, "conv_normal": jnp.asarray(False), "longdy": 2.0 * x})
+        return _certified(jnp.ones((3, 2)) * x, cd)
+
+    with pytest.raises(RuntimeError, match="did not certify: accepted steps 0, termination_reason 0"):
+        jax.jvp(solve, (jnp.asarray(1.0),), (jnp.asarray(1.0),))
 
 
 @pytest.mark.parametrize(("span", "refused"), [((0.5, 1.0e6), False), ((115.0, 283.0), True), ((0.5, 400.0), True)])

@@ -1,4 +1,4 @@
-"""Optical depth for the RT: line opacity from the k-tables plus CIA, Rayleigh and the two cloud terms.
+"""Optical depth for the RT: line opacity from the k-tables plus CIA, Rayleigh and the two cloud terms; loads the CIA.
 
 Imports exojax, so it follows ``vulcan_chem`` as ``exojax_rt`` does.
 """
@@ -88,11 +88,15 @@ def _column_ok(T_art: Array, mmw_art: Array, vmr: dict[str, Array]) -> Array:
     passed = {name: jnp.all((x >= lo) & (x <= hi)) for name, (x, lo, hi) in bounds.items()}
     ok = jnp.all(jnp.stack(list(passed.values())))
     if not isinstance(ok, jax.core.Tracer) and not bool(ok):
+
+        def span(x: Array) -> str:
+            """Return the values found; under an eager jvp they carry tangents and have no float."""
+            return "" if isinstance(x, jax.core.Tracer) else f"spans [{float(jnp.min(x)):g}, {float(jnp.max(x)):g}], "
+
         raise ValueError(
             "the RT column is outside what the model covers: "
             + "; ".join(
-                f"{name} spans [{float(jnp.min(bounds[name][0])):g}, {float(jnp.max(bounds[name][0])):g}], "
-                f"allowed [{bounds[name][1]:g}, {bounds[name][2]:g}]"
+                f"{name} {span(bounds[name][0])}allowed [{bounds[name][1]:g}, {bounds[name][2]:g}]"
                 for name, good in passed.items()
                 if not bool(good)
             )

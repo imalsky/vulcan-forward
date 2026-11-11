@@ -5,8 +5,8 @@ for ``theta = [lnZ, c_o, lnKzz, *extras, *tp]``; ``_chem_model`` holds the solve
 arrays are rebuilt on-graph per proposal; the runner's ``lax.while_loop`` supports jvp but not vjp, so forward mode is
 the end-to-end route.
 
-This module owns the first jax import: it sets the import-frozen ``VULCAN3_*`` variables and jax x64, and refuses to
-follow exojax. docs/method.md describes the composition map and the limits of a condensing column.
+This module owns the first jax import: it sets jax x64 and refuses to follow exojax. ``select_network`` hands the
+profile's network to vulcan3. docs/method.md describes the composition map and the limits of a condensing column.
 """
 
 from __future__ import annotations
@@ -67,8 +67,10 @@ _CHEMISTRY_KEYS = {
 }
 # What vulcan3 freezes at its first import, by the environment variable it reads.
 _FROZEN_ENV = {"network": "VULCAN3_NETWORK", "atom_list": "VULCAN3_ATOM_LIST"}
-# Top-level profile keys that would also be legal inside cfg_overrides.
-_TOP_LEVEL_CFG_KEYS = ("use_photo", "yconv_cri", "nz", "count_min", "count_max", "dt_max", "yconv_min")
+# Optional top-level profile keys copied onto the vulcan3 config, with their type; None keeps the config's value.
+_OPTIONAL_CFG_KEYS = {"nz": int, "count_min": int, "count_max": int, "dt_max": float, "yconv_min": float}
+# Every top-level profile key that is also a vulcan3 config key: stated in cfg_overrides too, it would be set twice.
+_TOP_LEVEL_CFG_KEYS = ("use_photo", "yconv_cri", *_OPTIONAL_CFG_KEYS)
 
 
 def _atom_names(atom_list: str | Iterable[str]) -> list[str]:
@@ -160,6 +162,7 @@ def _check_one_planet(cfg: Any, profile: Profile) -> None:
     from vulcan3.phy_const import G_grav
 
     if "rp_cm" not in profile or "gs_cgs" not in profile:
+        logger.info("[chem] no rp_cm and gs_cgs in the profile: the chemistry planet is not compared with an RT one")
         return
     gm_chem = G_grav * float(cfg.Mp)
     gm_rt = float(profile["gs_cgs"]) * float(profile["rp_cm"]) ** 2
@@ -193,7 +196,7 @@ def _configured_cfg(profile: Profile) -> Any:
     cfg.use_photo = bool(profile["use_photo"])
     cfg.yconv_cri = float(profile["yconv_cri"])
     # is not None: count_min=0 and yconv_min=0 are legitimate values.
-    for key, cast in (("nz", int), ("count_min", int), ("count_max", int), ("dt_max", float), ("yconv_min", float)):
+    for key, cast in _OPTIONAL_CFG_KEYS.items():
         if profile.get(key) is not None:
             setattr(cfg, key, cast(profile[key]))
     for _k, _v in overrides.items():
@@ -280,11 +283,6 @@ def _make_kzz_eff(
     )
     _kzz_ref0 = _p_over_ref = None
     if kzz_mode == "powerlaw":
-        if "kzz_p_ref_bar" not in profile:
-            raise ValueError(
-                "kzz_mode 'powerlaw' needs kzz_p_ref_bar, the pressure in bar where the Kzz profile is read and the "
-                "slope pivots: it belongs to the case and has no default."
-            )
         kzz_p_ref_bar = float(profile["kzz_p_ref_bar"])
         if not (_p_int_bar.min() <= kzz_p_ref_bar <= _p_int_bar.max()):
             raise ValueError(
@@ -335,6 +333,11 @@ def _checked_kzz_mode(profile: Profile, chem_extras: tuple[str, ...]) -> str:
         raise ValueError(
             f"kzz_p_ref_bar is set but kzz_mode is {kzz_mode!r}: only the power law reads the reference pressure, so "
             "it would change nothing. Drop the key."
+        )
+    if kzz_mode == "powerlaw" and "kzz_p_ref_bar" not in profile:
+        raise ValueError(
+            "kzz_mode 'powerlaw' needs kzz_p_ref_bar, the pressure in bar where the Kzz profile is read and the slope "
+            "pivots: it belongs to the case and has no default."
         )
     if "kzz_slope" in chem_extras and kzz_mode != "powerlaw":
         raise ValueError(
