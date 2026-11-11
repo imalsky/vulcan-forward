@@ -375,7 +375,7 @@ def load_tables(
     import jax.numpy as jnp
 
     _require_x64()
-    tbl = molecule_table or constants.MOLECULES
+    tbl = constants.MOLECULES if molecule_table is None else molecule_table
     mols = list(molecules)
     _refuse_molecules(mols, tbl)
 
@@ -397,6 +397,21 @@ def load_tables(
     if ref is None:
         raise ValueError("load_tables needs at least one molecule; got an empty list")
     sub_edges, t_grid, p_grid, gg, gw = (ref[k] for k in ("bin_edges", "t", "p", "samples", "weights"))
+    if t_grid[0] > constants.T_OPA_MIN_K or t_grid[-1] < constants.T_OPA_MAX_K:
+        raise ValueError(
+            f"the ExoMolOP tables cover [{t_grid[0]:g}, {t_grid[-1]:g}] K but the engine accepts columns from "
+            f"{constants.T_OPA_MIN_K:g} to {constants.T_OPA_MAX_K:g} K: a layer outside the tables would reuse their "
+            "edge entry. Install tables that cover the window."
+        )
+    if sub_edges[0] > nu_min or sub_edges[-1] < nu_max:
+        logger.info(
+            "[ckd] bands lying fully inside the requested [%g, %g] cm^-1 span [%.3f, %.3f] cm^-1: a band cut by an "
+            "edge is left out",
+            nu_min,
+            nu_max,
+            sub_edges[0],
+            sub_edges[-1],
+        )
     if verbose:
         _log_grid(len(mols), sub_edges, gg, t_grid, p_grid)
 

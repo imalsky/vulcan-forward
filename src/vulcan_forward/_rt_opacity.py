@@ -9,16 +9,18 @@ from typing import TYPE_CHECKING, TypeVar
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from exojax.atm.atmconvert import vmr_to_mmr
 from exojax.atm.simple_clouds import powerlaw_clouds
+from exojax.database.contdb import CdbCIA
+from exojax.opacity import OpaCIA
 
-from vulcan_forward import ckd, constants
+from vulcan_forward import ckd, constants, paths
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from types import SimpleNamespace
 
-    from exojax.opacity import OpaCIA
     from exojax.rt import ArtEmisPure, ArtTransPure
     from jax import Array
 
@@ -27,6 +29,47 @@ _Finished = TypeVar("_Finished")
 # g/mol, for the Rayleigh mmr conversion
 _H2_MOLMASS = 2.0 * constants.ATOMIC_MASSES[constants.ATOM_COLS["H"]]
 _HE_MOLMASS = constants.ATOMIC_MASSES[constants.ATOM_COLS["He"]]
+
+
+def _check_cia_span(cdb: CdbCIA, nu_grid: Array, label: str) -> None:
+    """Refuse a CIA table that does not cover the requested wavenumber grid and the engine's temperature window.
+
+    ``CdbCIA`` never checks coverage, so a band or a layer past the file's edge would reuse the edge coefficient.
+    """
+    lo, hi = float(np.min(cdb.nucia)), float(np.max(cdb.nucia))
+    g_lo, g_hi = float(np.min(nu_grid)), float(np.max(nu_grid))
+    if g_lo < lo or g_hi > hi:
+        raise ValueError(
+            f"{label} CIA table covers [{lo:g}, {hi:g}] cm^-1 but the requested "
+            f"grid spans [{g_lo:g}, {g_hi:g}] cm^-1. Bands outside the table "
+            "would silently reuse its edge coefficient. Narrow nu_min/nu_max "
+            "or install a table that covers the band."
+        )
+    t_lo, t_hi = float(np.min(cdb.tcia)), float(np.max(cdb.tcia))
+    if t_lo > constants.T_OPA_MIN_K or t_hi < constants.T_OPA_MAX_K:
+        raise ValueError(
+            f"{label} CIA table covers [{t_lo:g}, {t_hi:g}] K but the engine accepts columns from "
+            f"{constants.T_OPA_MIN_K:g} to {constants.T_OPA_MAX_K:g} K: a layer outside the table would reuse its "
+            "edge coefficient. Install a table that covers the window."
+        )
+
+
+def _load_cia(nu_grid: Array) -> tuple[OpaCIA, OpaCIA]:
+    """Load the H2-H2 and H2-He CIA tables, refusing a missing one or one that does not cover the band."""
+    cia_files = {"H2-H2": paths.cia_h2h2_file(), "H2-He": paths.cia_h2he_file()}
+    for label, cia_file in cia_files.items():
+        # exojax would fetch an absent table itself, and its downloader swallows failures.
+        if not cia_file.exists():
+            raise FileNotFoundError(
+                f"{label} CIA table missing ({cia_file}). Download "
+                f"https://hitran.org/data/CIA/main/{cia_file.name} (the /main/ segment is required) to that path."
+            )
+    loaded = []
+    for label, cia_file in cia_files.items():
+        cdb = CdbCIA(str(cia_file), nurange=nu_grid)
+        _check_cia_span(cdb, nu_grid, label)
+        loaded.append(OpaCIA(cdb, nu_grid=nu_grid))
+    return loaded[0], loaded[1]
 
 
 def _column_ok(T_art: Array, mmw_art: Array, vmr: dict[str, Array]) -> Array:

@@ -1,9 +1,10 @@
 """End-to-end RT reference tests against committed petitRADTRANS spectra.
 
-Three cases, through ``build_rt_model`` and ``build_emis_model``, compared per band against pRT 3.4.0 reading the same
-ExoMolOP k-table files. Each fixture in tests/data/ records in its ``meta`` the pRT version, opacity files, case
-constants, the generating pRT script, the achieved agreement and the tolerances asserted here (3x achieved).
-petitRADTRANS is never a test dependency.
+Six cases, through ``build_rt_model`` and ``build_emis_model``, compared per band against pRT 3.4.0 reading the same
+ExoMolOP k-table files: three lines-only, and three with the continuum on (CIA in transmission and emission, CIA and
+Rayleigh in transmission), where both codes also read the same HITRAN CIA tables. Each fixture in tests/data/ records
+in its ``meta`` the pRT version, opacity files, case constants, the generating pRT script, the achieved agreement and
+the tolerances asserted here (3x achieved). petitRADTRANS is never a test dependency.
 
 Skips without exojax, h5py, the data root or the H2O k-table, never by ``pytest.importorskip("exojax")`` at module
 scope. The 8-species case is in the full tier, ``VULCAN_FORWARD_RUN_FULL=1``.
@@ -65,10 +66,10 @@ EMIS_PROF = {
     "omit_core_molecules": NOT_H2O,
     "nu_min": 1.0e4 / 5.0,
     "nu_max": 1.0e4 / 3.0,
-    "opacity_mode": "exomolop",
     "art_nlayer": 80,
     "art_ptop_bar": 1.0e-6,
     "art_pbtm_bar": 1.0e2,
+    "p_ref_bar": 1.0e-3,
     "rp_cm": 100 * 7.1492e9,
     "gs_cgs": 1.0e3,
     "rstar_cm": RSTAR_W39,
@@ -115,7 +116,6 @@ def test_the_profile_pressure_bounds_reach_the_grid():
         "omit_core_molecules": NOT_H2O,
         "nu_min": 2000.0,
         "nu_max": 10000.0,
-        "opacity_mode": "exomolop",
         "art_nlayer": 20,
         "art_pbtm_bar": 1.0e2,
         "p_ref_bar": 10.0,
@@ -141,7 +141,6 @@ def test_transmission_isothermal_h2o_matches_prt():
             "omit_core_molecules": NOT_H2O,
             "nu_min": 2000.0,
             "nu_max": 10000.0,
-            "opacity_mode": "exomolop",
             "art_nlayer": nlay,
             "art_ptop_bar": 1.0e-6,
             "art_pbtm_bar": 1.0e2,
@@ -151,7 +150,6 @@ def test_transmission_isothermal_h2o_matches_prt():
             "rstar_cm": RSTAR_W39,
         }
     )
-    assert trt.opacity_mode == "exomolop"
     zeros = jnp.zeros(nlay)
     depth = np.asarray(
         trt.transmission_depth(
@@ -197,7 +195,6 @@ def test_transmission_w39b_8species_matches_prt():
             "omit_core_molecules": ["NH3", "HCN"],  # not among the fixture's eight
             "nu_min": 1.0e4 / 5.0,
             "nu_max": 1.0e4 / 3.0,
-            "opacity_mode": "exomolop",
             "art_nlayer": nlay,
             "art_ptop_bar": 1.0e-8,
             # The pRT side ran to 50 bar, where this profile reaches 3507 K, past the k-tables' 3400 K and the engine's
@@ -362,6 +359,56 @@ def test_emission_h2o_matches_prt():
     # the fixture stores the pRT flux already in this engine's per-cm^-1 convention; its meta records the conversion
     r = flux[m] / np.interp(wl[m], z["wl_um"], z["prt_flux_per_cm1"])
     _assert_stats(r, meta, "H2O emission flux vs pRT")
+
+
+def _continuum_ratio(name):
+    """Return the engine's spectrum over pRT's per band, on the column and settings the fixture carries.
+
+    tools/prt_continuum_reference.py records its statistics through this function.
+    """
+    z, meta = _load(name)
+    cfg = meta["config"]
+    lo, hi = cfg["wl_um"]
+    prof = {
+        "molecules": ["H2O"],
+        "omit_core_molecules": [m for m in constants.CORE_MOLECULE_BANDS_UM if m != "H2O"],
+        "nu_min": 1.0e4 / hi,
+        "nu_max": 1.0e4 / lo,
+        "art_nlayer": cfg["nlayer"],
+        "art_ptop_bar": cfg["p_top_bar"],
+        "art_pbtm_bar": cfg["p_btm_bar"],
+        "p_ref_bar": cfg["p_ref_bar"],
+        "rp_cm": cfg["rp_cm"],
+        "gs_cgs": cfg["gs_cgs"],
+        "rstar_cm": cfg["rstar_cm"],
+        "use_rayleigh": cfg["use_rayleigh"],
+    }
+    trt = exojax_rt.build_rt_model(prof)
+    args = ({"H2O": jnp.asarray(z["vmr_h2o"])}, *(jnp.asarray(z[k]) for k in ("vmr_h2", "T_K", "mmw")))
+    if cfg["observable"] == "transmission":
+        model, key = trt, "prt_depth_ppm"
+        spec = 1e6 * np.asarray(trt.transmission_depth(*args, vmr_he=jnp.asarray(z["vmr_he"])))
+    else:
+        model, key = exojax_rt.build_emis_model(trt, prof), "prt_flux_per_cm1"
+        spec = np.asarray(model.emission_flux(*args, vmr_he=jnp.asarray(z["vmr_he"])))
+    np.testing.assert_allclose(np.asarray(model.p_art_bar), z["p_bar"], rtol=1e-12)  # the column sits on pRT's grid
+    wl = 1.0e4 / np.asarray(model.nu_grid)
+    o = np.argsort(wl)
+    wl, spec = wl[o], spec[o]
+    m = (wl > lo * 1.01) & (wl < hi * 0.99)
+    return spec[m] / np.interp(wl[m], z["wl_um"], z[key])
+
+
+@pytest.mark.parametrize(
+    "name", ["prt_ref_cont_cia_trans.npz", "prt_ref_cont_cia_rayleigh_trans.npz", "prt_ref_cont_cia_emission.npz"]
+)
+def test_continuum_matches_prt(name):
+    """CIA, and H2 and He Rayleigh in transmission, agree with pRT where the continuum sets the windows.
+
+    The columns carry little H2O (1e-5 in transmission, 1e-4 in emission), and both codes read the same HITRAN 2011 CIA
+    tables. Rayleigh is each code's own cross-section, so its case carries the formula difference too.
+    """
+    _assert_stats(_continuum_ratio(name), _load(name)[1], f"{name} vs pRT")
 
 
 def test_eclipse_flux_carries_the_tau_two_thirds_photospheric_radius():

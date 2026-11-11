@@ -37,7 +37,7 @@ import jax.numpy as jnp
 from jax.scipy.special import exp1
 
 from vulcan_forward import constants
-from vulcan_forward.exojax_rt import build_rt_model
+from vulcan_forward.exojax_rt import build_emis_model, build_rt_model
 from test_rt_miniature import miniature_root
 
 KB, M_U, GAMMA_E = 1.380649e-16, 1.66053906660e-24, 0.5772156649015329
@@ -120,6 +120,45 @@ def test_grey_deck_puts_the_transit_radius_at_the_deck(rt_ins):
     # both cloud terms together: the deck below a thin power-law haze adds to it
     both = np.asarray(rt.transmission_depth(cloud=jnp.array([-4.0, 0.0]), deck=-1.0, **ins))
     assert np.all(both >= np.asarray(rt.transmission_depth(deck=-1.0, **ins)))
+
+
+def test_grey_deck_emits_at_the_deck_temperature(rt_ins):
+    """An opaque grey deck under a gas-free column radiates as a black body at the level it sits at.
+
+    The flux is pi B(T) at the deck's emitting level, which the switch width puts within 0.2 dex above the deck
+    pressure, and it does not see the temperature below the deck. A deck three decades below the grid bottom leaves the
+    deck-free flux as it is.
+    """
+    rt, ins = rt_ins
+    em = build_emis_model(rt, {"rp_cm": CASE["rp_cm"], "gs_cgs": CASE["g"]})
+    lgp = np.log10(np.asarray(rt.p_art_bar))
+
+    def temp(x):
+        """Temperature, K, rising with log10 P (bar): 600 K at the top, 2250 K at 100 bar."""
+        return 600.0 + 150.0 * (x + 9.0)
+
+    ins = {**ins, "T_art": jnp.asarray(temp(lgp))}
+    base = np.asarray(em.emission_flux(**ins))
+    far = np.asarray(em.emission_flux(deck=np.log10(CASE["pbtm"]) + 3.0, **ins))
+    np.testing.assert_allclose(far, base, rtol=1e-12, atol=0.0)
+
+    nu = np.asarray(rt.nu_grid)
+    h, c = 6.62607015e-27, 2.99792458e10
+
+    def planck_flux(t):
+        return np.pi * 2.0 * h * c**2 * nu**3 / np.expm1(h * c * nu / (KB * t))
+
+    for deck in (-3.0, -1.0):
+        flux = np.asarray(em.emission_flux(deck=deck, **ins))
+        assert np.all(flux > planck_flux(temp(deck - 0.2)))
+        assert np.all(flux < planck_flux(temp(deck)))
+        hidden = jnp.where(jnp.asarray(lgp) > deck + 0.3, 1000.0, ins["T_art"])
+        below = np.asarray(em.emission_flux(deck=deck, **{**ins, "T_art": hidden}))
+        np.testing.assert_allclose(below, flux, rtol=1e-10, atol=0.0)
+        tau = np.asarray(
+            em.tau_bottom(ins["vmr"], ins["vmr_h2"], ins["T_art"], ins["mmw_art"], ins["vmr_he"], deck=deck)
+        )
+        assert np.all(tau > 1.0e3)
 
 
 def _tau0(kappa):

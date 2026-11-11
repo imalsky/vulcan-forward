@@ -20,12 +20,18 @@ import pytest
 if importlib.util.find_spec("vulcan3") is None:
     pytest.skip("vulcan3 not installed (light-CI environment)", allow_module_level=True)
 
-from vulcan_forward import vulcan_chem
+from vulcan_forward import constants, vulcan_chem
 
 import jax
 import jax.numpy as jnp
 
-PROFILE = {"use_photo": False, "yconv_cri": 1.0e-2, "nz": 20}
+# The chemistry every test here solves: the 2025 sulfur network on the WASP-39 b config.
+CHEM_ID = {
+    "network": "thermo/SNCHO_photo_network_2025.txt",
+    "atom_list": ["H", "O", "C", "N", "S"],
+    "vulcan_cfg_name": "W39b",
+}
+PROFILE = {**CHEM_ID, "use_photo": False, "yconv_cri": 1.0e-2, "nz": 20}
 # [lnZ, c_o, lnKzz, T-offset]: the baseline column and a perturbed one.
 THETAS = np.array([[0.0, 0.0, 0.0, 0.0], [0.3, 0.1, 0.5, 40.0]], dtype=np.float64)
 MIX_FLOOR = 1.0e-10  # cells below this carry no observable and no certificate
@@ -64,7 +70,8 @@ def chem_x():
 
     No solve: the tests below read the built initial column and its Kzz.
     """
-    return vulcan_chem.build_chem_model({**PROFILE, "kzz_mode": "powerlaw"}, chem_extras=vulcan_chem.CHEM_EXTRAS)
+    powerlaw = {**PROFILE, "kzz_mode": "powerlaw", "kzz_p_ref_bar": constants.KZZ_P_REF_BAR}
+    return vulcan_chem.build_chem_model(powerlaw, chem_extras=vulcan_chem.CHEM_EXTRAS)
 
 
 def test_sulfur_knob_moves_only_sulfur(chem_x):
@@ -95,7 +102,6 @@ def test_kzz_power_law_is_anchored_on_the_profile_at_the_reference_level(runs, c
     the profile times e^lnKzz.
     """
     from vulcan3.atm_setup import compute_pico
-    from vulcan_forward import constants
 
     chem = runs[0]
     p_int = np.asarray(compute_pico(jnp.asarray(chem.p_bar * constants.BAR_CGS)))[1:-1] / constants.BAR_CGS
@@ -188,6 +194,67 @@ def test_inputs_that_would_be_ignored_are_refused(runs):
         chem.converged_y_batch(jnp.asarray(THETAS), warm_y=jnp.ones((THETAS.shape[0], 1, chem.ni)))
 
 
+@pytest.mark.usefixtures("runs")  # vulcan3 is imported on this module's network before the refusals are tried
+@pytest.mark.parametrize(
+    ("change", "match"),
+    [
+        ({"network": None}, r"profile is missing \['network'\], which have no default"),
+        ({"atom_list": None, "vulcan_cfg_name": None}, r"profile is missing \['atom_list', 'vulcan_cfg_name'\]"),
+        (
+            {"network": "thermo/NCHO_photo_network.txt", "atom_list": ["H", "O", "C", "N"]},
+            "vulcan3 is already imported",
+        ),
+        ({"cfg_overrides": {"nz": 30}}, "at the top level of the profile and again in cfg_overrides"),
+        ({"cfg_overrides": {"runtime": 1.0e20}}, "'runtime' without 'dt_max'"),
+        ({"cfg_overrides": {"network": "thermo/NCHO_photo_network.txt"}}, "freezes at its first import"),
+        ({"kzz_p_ref_bar": 1.0e-3}, "only the power law reads the reference pressure"),
+        ({"kzz_mode": "powerlaw"}, "needs kzz_p_ref_bar"),
+        ({"rp_cm": 9.1e9, "gs_cgs": 4220.0}, "the chemistry and the RT describe different planets"),
+    ],
+)
+def test_the_chemistry_is_named_by_the_profile_and_stated_once(change, match):
+    """The network, its atoms and the config have no default; a setting stated twice, or one the build would ignore, or
+    a planet that is not the RT's, is refused before any solve.
+    """
+    with pytest.raises((ValueError, RuntimeError), match=match):
+        vulcan_chem.build_chem_model({**PROFILE, **change})
+    # WASP-39 b's own radius and gravity pass the one-planet check
+    vulcan_chem._configured_cfg({**PROFILE, "rp_cm": 9143826800.0, "gs_cgs": 422.0})
+
+
+def test_the_start_check_covers_the_repair_factor_and_a_differentiated_call():
+    """A repair factor at or below zero is refused like a negative density, NaN under jit, and an eager jvp gets the
+    same error, not a tracer conversion failure.
+    """
+    from vulcan_forward._chem_model import _physical_start
+
+    good = jnp.ones((3, 2))
+    assert np.array_equal(np.asarray(_physical_start(good, jnp.asarray(0.5))), np.ones((3, 2)))
+    for y0, factor in (
+        (good, 0.0),
+        (good, -21.0),
+        (good.at[1, 0].set(-1.0e-100), 1.0),
+        (good.at[0, 1].set(jnp.nan), 1.0),
+    ):
+        with pytest.raises(ValueError, match="start column is not physical"):
+            _physical_start(y0, jnp.asarray(factor))
+        assert np.all(np.isnan(np.asarray(jax.jit(_physical_start)(y0, jnp.asarray(factor)))))
+    with pytest.raises(ValueError, match="start column is not physical"):
+        jax.jvp(lambda f: _physical_start(good * f, f - 2.0), (jnp.asarray(1.0),), (jnp.asarray(1.0),))
+
+
+def test_a_start_column_that_is_not_physical_is_refused(runs):
+    """A warm start with a negative density: an error when eager, an uncertified NaN column under jit."""
+    chem, y_b = runs[0], runs[1]
+    th = jnp.asarray(THETAS[1])
+    bad = jnp.asarray(y_b[0]).at[3, chem.sidx["H2O"]].set(-1.0e5)
+    with pytest.raises(ValueError, match="start column is not physical"):
+        chem.converged_y(th, warm_y=bad)
+    y, cd = jax.jit(lambda t: chem.converged_y(t, warm_y=bad, return_conv_diag=True))(th)
+    assert not bool(cd.conv_normal)
+    assert np.all(np.isnan(np.asarray(y)))
+
+
 def test_an_uncertified_column_is_never_returned_as_converged():
     """A column stopped on its step cap: an error when eager, NaN under jit, and returned as it is only on request."""
     chem = vulcan_chem.build_chem_model({**PROFILE, "count_max": 5})
@@ -214,3 +281,14 @@ def test_a_stellar_spectrum_must_cover_the_photolysis_thresholds(span, refused):
             vulcan_chem._check_stellar_span(cfg, var)
     else:
         vulcan_chem._check_stellar_span(cfg, var)
+
+
+def test_a_network_without_its_nasa9_folder_is_refused(tmp_path):
+    """The Gibbs data comes from the network's own tree: no folder beside it is an error, never another tree's data."""
+    net = tmp_path / "thermo" / "network.txt"
+    net.parent.mkdir()
+    net.write_text("")
+    with pytest.raises(FileNotFoundError, match="no NASA9 folder beside the network"):
+        vulcan_chem._thermo_dir(net)
+    (net.parent / "NASA9").mkdir()
+    assert vulcan_chem._thermo_dir(net) == net.parent

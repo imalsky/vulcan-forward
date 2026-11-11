@@ -79,7 +79,8 @@ def test_set_data_root_is_honored(paths, tmp_path):
 
 
 def test_geometry_is_required_not_wasp39b(monkeypatch):
-    """The RT builder refuses a profile with no planet geometry, before it loads any table.
+    """The RT builder refuses a profile with no planet geometry, column bottom or reference pressure, before it reads
+    a table.
 
     A defaulted rp_cm would silently model a different planet.
     """
@@ -92,10 +93,11 @@ def test_geometry_is_required_not_wasp39b(monkeypatch):
 
     monkeypatch.setattr(exomolop, "load_tables", no_table)
     profile = {"molecules": ["H2O"], "nu_min": 2000.0, "nu_max": 3000.0, "art_nlayer": 20, "gs_cgs": 422.0}
-    with pytest.raises(ValueError, match=r"required planet geometry \['rp_cm', 'rstar_cm'\]"):
+    with pytest.raises(ValueError, match=r"missing \['rp_cm', 'rstar_cm', 'p_ref_bar', 'art_pbtm_bar'\], which have"):
         exojax_rt.build_rt_model(profile)
     # a complete profile passes
-    exojax_rt._require_geometry({"rp_cm": 9.1e9, "gs_cgs": 422.0, "rstar_cm": 6.5e10}, "rp_cm", "gs_cgs", "rstar_cm")
+    full = {"rp_cm": 9.1e9, "gs_cgs": 422.0, "rstar_cm": 6.5e10, "p_ref_bar": 1.0e-3, "art_pbtm_bar": 10.0}
+    exojax_rt._require_positive(full, *exojax_rt._RT_KEYS)
 
 
 def test_import_order_guard_is_documented_and_live():
@@ -112,6 +114,49 @@ def test_import_order_guard_is_documented_and_live():
     proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=600, check=False)
     assert proc.returncode != 0, "importing after exojax must fail"
     assert "must be imported BEFORE exojax" in proc.stderr, proc.stderr
+
+
+def test_the_network_is_selected_before_vulcan3_is_imported_and_only_once():
+    """``select_network`` is how a network reaches vulcan3: importing the engine selects nothing.
+
+    In a fresh interpreter it writes the pair vulcan3 reads at its first import, accepts the same pair again, and
+    refuses another network or atom list once vulcan3 is imported. An environment that already names another network
+    is refused too: the caller's settings decide, never a stray variable.
+    """
+    if importlib.util.find_spec("vulcan3") is None:
+        pytest.skip("vulcan3 not installed (light-CI environment)")
+    import subprocess
+
+    net, atoms = "thermo/NCHO_photo_network.txt", "H,O,C,N"
+    code = (
+        "import os\n"
+        "from vulcan_forward import vulcan_chem\n"
+        "assert 'VULCAN3_NETWORK' not in os.environ and 'VULCAN3_ATOM_LIST' not in os.environ\n"
+        f"net, atoms = {net!r}, {atoms!r}\n"
+        "vulcan_chem.select_network(net, atoms.split(','))\n"
+        "assert (os.environ['VULCAN3_NETWORK'], os.environ['VULCAN3_ATOM_LIST']) == (net, atoms)\n"
+        "import vulcan3.config\n"
+        "assert vulcan3.config.default_config().network == net\n"
+        "vulcan_chem.select_network(net, atoms)\n"
+        "for other in (('thermo/SNCHO_photo_network_2025.txt', 'H,O,C,N,S'), (net, 'H,O,C')):\n"
+        "    try:\n"
+        "        vulcan_chem.select_network(*other)\n"
+        "    except RuntimeError as exc:\n"
+        "        assert 'already imported' in str(exc), exc\n"
+        "    else:\n"
+        "        raise SystemExit('a second network was accepted')\n"
+        "print('ok')\n"
+    )
+    env = {k: v for k, v in os.environ.items() if not k.startswith("VULCAN3_")}
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env, timeout=600, check=False)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip().endswith("ok")
+
+    code = f"from vulcan_forward import vulcan_chem\nvulcan_chem.select_network({net!r}, {atoms!r})\n"
+    env["VULCAN3_NETWORK"] = "thermo/SNCHO_photo_network_2025.txt"
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env, timeout=600, check=False)
+    assert r.returncode != 0
+    assert "the environment disagrees with the network this call selects" in r.stderr, r.stderr
 
 
 def test_ensure_layout_creates_the_trees(paths, tmp_path, monkeypatch):
@@ -253,14 +298,31 @@ def test_the_data_root_follows_the_environment_from_a_relocated_install(tmp_path
 
 
 def test_a_required_absorber_is_refused_and_the_others_are_reported():
-    """Over 2.9-5.2 um a list without NH3 is refused; HCN, H2S and SO2 are reported unless the caller names them."""
+    """Over 2.9-5.2 um a list without NH3 is refused; the other core absorbers are reported unless the caller names
+    them.
+    """
     from vulcan_forward import constants
 
     band = (1923.0, 3450.0)
     with pytest.raises(ValueError, match=r"needs core absorbers.*NH3 \(absorbs at 2.7-3.3, 5.1-15 um\)\. Add"):
         constants.check_core_molecules(["H2O", "CO2", "CO", "CH4"], [], *band)
     five = ["H2O", "CO2", "CO", "CH4", "NH3"]
-    assert constants.check_core_molecules(five, [], *band) == ["HCN", "H2S", "SO2"]
-    assert constants.check_core_molecules(five, ["HCN"], *band) == ["H2S", "SO2"]
-    assert constants.check_core_molecules([*five, "HCN", "H2S", "SO2"], [], *band) == []
+    rest = ["HCN", "H2S", "SO2", "C2H2", "OCS", "SO"]
+    assert constants.check_core_molecules(five, [], *band) == rest
+    assert constants.check_core_molecules(five, ["HCN"], *band) == rest[1:]
+    assert constants.check_core_molecules([*five, *rest], [], *band) == []
     assert constants.check_core_molecules(["H2O", "CH4", "NH3"], [], 4280.0, 4360.0) == ["H2S"]  # 2.29-2.34 um
+
+
+def test_the_fixed_values_can_be_stored_in_a_run_record():
+    """``constants.fixed_values`` is every fixed number by name, in a form a consumer can write as JSON."""
+    import json
+
+    from vulcan_forward import constants
+
+    values = constants.fixed_values()
+    assert values["T_OPA_MIN_K"] == constants.T_OPA_MIN_K
+    assert values["REQUIRED_MOLECULES"] == sorted(constants.REQUIRED_MOLECULES)
+    assert "MOLECULES" not in values
+    assert not any(callable(v) for v in values.values())
+    assert json.loads(json.dumps(values))["EMISSION_NSTREAM"] == constants.EMISSION_NSTREAM

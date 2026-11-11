@@ -8,7 +8,10 @@ Tags: [M] measured, [E] estimated, [I] inferred.
 
 ## Current state
 
-- Version 0.30.0 on `main`, the only branch: 0.29.0 plus the WASP-39b v5 engine options,
+- Version 0.31.0 in the working tree: 0.30.0 plus a breaking interface change. The profile names the chemistry
+  (`network`, `atom_list`, `vulcan_cfg_name`) and the RT column (`art_pbtm_bar`, `p_ref_bar`): the engine fills none
+  in, and `opacity_mode` is gone ("Import order, profile keys and refusals"). 0.30.0 on `main`, the only branch, is
+  0.29.0 plus the WASP-39b v5 engine options,
   a sulfur knob (`s_o`) and a Kzz power law as optional entries of the chemistry layout,
   `lnM` and a grey deck in the RT ("Cold start, abundance map, carbon repair", "Kzz
   shape", "Geometry and anchors", "Opacity: correlated-k on ExoMolOP"). 0.29.0
@@ -23,9 +26,9 @@ Tags: [M] measured, [E] estimated, [I] inferred.
 - Production: the WASP-39b baseline v2 nautilus run used `d26e9d3` (0.28.0, tag
   `w39b-baseline-v2`). All three W39b production runs carry the 0.27.2 carbon repair
   (`a6a1094`).
-- Default network (`constants.DEFAULT_NETWORK`): `thermo/SNCHO_photo_network_2025.txt`
-  (93 species), upstream's WASP-39b network. Every run before it, v5 included, solved
-  the 2021 `SNCHO_photo_network.txt` (89 species).
+- The engine has no default network (0.31.0): a profile names it. The consumers' cases name
+  `thermo/SNCHO_photo_network_2025.txt` (93 species), upstream's WASP-39b network. Every run before 0.30.0, v5
+  included, solved the 2021 `SNCHO_photo_network.txt` (89 species).
 - Normal tier: plain `pytest tests`. CI runs it serially on Python 3.10, 3.11 and 3.12,
   single-threaded XLA, numpy<2, vulcan3 from `imalsky/VULCAN3@main`, no exojax (the RT
   tests skip). Readings [M]: daw, `-n 2`, single-threaded XLA: 135 passed / 8
@@ -54,7 +57,7 @@ Tags: [M] measured, [E] estimated, [I] inferred.
 - `$VULCAN_FORWARD_DATA` / `paths.set_data_root`, resolved on use: no measurement. A
   library cannot know a data path, and a guessed one fails late or reads other data [I].
 - Planet geometry is required: `build_rt_model` needs `rp_cm`, `gs_cgs`, `rstar_cm`;
-  `build_emis_model` needs `rp_cm`, `gs_cgs` (`_require_geometry`). The retired WASP-39 b
+  `build_emis_model` needs `rp_cm`, `gs_cgs` (`_require_positive`). The retired WASP-39 b
   fallback let a forgotten key silently model another planet.
 - Injectable molecule table (`profile['molecule_table']`, passed to
   `exomolop.load_tables`): no measurement; consumers choose their own absorber menus
@@ -80,11 +83,38 @@ Tags: [M] measured, [E] estimated, [I] inferred.
 
 ## Import order, profile keys and refusals
 
-- `vulcan_chem` sets `VULCAN3_NETWORK` / `VULCAN3_ATOM_LIST` (vulcan3 freezes them at
-  import) with `setdefault`, and jax x64, before any exojax import. A late arrival raises;
-  so does a prior `vulcan3` import whose frozen network (`chem_funs.NETWORK.network_path`,
-  not an env var) conflicts. No measurement: the values freeze at import, so a wrong
-  order fails much later [I]. `test_import_order_guard_is_documented_and_live` pins it.
+- The network is the caller's: `vulcan_chem.select_network(network, atom_list)` writes `VULCAN3_NETWORK` /
+  `VULCAN3_ATOM_LIST`, which vulcan3 freezes at its first import, and `build_chem_model` calls it with the profile's
+  pair. Importing the engine selects nothing. A disagreeing environment is refused (the caller's settings decide), and
+  once vulcan3 is imported another network or atom list is refused against what vulcan3 built at import
+  (`chem_funs.NETWORK.network_path`, `jax_step.IMPORT_ATOM_LIST`): one process, one network. The build also sets the
+  loaded config's network and atoms to the profile's, so vulcan3's own pre-loop check compares the profile's pair. Before 0.31.0 the engine set the 2025 sulfur network with `setdefault` at
+  import and the environment silently beat the network a config named.
+  `test_the_network_is_selected_before_vulcan3_is_imported_and_only_once` pins it in a fresh interpreter. The suite's
+  own conftest names its one network, because a few tests reach vulcan3 through a helper before any model is built.
+- `vulcan_chem` sets jax x64 before any exojax import, and a late arrival raises
+  (`test_import_order_guard_is_documented_and_live`).
+- No default stands in for a case (0.31.0): `build_chem_model` requires `network`, `atom_list` and `vulcan_cfg_name`
+  (it loaded the WASP-39 b config when none was named); `build_rt_model` requires `art_pbtm_bar` and `p_ref_bar` beside
+  the planet geometry (7 bar and 1 mbar were WASP-39 b's). In-range outputs are bitwise unchanged with the keys
+  stated: 29 arrays (four chemistry columns with and without photochemistry, transmission with and without Rayleigh,
+  cloud and deck, leave-one-out, a T jvp, emission and eclipse flux) on the real tables [M, daw CPU].
+- A setting stated twice or where it cannot act is refused: a top-level key repeated in `cfg_overrides` (the override
+  won silently), `network` or `atom_list` in `cfg_overrides` (frozen at import), `runtime` there without `dt_max`
+  (vulcan3 derives `dt_max` from the file's `runtime` at load, so it did not follow), `kzz_p_ref_bar` outside the power
+  law. A `yconv_min` override still leaves vulcan3's derived photolysis-switch threshold unchanged ("Known and
+  deliberately untracked"): jwst-transit-authority relies on it.
+- One planet: `G Mp` of the vulcan3 config (after overrides) and `gs_cgs rp_cm^2` of the profile must agree to
+  `constants.GM_MATCH_RTOL`, 2 % (the maintainer decided). The shipped WASP-39 b pair agrees to 3e-6 [M]. A retrieval
+  that samples the RT mass is checked at its base values only.
+- The start column is checked after the elemental repair (`_chem_model._physical_start`): a repair factor at or below
+  zero, or a negative or non-finite density, is an error when eager and a NaN column under jit, which comes back
+  uncertified. Without the check a warm start with one negative density froze vulcan3 at `dt_min` in 132 s
+  (`DtMinFrozenError`) [M].
+- The Gibbs data comes from the network's own tree: a network with no `NASA9` folder beside it is refused before the
+  pre-loop setup. It fell back to vulcan3's packaged data without a message.
+- `build_emis_model` refuses a profile whose molecules, band, grid, anchor, geometry or integration rule differ from
+  its transmission model's. It ignored most of those keys.
 - `pytest.importorskip("exojax")` imports exojax ahead of `vulcan_chem` for every later
   test module, so test modules use `importlib.util.find_spec`. A `conftest.py` moved
   `vulcan_chem` ahead of the jax-free contract test, so the preamble repeats per module.
@@ -154,21 +184,25 @@ Tags: [M] measured, [E] estimated, [I] inferred.
   CO2 1e-5, SO2 3e-6, CH4 1e-7, no cloud) [M, daw CPU]: mean 10.6 ppm (max 29.4) at 1.0-1.2 um, 1.1 (6.0) at
   1.2-2.0 um, 0.07 (0.27) at 2-3 um, 0.01 (0.03) at 3-5.3 um.
 - Bounds refused in the engine: a band outside 1-15 um (`constants.check_band`; below 1 um Na, K and hazes set the spectrum),
-  and a column the model does not cover (`_rt_opacity._column_ok`: a temperature outside 300-3000 K, a mean
+  and a column the model does not cover (`_rt_opacity._column_ok`: a temperature outside 200-3000 K, a mean
   molecular weight below atomic hydrogen's, a mixing ratio outside [0, 1]; an error when eager, a NaN spectrum under
-  jit). Planet radius, gravity and stellar radius must be finite and positive (`_require_geometry`). The window stops
-  at 3000 K although the k-tables reach 3400 K, because the H2-H2 CIA file does not. exojax's CIA interpolation is `jnp.interp` in T, so it clamps like the k-tables; the H2-H2 file spans
+  jit). Planet radius, gravity, stellar radius, the column bottom and the reference pressure must be finite and
+  positive (`_require_positive`). The window is the opacity data's: both CIA files start at 200 K, the H2-H2 file ends
+  at 3000 K, and the k-tables span 100-3400 K; the build refuses installed tables that do not cover it. It was
+  300-3000 K with no reason for the lower edge. It bounds the RT only: vulcan3's equilibrium start breaks down below
+  about 225 K (VULCAN-JAX notes), where an eager solve raises and a jitted one comes back uncertified. exojax's CIA interpolation is `jnp.interp` in T, so it clamps like the k-tables; the H2-H2 file spans
   200-3000 K and the H2-He file 200-9900 K. In-window outputs are bitwise unchanged by the guard: 12 arrays
   (transmission with and without Rayleigh, leave-one-out, a T jvp, emission flux, tau and eclipse flux) on the real
   tables [M].
 - Core absorbers (`constants.CORE_MOLECULE_BANDS_UM`, checked by `constants.check_core_molecules`): H2O, CO2, CO,
-  CH4, NH3, HCN, H2S, SO2. Left out of a band it absorbs in and not named in `omit_core_molecules`, one of the first
-  five is refused (`REQUIRED_MOLECULES`) and one of the last three is warned about and echoed as
+  CH4, NH3, HCN, H2S, SO2, C2H2, OCS, SO. Left out of a band it absorbs in and not named in `omit_core_molecules`, one
+  of the first five is refused (`REQUIRED_MOLECULES`) and one of the others is warned about and echoed as
   `unlisted_core_molecules` (the maintainer decided: HCN and the sulfur gases depend on the planet, though on WASP-39 b
-  SO2 is the third largest effect, 1030 ppm, and HCN the fourth, 742). They are the eight largest leave-one-out effects in
-  jwst-transit-authority's record (its notes "Opacity and radiative transfer": on WASP-39 b each is 134 ppm or more
-  over 1-15 um, and the next, OCS, is 58.5), and the carriers Moses et al. 2013 name. C2H2 and C2H4 matter only at
-  C/O above 1 and are not core. The ranges follow one rule (R = 100 band-mean cross-section at 1000 K, 1 mbar, at
+  SO2 is the third largest effect, 1030 ppm, and HCN the fourth, 742). The first eight are the largest leave-one-out
+  effects in jwst-transit-authority's record (its notes "Opacity and radiative transfer": on WASP-39 b each is 134 ppm
+  or more over 1-15 um), and the carriers Moses et al. 2013 name. The last three are warned about because they reach
+  tens to hundreds of ppm in the same record: OCS 58.5 and SO 47.7 ppm on WASP-39 b, C2H2 1434 ppm on its carbon-rich
+  column. C2H4 (949 ppm there) matters only at C/O above 1 and is left to a case's own absorber screen. The ranges follow one rule (R = 100 band-mean cross-section at 1000 K, 1 mbar, at
   least 1 % of the 1-15 um peak), checked against the installed tables by `tests/test_exomolop.py`; H2O is the whole
   band, because its own peak rule would drop the 1.0-1.3 um bands where it is the main absorber. Against the callers
   [M]: both retrieval base specs pass (12 molecules); jwst-transit-authority's GUI default passes, its API default
@@ -245,6 +279,13 @@ Tags: [M] measured, [E] estimated, [I] inferred.
   quadrature: constant g -102 ppm, exojax's `gravity_profile` (linear in 1/r) -51 ppm,
   inverse-square at layer midpoints +1.5 ppm [M]. The engine keeps its own
   `_gravity_profile_invsq` so an exojax change cannot move it.
+- Stream count: `constants.EMISSION_NSTREAM` is 8, exojax's default. Against 32 streams the eclipse flux over
+  1-15 um differs by at most 1.8e-4 (rms 1.1e-4) on two rising profiles and 1.3e-3 (rms 3.3e-4) on a 2400-1200 K
+  inversion; 16 streams differ by 9e-6 and 1.3e-4. An isothermal column agrees to 1e-14 [M, daw CPU, 80 layers,
+  H2O, CO2, CO, CH4, SO2].
+- A grey deck is available in emission (`deck=`, the transmission deck's meaning): the opaque layers emit at the
+  temperature of the level they sit at. On a gas-free column the flux is pi B(T) at a level within 0.2 dex above the
+  deck pressure and does not see the temperature below it (`tests/test_cloud_deck.py`).
 - The emission optical depth uses the same g(r) (`c63815c`). A single gravity at the
   0.1 bar emission anchor put the eclipse flux 0.5-1% high on a W39b-like column, 0.9-2%
   on a WASP-107b-like one [M]. The pRT emission gate did not move (its large rp holds g
@@ -262,6 +303,29 @@ Tags: [M] measured, [E] estimated, [I] inferred.
   - emission, H2O, 900-2200 K, 3-5 um: bias +0.034%, rms 0.020%, worst band 0.091%.
   - transmission vs the analytic grey solution: 0.012-0.016 scale heights over 5-7
     decades.
+- The continuum fixtures `tests/data/prt_ref_cont_*.npz` (`tools/prt_continuum_reference.py`, pRT 3.4.0, normal
+  tier) cover CIA and Rayleigh, on H2O-poor columns where the continuum sets the windows: 1-5 um, H2O 1e-5,
+  800-1800 K, W39b geometry, in transmission; H2O 1e-4, 900-2200 K, in emission; He/H2 0.19384. Both codes read the
+  engine's ExoMolOP H2O table and its HITRAN 2011 CIA files (`H2-H2_2011.cia`, `H2-He_2011.cia`, Richard et al.
+  2012), which the script converts into pRT's CIA format in a private input tree; the CIA tables pRT ships (its
+  `BoRi` files) are not installed on daw, so that data difference is unmeasured. Rayleigh is each code's own: pRT's
+  H2 cross-section is Dalgarno & Williams 1962, and exojax's polarizability form with King factor 1.0 is 2.1-3.6 %
+  above it for H2 and 5.6 % for He. Measured, engine over pRT over 1.01-4.95 um [M, daw CPU]:
+  - CIA, transmission: mean ratio 1.000164, rms 0.0086 %, max 0.024 %; depth difference rms 1.8 ppm, max 7.3 ppm.
+    Lines-only on the same column: 1.000166, rms 0.0103 %, so the residual is the lines'. The CIA term itself
+    (with minus without) is 297.2 ppm mean in the engine against 297.1 in pRT, differing by rms 1.0 ppm, max 4.5.
+  - CIA and Rayleigh, transmission: mean ratio 1.000188, rms 0.0126 %, max 0.036 %; depth difference rms 2.6 ppm,
+    max 11.3 ppm, on a Rayleigh term of 161 ppm mean at 1.0-1.2 um. With pRT's cross-sections swapped into the
+    engine: rms 0.0081 %, max 0.024 %, the CIA case's numbers, so the extra residual is the cross-section formula,
+    not the method.
+  - CIA, emission: mean ratio 0.99947, rms 0.052 %, max 0.178 %. Lines-only on the same column: 0.999465, rms
+    0.056 %, larger at 1-2 um (0.05-0.07 %) than at 3-5 um (0.014 %). The CIA term (flux change) is -1.829 % mean in
+    the engine against -1.830 % in pRT, differing by rms 0.010 %, max 0.066 %.
+  - exojax takes the CIA table node at `digitize(nu)` where pRT interpolates linearly; at the band centres the two
+    differ by rms 0.11-0.13 %, max 0.57 %, in the CIA coefficient, inside the term agreement above.
+  - With the term off in the engine call, each case fails its bars: CIA off gives max 4.4 % (transmission) and
+    10.2 % (emission) against bars of 0.073 % and 0.53 %; the H2-He pair alone off gives max 0.175 % and 0.88 %;
+    Rayleigh off gives max 1.36 % against 0.109 %. He is about 1 % of the Rayleigh term, too small to gate alone.
 - The W39b 8-species case builds its grid to 20 bar, not the fixture's 50 bar: the Tsai et al. 2023 profile reaches
   3507 K at 50 bar (3000 K at 23 bar, 3400 K at 43 bar), outside the opacity window, so the engine refuses it. Those
   layers are opaque in transit: at 20 bar the mean ratio is 0.998289, rms 0.0960 %, max 0.342 % against the 50 bar
@@ -487,6 +551,12 @@ per-theta re-anchoring stay; the other items stay live as model choices.
 
 - 0.30.0 is on `main` with no TestPyPI release and no tag (not tracked, the maintainer decided): the consumers
   install the commit they pin.
+- Where the vertical optical depth never reaches 2/3, `eclipse_flux_tau` takes the grid-bottom radius for that
+  ordinate. The engine does not refuse it: a consumer checks `tau_bottom` and refuses a see-through column. On four
+  W39b-like columns over 1-15 um with the bottom at 7 bar the least bottom optical depth is 3.4, so no ordinate is
+  clamped [M].
+- The Planck source, the CIA, Rayleigh and the power-law cloud are evaluated at band centres, not band-averaged: at
+  R = 1000 each is smooth across a band [E].
 - The 151 commits dated before 2026-10-13 were made on other machines; NAS holds no
   provenance for them beyond "Provenance audit" [M: `git log`].
 - The photolysis-cadence switch threshold stays at VULCAN3's derived 1.0 when a profile
@@ -498,10 +568,7 @@ per-theta re-anchoring stay; the other items stay live as model choices.
   of vulcan-retrieval/src and vulcan-jwst-tool/src).
 - Importing `vulcan_chem` sets `OMP_NUM_THREADS=1` (`setdefault`, undocumented).
 - `ChemParams.tp = ()` defaults to an IndexError [I].
-- A non-default `VULCAN3_NETWORK` is kept when `vulcan_chem` is imported first, refused
-  when `vulcan3` was.
-- No engine test sets `cfg_overrides`, `run_diag`, `rt_integration` or `molecule_table`
-  (consumers use all but the last).
+- No engine test sets `run_diag` or `rt_integration` (consumers use both).
   `test_contract.py`'s docstring says the planner's datacheck reads the path helpers; it
   re-derives the path.
 - The eq seed reads vulcan3's process-default config at trace time

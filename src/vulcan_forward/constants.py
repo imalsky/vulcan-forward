@@ -12,7 +12,6 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
 __all__ = [
-    "ART_PBTM_BAR",
     "ART_PTOP_BAR",
     "ATOMIC_MASSES",
     "ATOMIC_MASS_TOL_G_MOL",
@@ -25,13 +24,11 @@ __all__ = [
     "CLOUD_DECK_WIDTH_LNP",
     "CLOUD_NUC0",
     "CORE_MOLECULE_BANDS_UM",
-    "DEFAULT_ATOM_LIST",
-    "DEFAULT_CFG_NAME",
-    "DEFAULT_NETWORK",
     "ELEMENTAL_REPAIR",
     "ELEMENTAL_REPAIR_ITERS",
     "EMISSION_NSTREAM",
     "EXOMOLOP_GRID_TOKEN",
+    "GM_MATCH_RTOL",
     "GRID_RTOL",
     "KZZ_P_REF_BAR",
     "K_B_CGS",
@@ -39,8 +36,8 @@ __all__ = [
     "MOLECULES",
     "M_U_CGS",
     "PROFILE_KEYS",
-    "P_REF_BAR",
     "P_REF_EMISSION_BAR",
+    "RAYLEIGH_KING_FACTOR",
     "REQUIRED_MOLECULES",
     "TAU_PHOTOSPHERE",
     "TOP_MATCH_RTOL",
@@ -54,6 +51,7 @@ __all__ = [
     "check_band",
     "check_core_molecules",
     "check_profile_keys",
+    "fixed_values",
 ]
 
 # ---- 1. Physical constants and unit factors ----
@@ -101,10 +99,11 @@ ATOMIC_MASSES = [
 WIDE_BAND_NU_MIN = 667.0  # 15 um
 WIDE_BAND_NU_MAX = 10000.0  # 1 um
 
-# Temperature window, K, the consumers treat as the valid RT range: a retrieval derives its T-P prior window from it,
-# rejecting draws outside rather than clipping them. The ExoMolOP k-tables span 100-3400 K, and ckd._interp_logk clamps
-# at their edges.
-T_OPA_MIN_K = 300.0
+# Temperature window, K, of the opacity data: both CIA tables start at 200 K and the H2-H2 table ends at 3000 K; the
+# ExoMolOP k-tables span 100-3400 K. A column outside it is refused, never clamped (_rt_opacity._column_ok), and the
+# build checks that the installed tables cover it. It bounds the RT only: vulcan3's equilibrium start is known to break
+# down below about 225 K, where a solve raises or comes back uncertified.
+T_OPA_MIN_K = 200.0
 T_OPA_MAX_K = 3000.0
 
 # Pressure, bar, at which the emission column's radius and gravity are anchored: the dayside photosphere sits near
@@ -116,8 +115,14 @@ P_REF_EMISSION_BAR = 1.0e-1
 # where tau = 2/3 at each wavelength, not one radius for the band.
 TAU_PHOTOSPHERE = 2.0 / 3.0
 
-# Gauss-Legendre streams of the emission solve: exojax ArtEmisPure's default.
+# Gauss-Legendre streams of the emission solve (exojax ArtEmisPure's default). Against 32 streams the eclipse flux at 8
+# differs by at most 1.8e-4 on monotonic profiles and 1.3e-3 on a 1200 K inversion (notes "Emission solver and
+# gravity"), far below the opacity data's own accuracy.
 EMISSION_NSTREAM = 8
+
+# King correction factor of the H2 and He Rayleigh cross-sections. 1.0 neglects depolarization: the correction is
+# about 1 % for H2 and zero for He (an atom), below the cross-section data's own accuracy.
+RAYLEIGH_KING_FACTOR = 1.0
 
 # Reference wavenumber, cm^-1, of exojax's powerlaw_clouds: kappa(nu) = kappac0 (nu / CLOUD_NUC0)^alphac, with kappac0
 # in cm^2 per gram of atmosphere (pRT convention; alphac = 0 is grey). 2857 cm^-1 is 3.5 um. A uniformly mixed nuisance
@@ -159,31 +164,27 @@ GRID_RTOL = 1.0e-12
 WEIGHT_SUM_RTOL, WEIGHT_SUM_ATOL = 1.0e-10, 1.0e-12
 # Relative slack on the chemistry top: an ART top that equals it up to rounding is not a clamp.
 TOP_MATCH_RTOL = 1.0e-9
+# The chemistry takes its planet mass from the vulcan3 config and the RT its gravity and radius from the profile: G Mp
+# and gs_cgs rp_cm^2 must agree to this relative tolerance, or the two halves model different planets. 2 % is above
+# the rounding of a published mass and far below a wrong planet.
+GM_MATCH_RTOL = 0.02
 # g/mol. vulcan3's mass column carries mild rounding (O as 16.0, the electron as 1e-3); a swapped element differs by at
 # least 1 g/mol.
 ATOMIC_MASS_TOL_G_MOL = 0.01
 
 # ---- 4. Defaults a caller may override through the profile ----
+# The chemistry's network, atom list and config name, and the RT's planet geometry, bottom pressure and reference
+# pressure have no default: they belong to the caller's case (vulcan_chem._CHEMISTRY_KEYS, exojax_rt._RT_KEYS).
 
-# In the environment before the first ``import vulcan3``, which freezes them; ``vulcan_chem`` applies them.
-DEFAULT_NETWORK = "thermo/SNCHO_photo_network_2025.txt"
-DEFAULT_ATOM_LIST = "H,O,C,N,S"
-# ``vulcan3.load_config`` name when the profile sets no ``vulcan_cfg_name``.
-DEFAULT_CFG_NAME = "W39b"
-
-# ART pressure bounds, bar. Chemistry and RT share the model top: vulcan_chem sets P_t from art_ptop_bar, and interp_map
+# RT top pressure, bar. Chemistry and RT share the model top: vulcan_chem sets P_t from art_ptop_bar, and interp_map
 # refuses an ART grid the chemistry does not cover. At 1e-9 bar the top is converged: one decade higher moves the
-# R = 100 depth by ~1 ppm (vulcan-retrieval validation/top_pressure_ladder).
+# R = 100 depth by ~1 ppm (vulcan-retrieval validation/top_pressure_ladder). The bottom, art_pbtm_bar, has no default:
+# it must sit above the case's chemistry bottom.
 ART_PTOP_BAR = 1.0e-9
-ART_PBTM_BAR = 7.0  # above the W39b config's chemistry bottom, P_b = 7.6 bar
 
-# Pressure, bar, at which rp_cm and gs_cgs apply; profile["p_ref_bar"] overrides it. A published transit radius belongs
-# near the transmission photosphere, not at the RT grid bottom where exojax defines radius_btm. On WASP-39 b, anchoring
-# at 1 mbar reproduces the JWST ERS 3.0-5.5 um median depth to 0.4%.
-P_REF_BAR = 1.0e-3
-
-# Reference pressure, bar, of the Kzz power law (kzz_mode "powerlaw"): Kzz0 is read off the config's profile there and
-# tilted by (P / P_ref)^-slope. 1 mbar is where the WASP-39 b profile value is quoted.
+# The pressure, bar, at which a Kzz profile's value is quoted and reported (1 mbar: where the WASP-39 b profile value
+# is quoted). Not a default: under kzz_mode "powerlaw" the profile states its own kzz_p_ref_bar, where Kzz0 is read off
+# the config's profile and tilted by (P / P_ref)^-slope.
 KZZ_P_REF_BAR = 1.0e-3
 
 # Molecule table: VULCAN species name and molar mass, g/mol. The opacity is the ExoMolOP k-table <MOL>.ktable.h5, and
@@ -235,12 +236,13 @@ MOLECULES: dict[str, dict[str, Any]] = {
 
 # Core absorbers: the gases that carry the oxygen, carbon, nitrogen and sulfur of a hydrogen-dominated atmosphere
 # (Moses et al. 2013, ApJ 763, 25) and have been measured in transmission with JWST (H2O, CO2, CO, SO2: Rustamkulov et
-# al. 2023; CH4: Bell et al. 2023; NH3: Welbanks et al. 2024; H2S: Fu et al. 2024; HCN is the predicted
-# disequilibrium nitrogen carrier). Where a band overlaps one of a molecule's ranges and the molecule is neither in the
-# RT nor named in profile["omit_core_molecules"], build_rt_model refuses a REQUIRED_MOLECULES member and warns for the
-# others. Ranges, um: H2O absorbs across the whole band; for the others, where the R = 100 band-mean cross-section of
-# the ExoMolOP table at 1000 K and 1 mbar is at least 1 % of its 1-15 um peak, rounded outward (tests/test_exomolop.py
-# checks them against the installed tables).
+# al. 2023; CH4: Bell et al. 2023; NH3: Welbanks et al. 2024; H2S: Fu et al. 2024; HCN is the predicted disequilibrium
+# nitrogen carrier), plus three that reach tens to hundreds of ppm in this engine's own columns: C2H2 in carbon-rich
+# gas, and the sulfur carriers OCS and SO (notes "Opacity: correlated-k on ExoMolOP"). Where a band overlaps one of a
+# molecule's ranges and the molecule is neither in the RT nor named in profile["omit_core_molecules"], build_rt_model
+# refuses a REQUIRED_MOLECULES member and warns for the others. Ranges, um: H2O absorbs across the whole band; for the
+# others, where the R = 100 band-mean cross-section of the ExoMolOP table at 1000 K and 1 mbar is at least 1 % of its
+# 1-15 um peak, rounded outward (tests/test_exomolop.py checks them against the installed tables).
 CORE_MOLECULE_BANDS_UM: dict[str, tuple[tuple[float, float], ...]] = {
     "H2O": ((1.0, 15.0),),
     "CO2": ((2.6, 2.9), (4.1, 4.6), (13.0, 15.0)),
@@ -250,9 +252,13 @@ CORE_MOLECULE_BANDS_UM: dict[str, tuple[tuple[float, float], ...]] = {
     "HCN": ((2.9, 3.3), (6.6, 7.9), (11.8, 15.0)),
     "H2S": ((1.5, 1.7), (1.8, 2.2), (2.3, 3.0), (3.3, 4.8), (5.5, 15.0)),
     "SO2": ((3.9, 4.2), (7.0, 9.8)),
+    "C2H2": ((2.9, 3.2), (6.5, 8.2), (11.5, 15.0)),
+    "OCS": ((3.4, 3.5), (4.7, 5.2), (5.3, 5.4), (9.2, 9.7), (11.4, 12.3)),
+    "SO": ((4.3, 4.8), (8.2, 10.1)),
 }
-# The oxygen, carbon and nitrogen carriers every such atmosphere holds. HCN and the sulfur gases depend on the planet
-# (a quench level, a sulfur-bearing network), so leaving one out is reported, not refused: the maintainer's choice.
+# The oxygen, carbon and nitrogen carriers every such atmosphere holds. HCN, C2H2 and the sulfur gases depend on the
+# planet (a quench level, C/O, a sulfur-bearing network), so leaving one out is reported, not refused: the maintainer's
+# choice.
 REQUIRED_MOLECULES = frozenset({"H2O", "CO2", "CO", "CH4", "NH3"})
 
 # The bulk gas: the CIA partner and the dominant background.
@@ -263,6 +269,8 @@ BULK_H2_VULCAN = "H2"
 PROFILE_KEYS = frozenset(
     {
         # build_chem_model
+        "network",
+        "atom_list",
         "vulcan_cfg_name",
         "use_photo",
         "yconv_cri",
@@ -281,7 +289,6 @@ PROFILE_KEYS = frozenset(
         "omit_core_molecules",
         "nu_min",
         "nu_max",
-        "opacity_mode",
         "art_nlayer",
         "art_ptop_bar",
         "art_pbtm_bar",
@@ -389,3 +396,20 @@ def check_core_molecules(molecules: list[str], omitted: list[str], nu_min: float
             + ". Add them to 'molecules', or name the ones left out on purpose in 'omit_core_molecules'."
         )
     return [m for m, r in missing.items() if r and m not in REQUIRED_MOLECULES]
+
+
+def fixed_values() -> dict[str, object]:
+    """Return the engine's fixed numbers and choices by name, for a consumer to store in a run's record.
+
+    Returns
+    -------
+    dict
+        Every constant of this module except the molecule table and the profile-key list; a set comes back sorted.
+    """
+    out: dict[str, object] = {}
+    for name in __all__:
+        value = globals()[name]
+        if callable(value) or name in ("MOLECULES", "PROFILE_KEYS"):
+            continue
+        out[name] = sorted(value) if isinstance(value, frozenset) else value
+    return out

@@ -28,7 +28,7 @@ import jax.numpy as jnp
 from exojax.rt.planck import piBarr
 from test_exomolop import _write
 
-from vulcan_forward import exojax_rt, exomolop, paths
+from vulcan_forward import constants, exojax_rt, exomolop, paths
 
 NU0 = 2000.0
 NB = 20
@@ -58,7 +58,7 @@ def _write_cia(path, nu_lo=500.0, nu_hi=5000.0):
     nu = np.arange(nu_lo, nu_hi + 1.0, 1.0)
     label = path.name.split("_")[0]
     blocks = []
-    for t in (300.0, 1000.0, 3000.0):
+    for t in (200.0, 1000.0, 3000.0):
         head = f"{label:>20} {nu[0]:9.3f} {nu[-1]:9.3f} {nu.size:6d} {t:6.1f} 1.0E-45 -.999"
         blocks.append(head + "\n" + "\n".join(f"{n:10.4f} {1.0e-45 * t / 1000.0:10.3E}" for n in nu))
     path.write_text("\n".join(blocks) + "\n")
@@ -225,7 +225,6 @@ def test_the_eclipse_flux_at_fixed_mass_is_the_model_rebuilt_there(models):
 @pytest.mark.parametrize(
     ("over", "match"),
     [
-        ({"opacity_mode": "lbl"}, "opacity_mode"),
         ({"art_ptop_bar": 1.0, "art_pbtm_bar": 0.1}, "need 0 < top < bottom"),
         ({"art_pbtm_bar": 3.0e2}, "k-table pressure ceiling"),
         ({"p_ref_bar": 100.0}, "p_ref_bar"),
@@ -236,7 +235,7 @@ def test_the_eclipse_flux_at_fixed_mass_is_the_model_rebuilt_there(models):
         # the band needs CO; naming a molecule that is in the RT, or one that is not core, is a mistake
         ({"omit_core_molecules": []}, r"needs core absorbers.*CO \(absorbs at 4.3-5.2 um\)"),
         ({"omit_core_molecules": ["CO", "H2O"]}, "omit_core_molecules names"),
-        ({"omit_core_molecules": ["CO", "OCS"]}, "omit_core_molecules names"),
+        ({"omit_core_molecules": ["CO", "C2H4"]}, "omit_core_molecules names"),
         ({"gs_cgs": 0.0}, "finite and positive"),
         ({"gs_cgs": -1.0e3}, "finite and positive"),
         ({"rp_cm": float("nan")}, "finite and positive"),
@@ -246,6 +245,30 @@ def test_the_eclipse_flux_at_fixed_mass_is_the_model_rebuilt_there(models):
 def test_build_refuses_a_bad_profile(over, match):
     with pytest.raises(ValueError, match=match):
         exojax_rt.build_rt_model({**PROFILE, **over})
+
+
+@pytest.mark.parametrize("key", ["rp_cm", "gs_cgs", "rstar_cm", "p_ref_bar", "art_pbtm_bar"])
+def test_build_refuses_a_missing_setting_that_has_no_default(key):
+    """The planet, the reference pressure and the column bottom belong to the caller's case: none is filled in."""
+    with pytest.raises(ValueError, match=rf"profile is missing \['{key}'\], which have no default"):
+        exojax_rt.build_rt_model({k: v for k, v in PROFILE.items() if k != key})
+
+
+@pytest.mark.parametrize(
+    "over",
+    [
+        {"art_pbtm_bar": 5.0},
+        {"molecules": ["H2O"]},
+        {"nu_min": NU0 * 1.001},
+        {"gs_cgs": 2.0e3},
+        {"art_nlayer": NLAYER + 1},
+    ],
+)
+def test_emission_refuses_a_profile_that_names_another_column(models, over):
+    """Emission shares the transmission model's column, so a key that names another one is refused, not ignored."""
+    rt, _ = models
+    with pytest.raises(ValueError, match="disagrees with the transmission model"):
+        exojax_rt.build_emis_model(rt, {**PROFILE, **over})
 
 
 def test_rayleigh_is_on_unless_the_profile_turns_it_off(models, root):  # noqa: ARG001  # the data root must be in place
@@ -264,7 +287,7 @@ def test_rayleigh_is_on_unless_the_profile_turns_it_off(models, root):  # noqa: 
 @pytest.mark.parametrize(
     ("what", "value", "match"),
     [
-        ("T", 299.0, "opacity window"),
+        ("T", 199.0, "opacity window"),
         ("T", 3001.0, "opacity window"),
         ("T", np.nan, "opacity window"),
         ("mmw", 0.5, "mean molecular weight"),
@@ -278,7 +301,7 @@ def test_rayleigh_is_on_unless_the_profile_turns_it_off(models, root):  # noqa: 
 def test_a_column_the_model_does_not_cover_is_refused(models, what, value, match):
     """One bad layer: an error naming the quantity when eager, a NaN spectrum under jit, and no clamp either way.
 
-    Outside 300-3000 K the k-table and CIA interpolations would clamp; a mean molecular weight below atomic hydrogen
+    Outside 200-3000 K the k-table and CIA interpolations would clamp; a mean molecular weight below atomic hydrogen
     or a mixing ratio outside [0, 1] is not a gas.
     """
     import jax
@@ -299,6 +322,15 @@ def test_a_column_the_model_does_not_cover_is_refused(models, what, value, match
         jitted = jax.jit(observable)
         assert np.all(np.isnan(np.asarray(jitted(bad))))
         assert np.all(np.isfinite(np.asarray(jitted(good))))
+
+
+def test_a_column_at_either_edge_of_the_temperature_window_is_modelled(models):
+    """The window is closed: a layer at 200 K or at 3000 K, the edges of the opacity data, gives a finite spectrum."""
+    rt, em = models
+    for edge in (constants.T_OPA_MIN_K, constants.T_OPA_MAX_K, 250.0):
+        T = T_ISO.at[3].set(edge)
+        assert np.all(np.isfinite(np.asarray(rt.transmission_depth(_vmr(), HALF, T, MMW, vmr_he=HALF))))
+        assert np.all(np.isfinite(np.asarray(em.emission_flux(_vmr(), HALF, T, MMW, vmr_he=HALF))))
 
 
 def test_build_refuses_a_band_past_a_cia_table_and_a_missing_he_table(root):

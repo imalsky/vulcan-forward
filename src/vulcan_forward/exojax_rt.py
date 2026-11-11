@@ -20,14 +20,12 @@ import numpy as np
 jax.config.update("jax_enable_x64", True)  # the k-tables are float64
 import jax.numpy as jnp
 from exojax.atm.polarizability import polarizability as _polarizability
-from exojax.database.contdb import CdbCIA
-from exojax.opacity import OpaCIA
 from exojax.opacity.rayleigh import xsvector_rayleigh_gas
 from exojax.rt import ArtEmisPure, ArtTransPure
 from exojax.rt.planck import piBarr
 from exojax.rt.rtransfer import rtrun_emis_pureabs_ibased_linsap
 
-from vulcan_forward import constants, paths
+from vulcan_forward import constants
 from vulcan_forward._rt_geometry import (
     _anchor_to_grid_bottom,
     _boundary_temperature,
@@ -35,9 +33,10 @@ from vulcan_forward._rt_geometry import (
     _photosphere_lnp,
     _radius_at,
 )
-from vulcan_forward._rt_opacity import _accumulate_dtau_ckd, _ckd_dtau_batch
+from vulcan_forward._rt_opacity import _accumulate_dtau_ckd, _ckd_dtau_batch, _load_cia
 
 if TYPE_CHECKING:
+    from exojax.opacity import OpaCIA
     from jax import Array
 
     Profile = dict[str, Any]
@@ -45,18 +44,6 @@ if TYPE_CHECKING:
 __all__ = ["build_emis_model", "build_rt_model"]
 
 logger = logging.getLogger(__name__)
-
-
-def _check_profile(profile: Profile) -> None:
-    """Refuse unknown keys and any ``opacity_mode`` other than "exomolop"."""
-    constants.check_profile_keys(profile)
-    mode = str(profile.get("opacity_mode", "exomolop"))
-    if mode != "exomolop":
-        raise ValueError(
-            f"opacity_mode={mode!r} is not available: correlated-k over the "
-            "ExoMolOP tables ('exomolop', the default) is the only opacity "
-            "path; drop the key."
-        )
 
 
 def _run_emis_ckd_linsap(
@@ -85,27 +72,30 @@ def _run_emis_ckd_linsap(
     return jnp.einsum("g,gb->b", gw, flux)
 
 
-_GEOMETRY_KEYS = {
+# The settings the RT needs and has no default for: they belong to the caller's planet and column.
+_RT_KEYS = {
     "rp_cm": "planet radius in cm at p_ref_bar",
     "gs_cgs": "gravity in cm/s^2 at p_ref_bar",
     "rstar_cm": "stellar radius in cm",
+    "p_ref_bar": "pressure in bar where rp_cm and gs_cgs apply",
+    "art_pbtm_bar": "RT grid bottom in bar, above the chemistry bottom",
 }
 
 
-def _require_geometry(profile: Profile, *keys: str) -> None:
-    """Refuse a profile whose planet geometry is missing or not a positive number: it has no default."""
+def _require_positive(profile: Profile, *keys: str) -> None:
+    """Refuse a profile in which a required setting is missing or not a positive number: none has a default."""
     missing = [k for k in keys if k not in profile]
     if missing:
         raise ValueError(
-            f"profile is missing required planet geometry {missing}: "
-            + "; ".join(f"{k} ({_GEOMETRY_KEYS[k]})" for k in missing)
+            f"profile is missing {missing}, which have no default: "
+            + "; ".join(f"{k} ({_RT_KEYS[k]})" for k in missing)
             + "."
         )
     bad = {k: profile[k] for k in keys if not (np.isfinite(float(profile[k])) and float(profile[k]) > 0.0)}
     if bad:
         raise ValueError(
-            f"planet geometry must be finite and positive, got {bad}: "
-            + "; ".join(f"{k} ({_GEOMETRY_KEYS[k]})" for k in bad)
+            f"profile settings must be finite and positive, got {bad}: "
+            + "; ".join(f"{k} ({_RT_KEYS[k]})" for k in bad)
             + "."
         )
 
@@ -120,22 +110,6 @@ def _require_he(vmr_he: Array | None) -> Array:
     return vmr_he
 
 
-def _check_cia_span(cdb: CdbCIA, nu_grid: Array, label: str) -> None:
-    """Refuse a CIA table that does not cover the requested wavenumber grid.
-
-    ``CdbCIA`` never checks coverage, so bands past the file's edge would reuse the edge coefficient.
-    """
-    lo, hi = float(np.min(cdb.nucia)), float(np.max(cdb.nucia))
-    g_lo, g_hi = float(np.min(nu_grid)), float(np.max(nu_grid))
-    if g_lo < lo or g_hi > hi:
-        raise ValueError(
-            f"{label} CIA table covers [{lo:g}, {hi:g}] cm^-1 but the requested "
-            f"grid spans [{g_lo:g}, {g_hi:g}] cm^-1. Bands outside the table "
-            "would silently reuse its edge coefficient. Narrow nu_min/nu_max "
-            "or install a table that covers the band."
-        )
-
-
 class _Opacities(NamedTuple):
     """One band grid's k-tables and CIA, shared by both observables, in ``_accumulate_dtau_ckd``'s argument order."""
 
@@ -144,24 +118,6 @@ class _Opacities(NamedTuple):
     molmass: dict[str, float]
     opacia: OpaCIA
     opacia_he: OpaCIA
-
-
-def _load_cia(nu_grid: Array) -> tuple[OpaCIA, OpaCIA]:
-    """Load the H2-H2 and H2-He CIA tables, refusing a missing one or one that does not cover the band."""
-    cia_files = {"H2-H2": paths.cia_h2h2_file(), "H2-He": paths.cia_h2he_file()}
-    for label, cia_file in cia_files.items():
-        # exojax would fetch an absent table itself, and its downloader swallows failures.
-        if not cia_file.exists():
-            raise FileNotFoundError(
-                f"{label} CIA table missing ({cia_file}). Download "
-                f"https://hitran.org/data/CIA/main/{cia_file.name} (the /main/ segment is required) to that path."
-            )
-    loaded = []
-    for label, cia_file in cia_files.items():
-        cdb = CdbCIA(str(cia_file), nurange=nu_grid)
-        _check_cia_span(cdb, nu_grid, label)
-        loaded.append(OpaCIA(cdb, nu_grid=nu_grid))
-    return loaded[0], loaded[1]
 
 
 @dataclass(frozen=True, eq=False)
@@ -317,7 +273,7 @@ def build_rt_model(profile: Profile) -> SimpleNamespace:
     ----------
     profile : dict
         The engine's settings; keys in ``constants.PROFILE_KEYS``. Requires ``molecules``, ``nu_min``, ``nu_max``
-        (cm^-1), ``art_nlayer``, ``rp_cm``, ``gs_cgs`` and ``rstar_cm``.
+        (cm^-1), ``art_nlayer``, ``art_pbtm_bar``, ``p_ref_bar``, ``rp_cm``, ``gs_cgs`` and ``rstar_cm``.
 
     Returns
     -------
@@ -326,7 +282,7 @@ def build_rt_model(profile: Profile) -> SimpleNamespace:
         cm^-1, one more than the bands), ``wl_um``, ``p_art_bar``, ``molecules``, ``omit_core_molecules``,
         ``unlisted_core_molecules`` (core absorbers of the band left out without being named: a warning, for the
         consumer to report), and echoes of the settings it resolved: ``art_ptop_bar``, ``art_pbtm_bar``,
-        ``p_ref_bar``, ``rt_integration``, ``opacity_mode``.
+        ``p_ref_bar``, ``rt_integration``.
 
     Raises
     ------
@@ -336,8 +292,8 @@ def build_rt_model(profile: Profile) -> SimpleNamespace:
         raises ``FileNotFoundError``, and a molecule with no entry in the molecule table ``KeyError``.
     """
     t0 = time.time()
-    _check_profile(profile)
-    _require_geometry(profile, "rp_cm", "gs_cgs", "rstar_cm")
+    constants.check_profile_keys(profile)
+    _require_positive(profile, *_RT_KEYS)
     mols = list(profile["molecules"])
     from vulcan_forward import exomolop as _exo
 
@@ -354,7 +310,7 @@ def build_rt_model(profile: Profile) -> SimpleNamespace:
     nu_grid = jnp.asarray(ckd_pack.nu_bands)
     ckd_pack.nu_bands_j = nu_grid
     ptop = float(profile.get("art_ptop_bar", constants.ART_PTOP_BAR))
-    pbtm = float(profile.get("art_pbtm_bar", constants.ART_PBTM_BAR))
+    pbtm = float(profile["art_pbtm_bar"])
     if not (0.0 < ptop < pbtm):
         raise ValueError(f"art_ptop_bar={ptop:g} / art_pbtm_bar={pbtm:g}: need 0 < top < bottom (bar)")
     # _interp_logk clamps log P at both ends. The low-P clamp is defensible (k is Doppler-dominated and
@@ -372,7 +328,7 @@ def build_rt_model(profile: Profile) -> SimpleNamespace:
         raise ValueError(
             f"rt_integration={integration!r}: exojax ArtTransPure supports 'simpson' (default) or 'trapezoid'"
         )
-    mol_table = profile.get("molecule_table") or constants.MOLECULES
+    mol_table = constants.MOLECULES if profile.get("molecule_table") is None else profile["molecule_table"]
     molmass = {key: float(mol_table[key]["molmass"]) for key in mols}
 
     art = ArtTransPure(pressure_top=ptop, pressure_btm=pbtm, nlayer=int(profile["art_nlayer"]), integration=integration)
@@ -391,8 +347,8 @@ def build_rt_model(profile: Profile) -> SimpleNamespace:
 
     if profile.get("use_rayleigh", True):
         rayleigh_xs = (
-            xsvector_rayleigh_gas(nu_grid, _polarizability["H2"]),
-            xsvector_rayleigh_gas(nu_grid, _polarizability["He"]),
+            xsvector_rayleigh_gas(nu_grid, _polarizability["H2"], king_factor=constants.RAYLEIGH_KING_FACTOR),
+            xsvector_rayleigh_gas(nu_grid, _polarizability["He"], king_factor=constants.RAYLEIGH_KING_FACTOR),
         )
         logger.info("[rt] H2/He Rayleigh scattering enabled")
     else:
@@ -401,7 +357,7 @@ def build_rt_model(profile: Profile) -> SimpleNamespace:
     Rp_ref = float(profile["rp_cm"])
     g_ref = float(profile["gs_cgs"])
     rstar_cm = float(profile["rstar_cm"])
-    p_ref_bar = float(profile.get("p_ref_bar", constants.P_REF_BAR))
+    p_ref_bar = float(profile["p_ref_bar"])
     if not (ptop <= p_ref_bar <= pbtm):
         raise ValueError(
             f"p_ref_bar={p_ref_bar:g} lies outside the RT grid "
@@ -428,10 +384,22 @@ def build_rt_model(profile: Profile) -> SimpleNamespace:
         art_pbtm_bar=pbtm,
         p_ref_bar=p_ref_bar,
         rt_integration=integration,
-        opacity_mode="exomolop",
         # Reused by build_emis_model.
         _nu_grid=nu_grid,
         _opacities=opacities,
+        _settings={
+            "molecules": mols,
+            "nu_min": nu_min,
+            "nu_max": nu_max,
+            "art_nlayer": int(profile["art_nlayer"]),
+            "art_ptop_bar": ptop,
+            "art_pbtm_bar": pbtm,
+            "p_ref_bar": p_ref_bar,
+            "rt_integration": integration,
+            "rp_cm": Rp_ref,
+            "gs_cgs": g_ref,
+            "rstar_cm": rstar_cm,
+        },
     )
 
 
@@ -457,6 +425,7 @@ class _Emission:
         mmw_art: Array,
         g_em: Array,
         cloud: Array | None,
+        deck: Array | float | None,
     ) -> Array:
         """Return the emission optical depth, without Rayleigh."""
         return _accumulate_dtau_ckd(
@@ -470,6 +439,7 @@ class _Emission:
             g_em,
             cloud=cloud,
             rayleigh_xs=None,
+            deck=deck,
         )
 
     def _anchor(self, lnR0: Array | float) -> tuple[Array, Array]:
@@ -490,6 +460,7 @@ class _Emission:
         vmr_he: Array | None = None,
         cloud: Array | None = None,
         lnR0: Array | float = 0.0,
+        deck: Array | float | None = None,
     ) -> Array:
         """Return the emergent thermal flux from ART-grid profiles.
 
@@ -509,6 +480,8 @@ class _Emission:
             ``[log10 kappac0, alphac]`` of the exojax power-law cloud.
         lnR0 : float, optional
             ln of the radius multiple at p_ref_bar, at fixed planet mass.
+        deck : float, optional
+            log10 pressure (bar) of an opaque grey deck: it emits at the temperature of the level it sits at.
 
         Returns
         -------
@@ -516,7 +489,7 @@ class _Emission:
             The flux, erg s^-1 cm^-2 / cm^-1.
         """
         vmr_he = _require_he(vmr_he)
-        dtau_g = self._dtau(vmr, vmr_h2, vmr_he, T_art, mmw_art, self._g_layers(T_art, mmw_art, lnR0), cloud)
+        dtau_g = self._dtau(vmr, vmr_h2, vmr_he, T_art, mmw_art, self._g_layers(T_art, mmw_art, lnR0), cloud, deck)
         return _run_emis_ckd_linsap(
             self.art, dtau_g, _boundary_temperature(T_art), self.nu_grid, self.opacities.ckd_pack.gw
         )
@@ -556,6 +529,7 @@ class _Emission:
         vmr_he: Array,
         cloud: Array | None = None,
         lnR0: Array | float = 0.0,
+        deck: Array | float | None = None,
     ) -> Array:
         """Return the minimum over g-ordinates of the total vertical optical depth at the column bottom, [nband].
 
@@ -563,7 +537,7 @@ class _Emission:
         flag see-through windows. The minimum over g is the conservative reduction. Takes ``emission_flux``'s arguments.
         """
         vmr_he = _require_he(vmr_he)
-        dtau_g = self._dtau(vmr, vmr_h2, vmr_he, T_art, mmw_art, self._g_layers(T_art, mmw_art, lnR0), cloud)
+        dtau_g = self._dtau(vmr, vmr_h2, vmr_he, T_art, mmw_art, self._g_layers(T_art, mmw_art, lnR0), cloud, deck)
         return jnp.min(jnp.sum(dtau_g, axis=0), axis=0)
 
     def _flux_tau(
@@ -577,6 +551,7 @@ class _Emission:
         wo_mols: list[str] | None,
         photosphere: bool,
         lnR0: Array | float,
+        deck: Array | float | None,
     ) -> tuple[Array, ...]:
         """Return flux and bottom optical depth from one optical-depth build, with the leave-one-out rows when asked."""
         vmr_he = _require_he(vmr_he)
@@ -605,7 +580,7 @@ class _Emission:
             )
 
         if wo_mols is None:
-            return _finish(self._dtau(vmr, vmr_h2, vmr_he, T_art, mmw_art, g_em, cloud))
+            return _finish(self._dtau(vmr, vmr_h2, vmr_he, T_art, mmw_art, g_em, cloud, deck))
         (flux, tau), rows = _ckd_dtau_batch(
             art,
             *self.opacities,
@@ -619,6 +594,7 @@ class _Emission:
             _finish,
             cloud=cloud,
             rayleigh_xs=None,
+            deck=deck,
         )
         nb = tau.shape[0]
         flux_wo = jnp.stack([f for f, _ in rows]) if rows else jnp.zeros((0, nb))
@@ -635,6 +611,7 @@ class _Emission:
         cloud: Array | None = None,
         wo_mols: list[str] | None = None,
         lnR0: Array | float = 0.0,
+        deck: Array | float | None = None,
     ) -> tuple[Array, ...]:
         """Return the emergent flux and bottom optical depth from one optical-depth build.
 
@@ -659,13 +636,16 @@ class _Emission:
             Molecules to drop, one row each.
         lnR0 : float, optional
             ln of the radius multiple at p_ref_bar, at fixed planet mass.
+        deck : float, optional
+            log10 pressure (bar) of an opaque grey deck.
 
         Returns
         -------
         tuple of jax.Array
             ``(flux, tau_bottom)``; with ``wo_mols``, ``(flux, tau_bottom, flux_wo, tau_wo)``.
         """
-        return self._flux_tau(vmr, vmr_h2, T_art, mmw_art, vmr_he, cloud, wo_mols, photosphere=False, lnR0=lnR0)
+        args = (vmr, vmr_h2, T_art, mmw_art, vmr_he, cloud, wo_mols)
+        return self._flux_tau(*args, photosphere=False, lnR0=lnR0, deck=deck)
 
     def eclipse_flux_tau(
         self,
@@ -677,13 +657,15 @@ class _Emission:
         cloud: Array | None = None,
         wo_mols: list[str] | None = None,
         lnR0: Array | float = 0.0,
+        deck: Array | float | None = None,
     ) -> tuple[Array, ...]:
         """Return ``emission_flux_tau``, same arguments and shapes, with the tau = 2/3 photospheric radius folded in.
 
         The flux is sum_g w_g F_g (R_phot,g / R_em)^2 per band, so eclipse depth = flux / F_star x (R_em / R_star)^2
         with R_em from ``emission_radius``.
         """
-        return self._flux_tau(vmr, vmr_h2, T_art, mmw_art, vmr_he, cloud, wo_mols, photosphere=True, lnR0=lnR0)
+        args = (vmr, vmr_h2, T_art, mmw_art, vmr_he, cloud, wo_mols)
+        return self._flux_tau(*args, photosphere=True, lnR0=lnR0, deck=deck)
 
 
 def build_emis_model(trt: SimpleNamespace, profile: Profile) -> SimpleNamespace:
@@ -709,12 +691,25 @@ def build_emis_model(trt: SimpleNamespace, profile: Profile) -> SimpleNamespace:
     Raises
     ------
     ValueError
-        If the emission anchor lies outside the grid, or ``p_ref_bar`` or ``art_nlayer`` disagree with ``trt``.
+        If the emission anchor lies outside the grid, or a setting of the shared column disagrees with ``trt``.
     """
     constants.check_profile_keys(profile)
     nu_grid = trt._nu_grid
     mols = trt.molecules
-    _require_geometry(profile, "gs_cgs", "rp_cm")
+    _require_positive(profile, "gs_cgs", "rp_cm")
+    # Both observables share one column: a key that names another one would be ignored without a word.
+    casts = {"molecules": list, "rt_integration": str}
+    differs = {
+        k: (profile[k], have)
+        for k, have in trt._settings.items()
+        if k in profile and casts.get(k, float)(profile[k]) != have
+    }
+    if differs:
+        raise ValueError(
+            "the emission profile disagrees with the transmission model it shares its column with: "
+            + "; ".join(f"{k}={got!r} against {have!r}" for k, (got, have) in differs.items())
+            + ". Build both from one profile."
+        )
     # Radius and gravity are re-anchored together at p_ref_emission_bar: the transit radius with this gravity is 8.9%
     # off in GM.
     g_ref_em = float(profile["gs_cgs"])
@@ -727,23 +722,8 @@ def build_emis_model(trt: SimpleNamespace, profile: Profile) -> SimpleNamespace:
             "is the level the emission column's radius and gravity are "
             "anchored at, so the grid must cover it: deepen art_pbtm_bar."
         )
-    # Both observables share the transit anchor, validated against the grid in trt.
     p_ref_used = float(trt.p_ref_bar)
-    if "p_ref_bar" in profile and float(profile["p_ref_bar"]) != p_ref_used:
-        raise ValueError(
-            f"p_ref_bar={float(profile['p_ref_bar']):g} disagrees with the "
-            f"transmission model's validated {p_ref_used:g}; the two "
-            "observables share one column anchor (build both from one "
-            "profile)."
-        )
-
     art_nlayer = int(np.asarray(trt.p_art_bar).size)
-    if "art_nlayer" in profile and int(profile["art_nlayer"]) != art_nlayer:
-        raise ValueError(
-            f"art_nlayer={int(profile['art_nlayer'])} disagrees with the "
-            f"transmission grid's {art_nlayer} layers; the two observables "
-            "share opacities and must share the column."
-        )
     # ibased_linsap keeps the interior source term that "ibased" (and ArtEmisPure.run_ckd) drops.
     art = ArtEmisPure(
         nu_grid=nu_grid,

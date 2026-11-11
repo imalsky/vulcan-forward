@@ -2,20 +2,9 @@
 
 Open, owed or undecided work for vulcan-forward; the evidence is in `notes.md`.
 
-1. [unverified] No petitRADTRANS reference covers collision-induced absorption or Rayleigh scattering.
-2. [feature] Sodium and potassium: the model stops at 1 um and refuses a band below it, so their lines are never modelled.
+1. [feature] Sodium and potassium: the model stops at 1 um and refuses a band below it, so their lines are never modelled.
 
-## 1. petitRADTRANS reference with the continuum on
-
-Evidence: notes "RT validation and the exojax pin". The three `tests/data/prt_ref_*.npz` cases are lines-only (their
-meta says `continuum: none`), and `tests/test_e2e_rt_reference.py` passes zero H2 and He, so CIA and Rayleigh add
-nothing there. CIA and Rayleigh are exercised only on miniature tables (`tests/test_rt_miniature.py`), as identities,
-not values. `oracle.md` asks that the comparison cover every term a default run uses. The pRT script stored in the
-W39b fixture's meta already has a `cont` variant (H2 and He Rayleigh, H2-H2 and H2-He CIA). Done when a committed
-reference with the continuum on passes in `tests/test_e2e_rt_reference.py`, with its bars at 3x the achieved
-agreement like the others.
-
-## 2. Na and K
+## 1. Na and K
 
 The Na (0.59 um) and K (0.77 um) resonance lines sit below the 1 um edge, where `constants.check_band` refuses a
 band, so today the omission is an error, never a wrong spectrum. To model them: ExoMolOP publishes Na and K k-tables

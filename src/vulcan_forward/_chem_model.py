@@ -142,7 +142,7 @@ class _ChemSetup:
             y0p = self.elem.guess(lnZ, c_o, s_o, warm_y, lnZ_ref, c_o_ref, s_o_ref)
 
         # atom_ini comes from the repaired column, so the conservation anchor matches the initial gas.
-        y0p, _min_adj = self.elem.project(y0p, M, lnZ, c_o, s_o)
+        y0p = _physical_start(*self.elem.project(y0p, M, lnZ, c_o, s_o))
         ymix0 = y0p / M[:, None]
         atom_ini_new = jnp.einsum("zi,ia->a", y0p, self.compo_run)  # runner atom order
         pv_T = state0.pv._replace(n_0=M, r_Tco=T, Kzz=Kzz_eff, atom_ini=atom_ini_new)
@@ -349,6 +349,34 @@ def _float64_leaves(p: ChemParams | Array) -> ChemParams | Array:
     if isinstance(p, ChemParams):
         return jax.tree_util.tree_map(lambda x: jnp.asarray(x, dtype=jnp.float64), p)
     return jnp.asarray(p, dtype=jnp.float64)
+
+
+def _physical_start(y0: Array, min_adj: Array) -> Array:
+    """Return the repaired start column [nz, ni] if it is physical; an error when the call is eager, NaN under jit.
+
+    The elemental repair scales each element's carriers by one factor. A factor at or below zero, or a negative or
+    non-finite density, means the composition is outside what those carriers can absorb, and the solver has no state to
+    start from. Nothing can raise under jit, so there the column becomes NaN and the solve comes back uncertified.
+    """
+    ok = (min_adj > 0.0) & jnp.all(jnp.isfinite(y0)) & jnp.all(y0 >= 0.0)
+    if isinstance(ok, jax.core.Tracer):
+        return jnp.where(ok, y0, jnp.nan)
+    if not bool(ok):
+        # Under an eager jvp the test is concrete while the values carry tangents, which have no float.
+        traced = isinstance(min_adj, jax.core.Tracer) or isinstance(y0, jax.core.Tracer)
+        found = (
+            ""
+            if traced
+            else f" (smallest elemental repair factor {float(min_adj):g}, smallest number density "
+            f"{float(jnp.min(y0)):g} cm^-3)"
+        )
+        raise ValueError(
+            "the chemistry start column is not physical: every elemental repair factor must be > 0 and every number "
+            f"density finite and >= 0{found}. Either the warm start holds a negative or non-finite density (pass a "
+            "certified column), or the composition is outside what the repair species can absorb (move lnZ, c_o or "
+            "s_o, or the warm reference)."
+        )
+    return y0
 
 
 def _certified(y: Array, cd: ConvDiag) -> Array:

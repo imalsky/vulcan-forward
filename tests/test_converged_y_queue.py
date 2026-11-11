@@ -34,7 +34,13 @@ FULL = pytest.mark.skipif(
 )
 
 # dt_max: the production step cap (vulcan-retrieval's case sets 1e11 s).
-PROFILE = {"use_photo": False, "yconv_cri": 1.0e-2, "nz": 20, "dt_max": 1.0e11}
+# The chemistry every test here solves: the 2025 sulfur network on the WASP-39 b config.
+CHEM_ID = {
+    "network": "thermo/SNCHO_photo_network_2025.txt",
+    "atom_list": ["H", "O", "C", "N", "S"],
+    "vulcan_cfg_name": "W39b",
+}
+PROFILE = {**CHEM_ID, "use_photo": False, "yconv_cri": 1.0e-2, "nz": 20, "dt_max": 1.0e11}
 # [lnZ, c_o, lnKzz, T-offset]: the baseline column and three perturbed ones, heterogeneous enough that they do not all
 # converge at the same tick.
 THETAS = np.array(
@@ -291,7 +297,7 @@ def test_queue_is_differentiable(chem_tangent):
 
 # Gradient acceptance tests (solo, batch, queue, and the queue reversed) for the two-stage cold gradient with
 # photochemistry on, which exercises the tick-keyed photolysis and refresh cadences.
-PHOTO_PROFILE = {"use_photo": True, "yconv_cri": 1.0e-2, "nz": 20}
+PHOTO_PROFILE = {**CHEM_ID, "use_photo": True, "yconv_cri": 1.0e-2, "nz": 20}
 # A small step away from the carried column, per direction.
 WARM_DELTA = np.array([0.05, 0.02, 0.1, 5.0], dtype=np.float64)
 # Bounds a modest factor above the measured worst (1.7e-1, 2.0e-4, 2.9e-5).

@@ -33,7 +33,13 @@ pytestmark = pytest.mark.skipif(
 )
 
 K = 40
-PROFILE = {"use_photo": False, "yconv_cri": 1.0e-2, "nz": 20, "count_min": K, "count_max": K}
+# The chemistry every test here solves: the 2025 sulfur network on the WASP-39 b config.
+CHEM_ID = {
+    "network": "thermo/SNCHO_photo_network_2025.txt",
+    "atom_list": ["H", "O", "C", "N", "S"],
+    "vulcan_cfg_name": "W39b",
+}
+PROFILE = {**CHEM_ID, "use_photo": False, "yconv_cri": 1.0e-2, "nz": 20, "count_min": K, "count_max": K}
 THETA = np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float64)
 # [lnZ, c_o, lnKzz, T-offset]: unit directions in lnZ and in the T offset.
 DIRS = np.eye(4, dtype=np.float64)[[0, 3]]
@@ -80,6 +86,7 @@ def test_stacked_directions_reproduce_the_single_direction_tangents(runs):
 # The endpoint is free here: count_min is low enough that the certificate, not
 # the floor, ends a warm continuation, and count_max far above any exit.
 SETTLE_PROFILE = {
+    **CHEM_ID,
     "use_photo": False,
     "yconv_cri": 1.0e-2,
     "nz": 20,

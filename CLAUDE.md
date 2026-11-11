@@ -30,6 +30,8 @@ policy: the project-root `CLAUDE.md`.
 - Data: set `$VULCAN_FORWARD_DATA` (or call `paths.set_data_root`). Fetch k-tables once, offline: `python -m
   vulcan_forward.fetch_exomolop --molecules H2O,CO2,...`.
 - Use: pass one profile dict to `build_chem_model`, `build_rt_model` and `build_emis_model` (import order under Rules).
+  The profile names the chemistry (`network`, `atom_list`, `vulcan_cfg_name`) and the column (`art_pbtm_bar`,
+  `p_ref_bar`, the planet geometry): none has a default.
 - Normal tier, inside the CPU cap:
   `JAX_PLATFORMS=cpu XLA_FLAGS="--xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1" OMP_NUM_THREADS=1 taskset -c <CPUs> uv run python -m pytest tests -q -n 6`
 - Full tier: add `VULCAN_FORWARD_RUN_FULL=1` and `--dist worksteal`. It is long and memory-heavy (cost in notes "Test
@@ -57,13 +59,18 @@ policy: the project-root `CLAUDE.md`.
   by the fetcher), its header from `exomolop.table_info()`: provenance is recorded, never asked of the caller.
 - The molecule table is injectable (`profile['molecule_table']`): never tell a consumer to edit a constant inside the
   engine.
-- Planet geometry is required: `build_rt_model` needs `rp_cm`, `gs_cgs`, `rstar_cm`. Never add a default planet.
+- Nothing that belongs to a case has a default: `build_chem_model` needs `network`, `atom_list` and
+  `vulcan_cfg_name`; `build_rt_model` needs `rp_cm`, `gs_cgs`, `rstar_cm`, `p_ref_bar` and `art_pbtm_bar`. Never add a
+  default planet, network or column. A fixed number is a named constant in `constants.py` with its unit and reason,
+  under that file's four headings; a setting stated twice, or where it cannot act, is refused (notes "Import order,
+  profile keys and refusals").
 - Every builder calls `constants.check_profile_keys`, which refuses any key outside `constants.PROFILE_KEYS`. A new
   profile reader adds its key there; deleting a reader removes it. `cfg_overrides` keys pass
   `vulcan3.validate_overrides` before they apply (notes "Import order, profile keys and refusals").
-- Import order is load-bearing: `vulcan_chem` sets the import-frozen `VULCAN3_*` env vars (with `setdefault`, never
-  assignment) and jax x64, so it precedes any exojax import. Keep its raises on a late arrival and on a prior `vulcan3`
-  import whose frozen network conflicts.
+- Import order is load-bearing: `vulcan_chem` sets jax x64, so it precedes any exojax import; keep its raise on a
+  late arrival. The network is the caller's: `vulcan_chem.select_network` hands the profile's `network` and `atom_list`
+  to vulcan3, which freezes both at its first import. Importing the engine selects nothing; keep the refusals of a
+  disagreeing environment and of a second network in one process.
 - `exojax` is pinned exactly in `pyproject.toml`. Moving it needs the RT and derivative tests plus a spectrum diff
   against the old version on fixed inputs (notes "RT validation and the exojax pin").
 
@@ -98,7 +105,7 @@ policy: the project-root `CLAUDE.md`.
 
 ### Geometry and anchors
 
-- `rp_cm`/`gs_cgs` apply at `p_ref_bar` (default `constants.P_REF_BAR`), not at the RT grid bottom. exojax's
+- `rp_cm`/`gs_cgs` apply at `p_ref_bar` (required), not at the RT grid bottom. exojax's
   `radius_btm` is the bottom layer's lower boundary, so `_radius_at` carries an extra half-layer node: keep it, or the
   depth depends on `art_nlayer` (notes "Geometry and anchors").
 - Emission anchors radius and gravity at the constant `constants.P_REF_EMISSION_BAR` (not a profile key);
@@ -112,8 +119,8 @@ policy: the project-root `CLAUDE.md`.
 
 ### Opacity and radiative transfer
 
-- Opacity is correlated-k over the published ExoMolOP tables, the only path. `build_rt_model` refuses `opacity_mode !=
-  "exomolop"`, and the removed line-by-line and Mie keys raise (notes "Opacity: correlated-k on ExoMolOP").
+- Opacity is correlated-k over the published ExoMolOP tables, the only path: there is no opacity-mode key, and the
+  removed line-by-line and Mie keys raise (notes "Opacity: correlated-k on ExoMolOP").
 - exojax and exo_k are oracles only (`tests/test_ckd.py`, `tests/test_exomolop.py`); run exo_k in a throwaway venv,
   never the jax env.
 - The fetcher takes the principal isotopologue, its natural-abundance file where one exists, on the engine's band grid

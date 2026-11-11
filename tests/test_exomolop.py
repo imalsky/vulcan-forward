@@ -50,7 +50,7 @@ def _write(
     import h5py
 
     edges = nu0 * np.exp(np.arange(nb + 1) / 1000.0)
-    t = np.linspace(300.0, 3000.0, NT)
+    t = np.linspace(200.0, 3000.0, NT)
     p = np.logspace(-5, 2, NP)
     g = np.linspace(0.02, 0.98, NG) + g_shift
     w = np.full(NG, 1.0 / NG)
@@ -363,7 +363,7 @@ def test_real_tables_reproduce_the_exo_k_reference():
     assert np.median(band_rel) < 7e-3, np.median(band_rel)
 
 
-@pytest.mark.parametrize("molecule", ["CO2", "CO", "CH4", "NH3", "HCN", "H2S", "SO2"])
+@pytest.mark.parametrize("molecule", ["CO2", "CO", "CH4", "NH3", "HCN", "H2S", "SO2", "C2H2", "OCS", "SO"])
 def test_core_molecule_ranges_are_where_the_table_absorbs(molecule):
     """``constants.CORE_MOLECULE_BANDS_UM`` against its rule: at 1000 K and 1 mbar, the R = 100 band-mean cross-section
     is at least 1 % of its 1-15 um peak. Every such band lies in a listed range, and every listed range holds one.
@@ -380,6 +380,20 @@ def test_core_molecule_ranges_are_where_the_table_absorbs(molecule):
     assert not outside, f"{molecule} absorbs at {outside[:5]} um, outside its listed ranges {ranges}"
     empty = [r for r in ranges if not np.any((strong >= r[0]) & (strong <= r[1]))]
     assert not empty, f"{molecule}: no strong band inside the listed ranges {empty}"
+
+
+@pytest.mark.usefixtures("data_root")
+def test_tables_must_cover_the_temperature_window_and_an_empty_molecule_table_is_not_the_default(monkeypatch):
+    """Tables that stop inside the engine's temperature window would clamp a layer at their edge, so the load refuses
+    them. An empty molecule table is the caller's table, with no entry: it is not swapped for the engine's default.
+    """
+    _, edges, *_ = _write(exomolop.table_path("H2O"))
+    exomolop.load_tables(["H2O"], edges[0], edges[-1], verbose=False)
+    with pytest.raises(KeyError, match="no molecule spec for"):
+        exomolop.load_tables(["H2O"], edges[0], edges[-1], molecule_table={}, verbose=False)
+    monkeypatch.setattr(constants, "T_OPA_MIN_K", 150.0)
+    with pytest.raises(ValueError, match=r"tables cover \[200, 3000\] K but the engine accepts columns from 150"):
+        exomolop.load_tables(["H2O"], edges[0], edges[-1], verbose=False)
 
 
 @pytest.mark.usefixtures("data_root")

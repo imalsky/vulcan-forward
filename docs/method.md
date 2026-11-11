@@ -7,12 +7,12 @@ behind the rules are in `notes.md`.
 
 | Module | Job |
 |---|---|
-| `constants` | Physics constants, RT defaults, the default molecule table, the profile-key check |
+| `constants` | Every fixed number, under four headings (physical constants, fixed model choices, numerical tolerances, defaults a caller may override), the default molecule table, the profile-key check |
 | `paths` | The data root: k-tables and CIA tables |
 | `exomolop` | ExoMolOP k-table ingestion, header checks, provenance |
 | `fetch_exomolop` | The offline fetcher |
 | `ckd` | (T, P) interpolation of log k and the random-overlap mixture |
-| `vulcan_chem` | The import-order preamble and `build_chem_model`, the chemistry driver's setup |
+| `vulcan_chem` | The import-order preamble, `select_network` and `build_chem_model`, the chemistry driver's setup |
 | `_chem_model` | Theta to the converged column, forward-mode differentiable: `_ChemSetup` (what a build fixes, a proposal's initial state and exit report), `_ChemSolves` (every solve entry point) |
 | `_chem_layout` | `ChemParams`, the positional layout, `ConvDiag` |
 | `_elemental` | The composition masks, the elemental repair, the C/O margin |
@@ -92,25 +92,31 @@ positions are uncorrelated within a band. It is written in JAX, so tangents pass
 
 CIA (H2-H2, H2-He, always on), H2 and He Rayleigh in transmission only (on unless `use_rayleigh` is false; it is
 scattering, and the emission solver is pure absorption), exojax's `powerlaw_clouds`, $\kappa(\nu) = \kappa_0 (\nu / \nu_0)^\alpha$ per gram of atmosphere, and a grey deck below a free
-pressure. The power law is a uniformly mixed nuisance, not a physical cloud. All are smooth across a band, so their band
+pressure, in transmission and in emission (in emission the opaque layers radiate at the temperature of the level they
+sit at). The power law is a uniformly mixed nuisance, not a physical cloud. All are smooth across a band, so their band
 value adds identically to every g-ordinate.
 
 ### Bounds
 
 The band must lie inside 1-15 um (`constants.WIDE_BAND_NU_MIN`, `WIDE_BAND_NU_MAX`): shortward of 1 um the Na and K
 resonance lines and hazes set the spectrum, and the model has neither. Every RT temperature must lie inside
-`constants.T_OPA_MIN_K` to `T_OPA_MAX_K`, because the k-table and CIA interpolations clamp at their edges. A column
+`constants.T_OPA_MIN_K` to `T_OPA_MAX_K` (200-3000 K, the span both CIA tables cover; the build refuses installed
+tables that do not), because the k-table and CIA interpolations clamp at their edges. This window bounds the opacity
+only: the chemistry's equilibrium start is known to break down below about 225 K, where a solve raises or comes back
+uncertified. A column
 outside the window raises when the call is eager; under `jax.jit` nothing can raise, so the spectrum comes back NaN and
 the caller checks it. The same holds for a mean molecular weight below that of atomic hydrogen and for a mixing ratio
-outside [0, 1]. Planet radius, gravity and stellar radius must be finite and positive. The grid bottom may not lie
+outside [0, 1]. Planet radius, gravity, stellar radius, the grid bottom `art_pbtm_bar` and the reference pressure
+`p_ref_bar` have no default and must be finite and positive. The grid bottom may not lie
 below the k-table pressure ceiling; layers above the tables' lowest pressure reuse its entry, as petitRADTRANS does.
 
-The core absorbers are H2O, CO2, CO, CH4, NH3, HCN, H2S and SO2: the main carriers of oxygen, carbon, nitrogen and
+The core absorbers are H2O, CO2, CO, CH4, NH3, HCN, H2S and SO2, the main carriers of oxygen, carbon, nitrogen and
 sulfur in a hydrogen-dominated atmosphere (Moses et al. 2013), seven of them measured in transmission with JWST
-(Rustamkulov et al. 2023; Bell et al. 2023; Welbanks et al. 2024; Fu et al. 2024). `constants.CORE_MOLECULE_BANDS_UM`
+(Rustamkulov et al. 2023; Bell et al. 2023; Welbanks et al. 2024; Fu et al. 2024), and C2H2, OCS and SO, which reach
+tens to hundreds of ppm in this model's own columns. `constants.CORE_MOLECULE_BANDS_UM`
 lists where each absorbs: H2O everywhere, the others where the table's R = 100 band-mean cross-section at 1000 K and
 1 mbar is at least 1 % of its peak. Where the band overlaps a molecule's range and the molecule is not in the RT, the
-build refuses H2O, CO2, CO, CH4 and NH3 (`constants.REQUIRED_MOLECULES`) and warns for HCN, H2S and SO2, which depend
+build refuses H2O, CO2, CO, CH4 and NH3 (`constants.REQUIRED_MOLECULES`) and warns for the other six, which depend
 on the planet; the warned names come back as `unlisted_core_molecules` for the consumer to report. A caller that
 leaves one out on purpose names it in `omit_core_molecules`. A molecule outside the core set may be left out freely.
 

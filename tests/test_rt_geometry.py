@@ -28,7 +28,7 @@ else:
 
 import jax.numpy as jnp
 
-from vulcan_forward import constants, exojax_rt
+from vulcan_forward import _rt_opacity, constants
 from vulcan_forward._rt_geometry import (
     _anchor_to_grid_bottom,
     _radius_at,
@@ -128,13 +128,22 @@ def test_is_differentiable():
     assert d > 0.0  # weaker gravity -> more altitude -> smaller r_btm
 
 
-@pytest.mark.parametrize(("lo", "hi", "refused"), [(500.0, 1000.0, False), (50.0, 1000.0, True), (500.0, 3000.0, True)])
-def test_cia_span_refuses_a_grid_past_the_table(lo, hi, refused):
-    """A wavenumber grid past either edge of a CIA table would reuse the edge coefficient silently."""
-    cdb = SimpleNamespace(nucia=np.array([100.0, 2000.0]))
+@pytest.mark.parametrize(
+    ("lo", "hi", "t_lo", "t_hi", "refused"),
+    [
+        (500.0, 1000.0, 200.0, 3000.0, False),
+        (50.0, 1000.0, 200.0, 3000.0, True),
+        (500.0, 3000.0, 200.0, 3000.0, True),
+        (500.0, 1000.0, 400.0, 3000.0, True),
+        (500.0, 1000.0, 200.0, 2500.0, True),
+    ],
+)
+def test_cia_span_refuses_a_grid_or_a_temperature_window_past_the_table(lo, hi, t_lo, t_hi, refused):
+    """A band past a CIA table's wavenumber edge, or a layer past its temperature edge, would reuse the edge value."""
+    cdb = SimpleNamespace(nucia=np.array([100.0, 2000.0]), tcia=np.array([t_lo, t_hi]))
     nu_grid = np.array([lo, hi])
     if refused:
         with pytest.raises(ValueError, match="H2-He CIA table covers"):
-            exojax_rt._check_cia_span(cdb, nu_grid, "H2-He")
+            _rt_opacity._check_cia_span(cdb, nu_grid, "H2-He")
     else:
-        exojax_rt._check_cia_span(cdb, nu_grid, "H2-He")
+        _rt_opacity._check_cia_span(cdb, nu_grid, "H2-He")

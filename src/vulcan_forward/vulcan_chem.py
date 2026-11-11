@@ -30,38 +30,25 @@ if TYPE_CHECKING:
 
     Profile = dict[str, Any]
 
-__all__ = ["CHEM_EXTRAS", "ChemParams", "ConvDiag", "build_chem_model", "bz_margin", "params_from_vector"]
+__all__ = [
+    "CHEM_EXTRAS",
+    "ChemParams",
+    "ConvDiag",
+    "build_chem_model",
+    "bz_margin",
+    "params_from_vector",
+    "select_network",
+]
 
 logger = logging.getLogger(__name__)
 
 if "exojax" in sys.modules:
     raise RuntimeError(
         "vulcan_forward.vulcan_chem must be imported BEFORE exojax: it fixes "
-        "jax x64 and the VULCAN3_* import-frozen env vars. Import order: "
-        "vulcan_forward.vulcan_chem, then vulcan_forward.exojax_rt."
+        "jax x64. Import order: vulcan_forward.vulcan_chem, then "
+        "vulcan_forward.exojax_rt."
     )
 
-# vulcan3 freezes network and atom_list at its first import, so arriving after it makes the setdefault below a no-op.
-_WANT_ENV = {"VULCAN3_NETWORK": constants.DEFAULT_NETWORK, "VULCAN3_ATOM_LIST": constants.DEFAULT_ATOM_LIST}
-if "vulcan3" in sys.modules:
-    _conflict = {k: (os.environ.get(k), v) for k, v in _WANT_ENV.items() if os.environ.get(k) not in (None, v)}
-    if not _conflict:
-        _frozen = getattr(sys.modules["vulcan3"], "chem_funs", None)
-        _frozen = getattr(getattr(_frozen, "NETWORK", None), "network_path", None)
-        if _frozen and Path(_frozen).name != Path(constants.DEFAULT_NETWORK).name:
-            _conflict = {"VULCAN3_NETWORK": (_frozen, constants.DEFAULT_NETWORK)}
-    if _conflict:
-        raise RuntimeError(
-            "vulcan3 was imported before vulcan_forward.vulcan_chem, so its "
-            "network/atom_list are already frozen and cannot be changed: "
-            + "; ".join(f"{k} is {got!r} but this engine needs {want!r}" for k, (got, want) in _conflict.items())
-            + ". Import vulcan_forward.vulcan_chem first, or set those env vars "
-            "before importing vulcan3."
-        )
-
-# setdefault: a caller driving another network sets these itself.
-for _k, _v in _WANT_ENV.items():
-    os.environ.setdefault(_k, _v)
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 import jax
@@ -72,12 +59,134 @@ jax.config.update("jax_enable_x64", True)
 from vulcan_forward._chem_layout import CHEM_EXTRAS, ChemParams, ConvDiag, _check_extras, params_from_vector
 from vulcan_forward._elemental import _assert_composition_tables, _build_elemental, bz_margin
 
+# The settings build_chem_model needs and has no default for: they name the chemistry, and belong to the caller's case.
+_CHEMISTRY_KEYS = {
+    "network": "the kinetics network file, a path vulcan3 resolves (e.g. thermo/SNCHO_photo_network_2025.txt)",
+    "atom_list": "the network's elements (e.g. ['H', 'O', 'C', 'N', 'S'])",
+    "vulcan_cfg_name": "the vulcan3 config that holds the planet, the star and the T-P and Kzz profile (name or path)",
+}
+# What vulcan3 freezes at its first import, by the environment variable it reads.
+_FROZEN_ENV = {"network": "VULCAN3_NETWORK", "atom_list": "VULCAN3_ATOM_LIST"}
+# Top-level profile keys that would also be legal inside cfg_overrides.
+_TOP_LEVEL_CFG_KEYS = ("use_photo", "yconv_cri", "nz", "count_min", "count_max", "dt_max", "yconv_min")
+
+
+def select_network(network: str, atom_list: str | Iterable[str]) -> None:
+    """Hand the kinetics network and its atom list to vulcan3, which freezes both at its first import.
+
+    Call it before anything imports vulcan3; ``build_chem_model`` calls it with its profile's values. One process runs
+    one network, so a later call must name the same pair.
+
+    Parameters
+    ----------
+    network : str
+        The network file, a path vulcan3 resolves, such as ``thermo/SNCHO_photo_network_2025.txt``.
+    atom_list : str or sequence of str
+        The network's elements, comma-separated or as a sequence.
+
+    Raises
+    ------
+    RuntimeError
+        If the environment, or a vulcan3 that is already imported, holds another network or atom list.
+    """
+    atoms = [a.strip() for a in (atom_list.split(",") if isinstance(atom_list, str) else atom_list)]
+    want = {"network": str(network), "atom_list": ",".join(atoms)}
+    if "vulcan3" in sys.modules:
+        from vulcan3.config import default_config
+        from vulcan3.paths import resolve_data_path
+
+        # What vulcan3 built at its import where those modules are loaded, else the config it will build them from.
+        chem_funs, jax_step = sys.modules.get("vulcan3.chem_funs"), sys.modules.get("vulcan3.jax_step")
+        frozen = default_config()
+        have = {
+            "network": str(chem_funs.NETWORK.network_path if chem_funs is not None else frozen.network),
+            "atom_list": ",".join(jax_step.IMPORT_ATOM_LIST if jax_step is not None else frozen.atom_list),
+        }
+        same_file = (
+            Path(resolve_data_path(have["network"])).resolve() == Path(resolve_data_path(want["network"])).resolve()
+        )
+        if not same_file or have["atom_list"] != want["atom_list"]:
+            raise RuntimeError(
+                f"vulcan3 is already imported with network {have['network']!r} and atoms {have['atom_list']!r}, and "
+                f"this call asks for {want['network']!r} and {want['atom_list']!r}. vulcan3 freezes both at its first "
+                "import: call select_network before anything imports vulcan3, and run another network in another "
+                "process."
+            )
+        return
+    held = {k: os.environ.get(env) for k, env in _FROZEN_ENV.items()}
+    conflict = {_FROZEN_ENV[k]: (held[k], want[k]) for k in want if held[k] not in (None, want[k])}
+    if conflict:
+        raise RuntimeError(
+            "the environment disagrees with the network this call selects: "
+            + "; ".join(f"{env} is {got!r}, asked for {asked!r}" for env, (got, asked) in conflict.items())
+            + ". Unset the variable: the caller's settings decide."
+        )
+    for key, env in _FROZEN_ENV.items():
+        os.environ[env] = want[key]
+
+
+def _check_overrides(profile: Profile) -> dict[str, Any]:
+    """Return the profile's ``cfg_overrides``, refusing a key the profile also sets or that cannot take effect there."""
+    import vulcan3
+
+    overrides = dict(profile.get("cfg_overrides") or {})
+    # setattr checks nothing, so a removed or misspelled key is refused first.
+    vulcan3.validate_overrides(overrides)
+    frozen = sorted(set(overrides) & set(_FROZEN_ENV))
+    if frozen:
+        raise ValueError(
+            f"cfg_overrides sets {frozen}, which vulcan3 freezes at its first import: name them at the top level of "
+            "the profile ('network', 'atom_list')."
+        )
+    twice = sorted(k for k in _TOP_LEVEL_CFG_KEYS if k in overrides and profile.get(k) is not None)
+    if twice:
+        raise ValueError(
+            f"{twice} are set at the top level of the profile and again in cfg_overrides: state each once."
+        )
+    if "runtime" in overrides and "dt_max" not in overrides and profile.get("dt_max") is None:
+        raise ValueError(
+            "cfg_overrides sets 'runtime' without 'dt_max': vulcan3 derived dt_max from the config file's runtime when "
+            "it loaded the file, so it would not follow. State dt_max too."
+        )
+    return overrides
+
+
+def _check_one_planet(cfg: Any, profile: Profile) -> None:
+    """Refuse a chemistry planet whose mass disagrees with the RT geometry in the same profile."""
+    from vulcan3.phy_const import G_grav
+
+    if "rp_cm" not in profile or "gs_cgs" not in profile:
+        return
+    gm_chem = G_grav * float(cfg.Mp)
+    gm_rt = float(profile["gs_cgs"]) * float(profile["rp_cm"]) ** 2
+    if abs(gm_chem / gm_rt - 1.0) > constants.GM_MATCH_RTOL:
+        raise ValueError(
+            f"the chemistry and the RT describe different planets: G Mp = {gm_chem:.4e} cm^3 s^-2 from the vulcan3 "
+            f"config (Mp = {float(cfg.Mp):.4e} g) against gs_cgs rp_cm^2 = {gm_rt:.4e} from the profile, "
+            f"{100.0 * (gm_chem / gm_rt - 1.0):+.1f} % apart (allowed {100.0 * constants.GM_MATCH_RTOL:g} %). Set Mp "
+            "in cfg_overrides, or correct gs_cgs and rp_cm."
+        )
+
 
 def _configured_cfg(profile: Profile) -> Any:
     """Load the VULCAN config the profile names and apply the profile to it, refusing what the rebuild cannot follow."""
+    missing = [k for k in _CHEMISTRY_KEYS if not profile.get(k)]
+    if missing:
+        raise ValueError(
+            f"profile is missing {missing}, which have no default: "
+            + "; ".join(f"{k} ({_CHEMISTRY_KEYS[k]})" for k in missing)
+            + "."
+        )
+    select_network(profile["network"], profile["atom_list"])
     import vulcan3
 
-    cfg = vulcan3.load_config(profile.get("vulcan_cfg_name") or constants.DEFAULT_CFG_NAME)
+    overrides = _check_overrides(profile)
+    cfg = vulcan3.load_config(profile["vulcan_cfg_name"])
+    # vulcan3's pre-loop setup compares these with what it froze at import, so it is the profile's pair it checks.
+    cfg.network = str(profile["network"])
+    cfg.atom_list = (
+        [a.strip() for a in atoms.split(",")] if isinstance(atoms := profile["atom_list"], str) else list(atoms)
+    )
     cfg.use_print_prog = False
     cfg.use_photo = bool(profile["use_photo"])
     cfg.yconv_cri = float(profile["yconv_cri"])
@@ -85,10 +194,9 @@ def _configured_cfg(profile: Profile) -> Any:
     for key, cast in (("nz", int), ("count_min", int), ("count_max", int), ("dt_max", float), ("yconv_min", float)):
         if profile.get(key) is not None:
             setattr(cfg, key, cast(profile[key]))
-    # setattr checks nothing, so a removed or misspelled key is refused first.
-    vulcan3.validate_overrides(profile.get("cfg_overrides") or {})
-    for _k, _v in (profile.get("cfg_overrides") or {}).items():
+    for _k, _v in overrides.items():
         setattr(cfg, _k, _v)
+    _check_one_planet(cfg, profile)
 
     if list(cfg.T_cross_sp or []):
         raise ValueError(
@@ -105,6 +213,34 @@ def _configured_cfg(profile: Profile) -> Any:
         cfg.P_t = float(_ptop if _ptop is not None else constants.ART_PTOP_BAR) * constants.BAR_CGS
 
     return cfg
+
+
+def _log_inputs(network_file: Path, cfg: Any, profile: Profile) -> None:
+    """Log the files this build reads: vulcan3 looks in the working directory before its packaged data."""
+    from vulcan3.paths import resolve_data_path
+
+    logger.info(
+        "[chem] config %r: network %s, atmosphere %s, stellar flux %s",
+        profile["vulcan_cfg_name"],
+        network_file,
+        resolve_data_path(cfg.atm_file) if cfg.atm_type == "file" else cfg.atm_type,
+        resolve_data_path(cfg.sflux_file) if cfg.use_photo else "not read (photochemistry off)",
+    )
+
+
+def _thermo_dir(network_file: Path) -> Path:
+    """Return the folder holding the network's NASA9 Gibbs data, refusing a network that has none beside it.
+
+    The rates and the equilibrium start must read the Gibbs data of the tree the network came from; another tree's
+    data would be a different chemistry with no message.
+    """
+    thermo_dir = Path(network_file).parent
+    if not (thermo_dir / "NASA9").is_dir():
+        raise FileNotFoundError(
+            f"no NASA9 folder beside the network {network_file}: expected {thermo_dir / 'NASA9'}. Keep the network in "
+            "a thermo folder that holds its NASA9 Gibbs data."
+        )
+    return thermo_dir
 
 
 def _check_stellar_span(cfg: Any, var: Any) -> None:
@@ -142,7 +278,12 @@ def _make_kzz_eff(
     )
     _kzz_ref0 = _p_over_ref = None
     if kzz_mode == "powerlaw":
-        kzz_p_ref_bar = float(profile.get("kzz_p_ref_bar", constants.KZZ_P_REF_BAR))
+        if "kzz_p_ref_bar" not in profile:
+            raise ValueError(
+                "kzz_mode 'powerlaw' needs kzz_p_ref_bar, the pressure in bar where the Kzz profile is read and the "
+                "slope pivots: it belongs to the case and has no default."
+            )
+        kzz_p_ref_bar = float(profile["kzz_p_ref_bar"])
         if not (_p_int_bar.min() <= kzz_p_ref_bar <= _p_int_bar.max()):
             raise ValueError(
                 f"kzz_p_ref_bar={kzz_p_ref_bar:g} lies outside the Kzz grid "
@@ -188,6 +329,11 @@ def _checked_kzz_mode(profile: Profile, chem_extras: tuple[str, ...]) -> str:
     kzz_mode = str(profile.get("kzz_mode", "scale"))
     if kzz_mode not in ("scale", "powerlaw"):
         raise ValueError(f"kzz_mode={kzz_mode!r}: expected 'scale' or 'powerlaw'")
+    if "kzz_p_ref_bar" in profile and kzz_mode != "powerlaw":
+        raise ValueError(
+            f"kzz_p_ref_bar is set but kzz_mode is {kzz_mode!r}: only the power law reads the reference pressure, so "
+            "it would change nothing. Drop the key."
+        )
     if "kzz_slope" in chem_extras and kzz_mode != "powerlaw":
         raise ValueError(
             "chem_extras carries 'kzz_slope' but kzz_mode is "
@@ -243,7 +389,8 @@ def build_chem_model(
     Parameters
     ----------
     profile : dict
-        Settings, with keys in ``constants.PROFILE_KEYS``. ``use_photo`` and ``yconv_cri`` are required.
+        Settings, with keys in ``constants.PROFILE_KEYS``. ``network``, ``atom_list``, ``vulcan_cfg_name``,
+        ``use_photo`` and ``yconv_cri`` are required.
     tp_eval : callable, optional
         ``tp_eval(theta[k:k+n_tp_params], p_bar)`` returns T(P), K, on the bar grid, with k = 3 + len(chem_extras).
         None: T is the baseline profile plus a uniform offset ``theta[k]``, K.
@@ -271,8 +418,6 @@ def build_chem_model(
     constants.check_profile_keys(profile)
     chem_extras = _check_extras(chem_extras)
     kzz_mode = _checked_kzz_mode(profile, chem_extras)
-    import vulcan3
-
     cfg = _configured_cfg(profile)
 
     from vulcan3 import atm_jax, composition, network as net_mod
@@ -288,20 +433,20 @@ def build_chem_model(
 
     use_condense = bool(cfg.use_condense)
     _refuse_surface_h2o(cfg, use_condense)
+    network_file = resolve_data_path(cfg.network)
+    thermo_dir = _thermo_dir(network_file)
+    _log_inputs(network_file, cfg, profile)
 
     rs = RunState.with_pre_loop_setup(cfg)
     var, atm, para = legacy_view(rs)
     if cfg.use_photo:
         _check_stellar_span(cfg, var)
-    network = net_mod.parse_network(str(resolve_data_path(cfg.network)))
+    network = net_mod.parse_network(str(network_file))
     nz, ni = atm.Tco.shape[0], network.ni
     sidx = dict(network.species_idx)
     conden_spec = _checked_conden_spec(cfg, var, atm, sidx) if use_condense else None
 
     p_bar = np.asarray(atm.pco, dtype=np.float64) / constants.BAR_CGS
-    thermo_dir = resolve_data_path(cfg.network).parent
-    if not (thermo_dir / "NASA9").exists():
-        thermo_dir = Path(vulcan3.__file__).resolve().parent / "thermo"
     nasa9, _ = load_nasa9(network.species, thermo_dir)
 
     integ = _make_runner(cfg, rs, para)

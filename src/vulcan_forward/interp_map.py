@@ -56,7 +56,7 @@ def make_to_art(p_bar_vulcan: np.ndarray, p_bar_art: np.ndarray) -> Callable[[Ar
         raise ValueError(
             f"ART grid bottom ({np.max(p_bar_art):.3e} bar) lies below the VULCAN "
             f"chemistry bottom ({p_btm_v:.3e} bar): {n_btm_clamp} layers would clamp "
-            "to the deepest chemistry value. Shrink ART_PBTM_BAR or extend the "
+            "to the deepest chemistry value. Shrink art_pbtm_bar or extend the "
             "chemistry grid."
         )
     if n_top_clamp:
