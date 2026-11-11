@@ -146,6 +146,42 @@ Tags: [M] measured, [E] estimated, [I] inferred.
   on the CPU (rtol 1e-12 elsewhere: a GH200 differed in the last bits). RT vjp per lane,
   12 absorbers, 1650 bands, 67 layers, CPU: loop 13.49 GiB / 11.9 s, scan 4.56 GiB /
   9.8 s [M].
+- H2 and He Rayleigh is on unless the profile sets `use_rayleigh` false (it was off by default before; both
+  consumers always passed true). Callers that did not name the key, so ran without it and now change: jax_paper's
+  `scripts/retrieval/paper_profiles.py` profiles (used by `run_figs.py`, `sensitivity.py`,
+  `zco_information/build_zco_jacobians.py`, `build_zco_walk.py`) and jwst-transit-authority's
+  `validation/scripts/rtcase.py` (a grep of every `build_rt_model(` caller in the workspace). On minus off on a W39b-like test column (40 layers, 700-1600 K, H2O 1e-3, CO 5e-4,
+  CO2 1e-5, SO2 3e-6, CH4 1e-7, no cloud) [M, daw CPU]: mean 10.6 ppm (max 29.4) at 1.0-1.2 um, 1.1 (6.0) at
+  1.2-2.0 um, 0.07 (0.27) at 2-3 um, 0.01 (0.03) at 3-5.3 um.
+- Bounds refused in the engine: a band outside 1-15 um (`constants.check_band`; below 1 um Na, K and hazes set the spectrum),
+  and a column the model does not cover (`_rt_opacity._column_ok`: a temperature outside 300-3000 K, a mean
+  molecular weight below atomic hydrogen's, a mixing ratio outside [0, 1]; an error when eager, a NaN spectrum under
+  jit). Planet radius, gravity and stellar radius must be finite and positive (`_require_geometry`). The window stops
+  at 3000 K although the k-tables reach 3400 K, because the H2-H2 CIA file does not. exojax's CIA interpolation is `jnp.interp` in T, so it clamps like the k-tables; the H2-H2 file spans
+  200-3000 K and the H2-He file 200-9900 K. In-window outputs are bitwise unchanged by the guard: 12 arrays
+  (transmission with and without Rayleigh, leave-one-out, a T jvp, emission flux, tau and eclipse flux) on the real
+  tables [M].
+- Core absorbers (`constants.CORE_MOLECULE_BANDS_UM`, checked by `constants.check_core_molecules`): H2O, CO2, CO,
+  CH4, NH3, HCN, H2S, SO2. Left out of a band it absorbs in and not named in `omit_core_molecules`, one of the first
+  five is refused (`REQUIRED_MOLECULES`) and one of the last three is warned about and echoed as
+  `unlisted_core_molecules` (the maintainer decided: HCN and the sulfur gases depend on the planet, though on WASP-39 b
+  SO2 is the third largest effect, 1030 ppm, and HCN the fourth, 742). They are the eight largest leave-one-out effects in
+  jwst-transit-authority's record (its notes "Opacity and radiative transfer": on WASP-39 b each is 134 ppm or more
+  over 1-15 um, and the next, OCS, is 58.5), and the carriers Moses et al. 2013 name. C2H2 and C2H4 matter only at
+  C/O above 1 and are not core. The ranges follow one rule (R = 100 band-mean cross-section at 1000 K, 1 mbar, at
+  least 1 % of the 1-15 um peak), checked against the installed tables by `tests/test_exomolop.py`; H2O is the whole
+  band, because its own peak rule would drop the 1.0-1.3 um bands where it is the main absorber. Against the callers
+  [M]: both retrieval base specs pass (12 molecules); jwst-transit-authority's GUI default passes, its API default
+  (no `extra_mols`: H2O, CO2, CO, CH4, SO2) is refused for NH3, and its sulfur-free network passes with a warning for
+  H2S and SO2; the jax_paper profiles (`paper_profiles.py`) name what they leave out.
+- A bare `converged_y` or `converged_y_batch` returns a column only if it certified (`_chem_model._certified`: an
+  error when eager, NaN under jit); `return_conv_diag=True` hands the caller the certificate instead, and
+  `allow_uncertified=True` is the opt-out vulcan-retrieval's ungated stage 1 passes. Before this a caller that did
+  not ask for the diagnostics got a column that may have stopped on its step cap.
+- `build_chem_model` refuses a stellar spectrum that does not cover every photolysis threshold of the network
+  (`vulcan_chem._check_stellar_span`): vulcan3 cuts its photolysis grid to the file's span, as VULCAN 2 does. For the
+  2025 SNCHO network the thresholds reach 655.5 nm (HCO). Of vulcan3's packaged files and the survey's, only
+  `sflux-epseri.txt` (115-283 nm) is refused; the others start at 2 nm or below and reach 700 nm or more [M].
 - Grey deck (`deck`, log10 P_deck in bar, independent of the power-law `cloud`): every
   layer deeper than the deck gets dtau = `CLOUD_DECK_TAU` (1e3) through a logistic step in
   ln P of width `CLOUD_DECK_WIDTH_LNP` (0.02, a sixteenth of a production RT layer). Along
@@ -226,6 +262,10 @@ Tags: [M] measured, [E] estimated, [I] inferred.
   - emission, H2O, 900-2200 K, 3-5 um: bias +0.034%, rms 0.020%, worst band 0.091%.
   - transmission vs the analytic grey solution: 0.012-0.016 scale heights over 5-7
     decades.
+- The W39b 8-species case builds its grid to 20 bar, not the fixture's 50 bar: the Tsai et al. 2023 profile reaches
+  3507 K at 50 bar (3000 K at 23 bar, 3400 K at 43 bar), outside the opacity window, so the engine refuses it. Those
+  layers are opaque in transit: at 20 bar the mean ratio is 0.998289, rms 0.0960 %, max 0.342 % against the 50 bar
+  run's 0.998288, 0.0958 %, 0.341 % [M, daw CPU], inside the unchanged bars.
 - Unit trap: exojax flux is per cm^-1; pRT's wavelength-mode flux is per cm of
   wavelength, so `F_lambda = F_nu_tilde * nu_tilde^2`.
 - Published gCMCRT spectra decode as `depth = (H(1)^2 + 2*col2)/Rstar^2` with each file's
@@ -460,8 +500,8 @@ per-theta re-anchoring stay; the other items stay live as model choices.
 - `ChemParams.tp = ()` defaults to an IndexError [I].
 - A non-default `VULCAN3_NETWORK` is kept when `vulcan_chem` is imported first, refused
   when `vulcan3` was.
-- No engine test sets `cfg_overrides`, `run_diag`, `use_rayleigh`,
-  `rt_integration` or `molecule_table` (consumers use all but the last).
+- No engine test sets `cfg_overrides`, `run_diag`, `rt_integration` or `molecule_table`
+  (consumers use all but the last).
   `test_contract.py`'s docstring says the planner's datacheck reads the path helpers; it
   re-derives the path.
 - The eq seed reads vulcan3's process-default config at trace time

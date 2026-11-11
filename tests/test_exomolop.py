@@ -363,6 +363,27 @@ def test_real_tables_reproduce_the_exo_k_reference():
     assert np.median(band_rel) < 7e-3, np.median(band_rel)
 
 
+@pytest.mark.parametrize("molecule", ["CO2", "CO", "CH4", "NH3", "HCN", "H2S", "SO2"])
+def test_core_molecule_ranges_are_where_the_table_absorbs(molecule):
+    """``constants.CORE_MOLECULE_BANDS_UM`` against its rule: at 1000 K and 1 mbar, the R = 100 band-mean cross-section
+    is at least 1 % of its 1-15 um peak. Every such band lies in a listed range, and every listed range holds one.
+    """
+    from vulcan_forward import constants
+
+    _need_real(molecule)
+    k, grid = exomolop._read_bands(molecule, constants.WIDE_BAND_NU_MIN, constants.WIDE_BAND_NU_MAX)
+    i_t = int(np.argmin(np.abs(grid["t"] - 1000.0)))
+    i_p = int(np.argmin(np.abs(np.log(grid["p"] / 1.0e-3))))
+    sigma = np.convolve(k[i_p, i_t] @ grid["weights"], np.ones(11) / 11.0, mode="same")  # 11 R = 1000 bands
+    wl = 1.0e4 / (0.5 * (grid["bin_edges"][:-1] + grid["bin_edges"][1:]))
+    strong = wl[sigma >= 0.01 * sigma.max()]
+    ranges = constants.CORE_MOLECULE_BANDS_UM[molecule]
+    outside = [float(x) for x in strong if not any(lo <= x <= hi for lo, hi in ranges)]
+    assert not outside, f"{molecule} absorbs at {outside[:5]} um, outside its listed ranges {ranges}"
+    empty = [r for r in ranges if not np.any((strong >= r[0]) & (strong <= r[1]))]
+    assert not empty, f"{molecule}: no strong band inside the listed ranges {empty}"
+
+
 @pytest.mark.usefixtures("data_root")
 def test_load_refuses_without_x64(monkeypatch):
     """Without x64 the load is refused: float32 tables shift every cross section by ~1e-5 relative, without a crash."""

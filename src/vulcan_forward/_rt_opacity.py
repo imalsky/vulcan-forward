@@ -29,6 +29,35 @@ _H2_MOLMASS = 2.0 * constants.ATOMIC_MASSES[constants.ATOM_COLS["H"]]
 _HE_MOLMASS = constants.ATOMIC_MASSES[constants.ATOM_COLS["He"]]
 
 
+def _column_ok(T_art: Array, mmw_art: Array, vmr: dict[str, Array]) -> Array:
+    """Return whether the column is one the RT can model: a scalar bool, or an error when the call is eager.
+
+    Temperatures inside the opacity window (the k-table and CIA interpolations clamp at their edges), a mean molecular
+    weight no lighter than atomic hydrogen, and every mixing ratio in [0, 1]. A NaN fails each test. Nothing can raise
+    under jit, so there the caller turns False into a NaN spectrum, which a consumer must check.
+    """
+    m_h = constants.ATOMIC_MASSES[constants.ATOM_COLS["H"]]
+    bounds = {
+        "temperature (K, the opacity window)": (T_art, constants.T_OPA_MIN_K, constants.T_OPA_MAX_K),
+        "mean molecular weight (amu)": (mmw_art, m_h, jnp.inf),
+        **{f"{name} mixing ratio": (v, 0.0, 1.0) for name, v in vmr.items()},
+    }
+    passed = {name: jnp.all((x >= lo) & (x <= hi)) for name, (x, lo, hi) in bounds.items()}
+    ok = jnp.all(jnp.stack(list(passed.values())))
+    if not isinstance(ok, jax.core.Tracer) and not bool(ok):
+        raise ValueError(
+            "the RT column is outside what the model covers: "
+            + "; ".join(
+                f"{name} spans [{float(jnp.min(bounds[name][0])):g}, {float(jnp.max(bounds[name][0])):g}], "
+                f"allowed [{bounds[name][1]:g}, {bounds[name][2]:g}]"
+                for name, good in passed.items()
+                if not bool(good)
+            )
+            + ". Reject the column: nothing is clamped."
+        )
+    return ok
+
+
 def _accumulate_dtau_ckd(
     art: ArtTransPure | ArtEmisPure,
     pack: SimpleNamespace,
@@ -53,11 +82,12 @@ def _accumulate_dtau_ckd(
     it is scattering, and the pure-absorption emission solver must not count it as thermal extinction.
     """
     P = jnp.asarray(art.pressure)
+    ok = _column_ok(T_art, mmw_art, {**{key: vmr[key] for key in mols}, "H2": vmr_h2, "He": vmr_he})
     dts = jnp.stack([_ckd_dt_one(art, pack, key, molmass, vmr[key], T_art, mmw_art, g_prof, P) for key in mols])
     cont = _ckd_continuum(
         art, pack, opacia, opacia_he, vmr_h2, vmr_he, T_art, mmw_art, g_prof, cloud, rayleigh_xs, deck
     )
-    return ckd.fold(dts, pack.gg, pack.gw) + cont[:, None, :]
+    return ckd.fold(dts, pack.gg, pack.gw) + jnp.where(ok, cont, jnp.nan)[:, None, :]
 
 
 def _ckd_dt_one(
@@ -158,10 +188,12 @@ def _ckd_dtau_batch(
     if bad or len(set(wo_mols)) != len(wo_mols):
         raise ValueError(f"wo_mols {list(wo_mols)!r} must be unique members of the RT molecule set {list(mols)!r}")
     P = jnp.asarray(art.pressure)
+    ok = _column_ok(T_art, mmw_art, {**{k: vmr[k] for k in mols}, "H2": vmr_h2, "He": vmr_he})
     dts = [_ckd_dt_one(art, pack, k, molmass, vmr[k], T_art, mmw_art, g_prof, P) for k in mols]
-    cont3 = _ckd_continuum(
+    cont = _ckd_continuum(
         art, pack, opacia, opacia_he, vmr_h2, vmr_he, T_art, mmw_art, g_prof, cloud, rayleigh_xs, deck
-    )[:, None, :]
+    )
+    cont3 = jnp.where(ok, cont, jnp.nan)[:, None, :]
 
     def zero_of(i: int) -> Array:
         """Return the optical depth of molecule ``i`` with its VMR zeroed."""

@@ -21,6 +21,7 @@ __all__ = [
     "CLOUD_DECK_TAU",
     "CLOUD_DECK_WIDTH_LNP",
     "CLOUD_NUC0",
+    "CORE_MOLECULE_BANDS_UM",
     "DEFAULT_ATOM_LIST",
     "DEFAULT_CFG_NAME",
     "DEFAULT_NETWORK",
@@ -31,11 +32,14 @@ __all__ = [
     "PROFILE_KEYS",
     "P_REF_BAR",
     "P_REF_EMISSION_BAR",
+    "REQUIRED_MOLECULES",
     "T_OPA_MAX_K",
     "T_OPA_MIN_K",
     "UM_PER_CM",
     "WIDE_BAND_NU_MAX",
     "WIDE_BAND_NU_MIN",
+    "check_band",
+    "check_core_molecules",
     "check_profile_keys",
 ]
 
@@ -172,6 +176,28 @@ MOLECULES: dict[str, dict[str, Any]] = {
     "H2O2": {"vulcan": "H2O2", "molmass": 34.014},
 }
 
+# Core absorbers: the gases that carry the oxygen, carbon, nitrogen and sulfur of a hydrogen-dominated atmosphere
+# (Moses et al. 2013, ApJ 763, 25) and have been measured in transmission with JWST (H2O, CO2, CO, SO2: Rustamkulov et
+# al. 2023; CH4: Bell et al. 2023; NH3: Welbanks et al. 2024; H2S: Fu et al. 2024; HCN is the predicted
+# disequilibrium nitrogen carrier). Where a band overlaps one of a molecule's ranges and the molecule is neither in the
+# RT nor named in profile["omit_core_molecules"], build_rt_model refuses a REQUIRED_MOLECULES member and warns for the
+# others. Ranges, um: H2O absorbs across the whole band; for the others, where the R = 100 band-mean cross-section of
+# the ExoMolOP table at 1000 K and 1 mbar is at least 1 % of its 1-15 um peak, rounded outward (tests/test_exomolop.py
+# checks them against the installed tables).
+CORE_MOLECULE_BANDS_UM: dict[str, tuple[tuple[float, float], ...]] = {
+    "H2O": ((1.0, 15.0),),
+    "CO2": ((2.6, 2.9), (4.1, 4.6), (13.0, 15.0)),
+    "CO": ((4.3, 5.2),),
+    "CH4": ((2.2, 2.5), (3.0, 3.8), (6.3, 9.1)),
+    "NH3": ((1.9, 2.5), (2.7, 3.3), (5.1, 15.0)),
+    "HCN": ((2.9, 3.3), (6.6, 7.9), (11.8, 15.0)),
+    "H2S": ((1.5, 1.7), (1.8, 2.2), (2.3, 3.0), (3.3, 4.8), (5.5, 15.0)),
+    "SO2": ((3.9, 4.2), (7.0, 9.8)),
+}
+# The oxygen, carbon and nitrogen carriers every such atmosphere holds. HCN and the sulfur gases depend on the planet
+# (a quench level, a sulfur-bearing network), so leaving one out is reported, not refused: the maintainer's choice.
+REQUIRED_MOLECULES = frozenset({"H2O", "CO2", "CO", "CH4", "NH3"})
+
 # The bulk gas: the CIA partner and the dominant background.
 BULK_H2_VULCAN = "H2"
 
@@ -195,6 +221,7 @@ PROFILE_KEYS = frozenset(
         # build_rt_model / build_emis_model (art_ptop_bar also sets the chemistry top)
         "molecules",
         "molecule_table",
+        "omit_core_molecules",
         "nu_min",
         "nu_max",
         "opacity_mode",
@@ -233,3 +260,75 @@ def check_profile_keys(profile: Mapping[str, object]) -> None:
             "or retired with a removed feature), so they would change nothing. "
             f"Drop or correct them. Known keys: {sorted(PROFILE_KEYS)}."
         )
+
+
+def check_band(nu_min: float, nu_max: float) -> None:
+    """Refuse a band outside the supported 1-15 um: the model has no opacity for what absorbs beyond it.
+
+    Parameters
+    ----------
+    nu_min : float
+        Lower band edge, cm^-1.
+    nu_max : float
+        Upper band edge, cm^-1.
+
+    Raises
+    ------
+    ValueError
+        If the band is empty or reaches outside ``WIDE_BAND_NU_MIN`` to ``WIDE_BAND_NU_MAX``.
+    """
+    if not (WIDE_BAND_NU_MIN <= nu_min < nu_max <= WIDE_BAND_NU_MAX):
+        raise ValueError(
+            f"nu_min={nu_min:g}, nu_max={nu_max:g} cm^-1 ({UM_PER_CM / nu_max:.3g}-{UM_PER_CM / nu_min:.3g} um) is not "
+            f"inside the supported band [{WIDE_BAND_NU_MIN:g}, {WIDE_BAND_NU_MAX:g}] cm^-1 (1-15 um). Shortward of "
+            "1 um the spectrum is set by the Na and K resonance lines and by hazes, which this model does not have, "
+            "and the H2-H2 CIA table ends there. Narrow nu_min/nu_max."
+        )
+
+
+def check_core_molecules(molecules: list[str], omitted: list[str], nu_min: float, nu_max: float) -> list[str]:
+    """Refuse a band that needs a required absorber the RT lacks, and return the other core absorbers it lacks.
+
+    Parameters
+    ----------
+    molecules : list of str
+        The RT molecule set.
+    omitted : list of str
+        Core molecules left out on purpose (``profile["omit_core_molecules"]``).
+    nu_min : float
+        Lower band edge, cm^-1.
+    nu_max : float
+        Upper band edge, cm^-1.
+
+    Returns
+    -------
+    list of str
+        Core molecules outside ``REQUIRED_MOLECULES`` that absorb in the band and are in neither list, for the caller
+        to report.
+
+    Raises
+    ------
+    ValueError
+        If ``omitted`` names a molecule that is not core or is in ``molecules``, or if the band overlaps a range of
+        a ``REQUIRED_MOLECULES`` member that is in neither list.
+    """
+    bad = sorted(set(omitted) - set(CORE_MOLECULE_BANDS_UM)) + sorted(set(omitted) & set(molecules))
+    if bad:
+        raise ValueError(
+            f"omit_core_molecules names {bad}: each entry must be a core molecule ({sorted(CORE_MOLECULE_BANDS_UM)}) "
+            "that is not in 'molecules'. Correct the list."
+        )
+    lo_um, hi_um = UM_PER_CM / nu_max, UM_PER_CM / nu_min
+    missing = {
+        m: [r for r in ranges if r[0] < hi_um and r[1] > lo_um]
+        for m, ranges in CORE_MOLECULE_BANDS_UM.items()
+        if m not in molecules and m not in omitted
+    }
+    required = {m: r for m, r in missing.items() if r and m in REQUIRED_MOLECULES}
+    if required:
+        raise ValueError(
+            f"the band {lo_um:.3g}-{hi_um:.3g} um needs core absorbers that 'molecules' {molecules} lacks: "
+            + "; ".join(f"{m} (absorbs at {', '.join(f'{a:g}-{b:g}' for a, b in r)} um)" for m, r in required.items())
+            + ". Add them to 'molecules', or name the ones left out on purpose in 'omit_core_molecules'."
+        )
+    return [m for m, r in missing.items() if r and m not in REQUIRED_MOLECULES]

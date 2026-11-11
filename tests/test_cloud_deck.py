@@ -68,6 +68,8 @@ def rt_ins(tmp_path_factory):
         rt = build_rt_model(
             {
                 "molecules": ["H2O"],
+                # a gas-free column: only the band grid is read
+                "omit_core_molecules": ["CO2", "CO", "CH4", "NH3", "HCN", "H2S", "SO2"],
                 "nu_min": 1e4 / 4.2,
                 "nu_max": 1e4 / 2.9,
                 "art_nlayer": CASE["nlayer"],

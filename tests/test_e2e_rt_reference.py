@@ -56,10 +56,13 @@ from vulcan_forward import _rt_geometry, constants, exojax_rt
 
 DATA = Path(__file__).parent / "data"
 RSTAR_W39 = 0.932 * 6.957e10
+# The pRT references are single-molecule or reduced sets by design, so each case names the core absorbers it lacks.
+NOT_H2O = ["CO2", "CO", "CH4", "NH3", "HCN", "H2S", "SO2"]
 # The emission cases' profile. pRT ran constant g = 1e3; a huge rp keeps the hydrostatic g-variation over the column
 # below 1e-4 relative (meta records it).
 EMIS_PROF = {
     "molecules": ["H2O"],
+    "omit_core_molecules": NOT_H2O,
     "nu_min": 1.0e4 / 5.0,
     "nu_max": 1.0e4 / 3.0,
     "opacity_mode": "exomolop",
@@ -109,6 +112,7 @@ def test_the_profile_pressure_bounds_reach_the_grid():
     """
     base = {
         "molecules": ["H2O"],
+        "omit_core_molecules": NOT_H2O,
         "nu_min": 2000.0,
         "nu_max": 10000.0,
         "opacity_mode": "exomolop",
@@ -134,6 +138,7 @@ def test_transmission_isothermal_h2o_matches_prt():
     trt = exojax_rt.build_rt_model(
         {
             "molecules": ["H2O"],
+            "omit_core_molecules": NOT_H2O,
             "nu_min": 2000.0,
             "nu_max": 10000.0,
             "opacity_mode": "exomolop",
@@ -189,12 +194,16 @@ def test_transmission_w39b_8species_matches_prt():
     trt = exojax_rt.build_rt_model(
         {
             "molecules": mols,
+            "omit_core_molecules": ["NH3", "HCN"],  # not among the fixture's eight
             "nu_min": 1.0e4 / 5.0,
             "nu_max": 1.0e4 / 3.0,
             "opacity_mode": "exomolop",
             "art_nlayer": nlay,
             "art_ptop_bar": 1.0e-8,
-            "art_pbtm_bar": 50.0,
+            # The pRT side ran to 50 bar, where this profile reaches 3507 K, past the k-tables' 3400 K and the engine's
+            # opacity window. The layers below 20 bar are opaque in transit: the statistics are those of the 50 bar
+            # run to the fourth digit.
+            "art_pbtm_bar": 20.0,
             "p_ref_bar": 0.8995,
             "rp_cm": 9.1438268e9,
             "gs_cgs": 426.0,
@@ -263,7 +272,8 @@ def test_wo_batch_is_bit_identical_to_separate_solves():
     unknown-molecule refusal.
     """
     mols = ["H2O"] + [m for m in ("CO2", "CO", "CH4") if exomolop.table_path(m).exists()]
-    prof = {**EMIS_PROF, "molecules": mols, "art_nlayer": 40, "rp_cm": 7.1492e9}
+    left_out = [m for m in NOT_H2O if m not in mols]
+    prof = {**EMIS_PROF, "molecules": mols, "omit_core_molecules": left_out, "art_nlayer": 40, "rp_cm": 7.1492e9}
     nlay = prof["art_nlayer"]
     trt = exojax_rt.build_rt_model(prof)
     emod = exojax_rt.build_emis_model(trt, prof)

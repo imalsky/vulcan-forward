@@ -36,6 +36,7 @@ NLAYER = 30
 ROUND_TOL = 1e-12
 PROFILE = {
     "molecules": ["H2O", "CO2"],
+    "omit_core_molecules": ["CO"],  # the 4.9-5.0 um band also holds CO; two miniature tables are enough here
     "nu_min": NU0,
     "nu_max": NU0 * np.exp((NB + 0.5) / 1000.0),
     "art_nlayer": NLAYER,
@@ -102,6 +103,9 @@ def _vmr(h2o=1.0e-3, co2=1.0e-4):
 def test_build_reads_the_miniature_grid(models):
     rt, em = models
     assert rt.nu_grid.size == NB
+    assert rt.nu_edges.size == NB + 1  # each band value is a mean between two of these
+    assert np.all((rt.nu_edges[:-1] < rt.nu_grid) & (rt.nu_grid < rt.nu_edges[1:]))
+    assert np.array_equal(em.nu_edges, rt.nu_edges)
     assert rt.molecules == PROFILE["molecules"]
     assert rt.p_art_bar.size == NLAYER
     np.testing.assert_allclose(rt.wl_um, 1.0e4 / rt.nu_grid)
@@ -226,11 +230,75 @@ def test_the_eclipse_flux_at_fixed_mass_is_the_model_rebuilt_there(models):
         ({"art_pbtm_bar": 3.0e2}, "k-table pressure ceiling"),
         ({"p_ref_bar": 100.0}, "p_ref_bar"),
         ({"not_a_key": 1}, "not_a_key"),
+        # Either band reads the same miniature tables, so only the band check can refuse it.
+        ({"nu_max": 1.2e4}, "supported band"),
+        ({"nu_min": 600.0}, "supported band"),
+        # the band needs CO; naming a molecule that is in the RT, or one that is not core, is a mistake
+        ({"omit_core_molecules": []}, r"needs core absorbers.*CO \(absorbs at 4.3-5.2 um\)"),
+        ({"omit_core_molecules": ["CO", "H2O"]}, "omit_core_molecules names"),
+        ({"omit_core_molecules": ["CO", "OCS"]}, "omit_core_molecules names"),
+        ({"gs_cgs": 0.0}, "finite and positive"),
+        ({"gs_cgs": -1.0e3}, "finite and positive"),
+        ({"rp_cm": float("nan")}, "finite and positive"),
+        ({"rstar_cm": -7.0e10}, "finite and positive"),
     ],
 )
 def test_build_refuses_a_bad_profile(over, match):
     with pytest.raises(ValueError, match=match):
         exojax_rt.build_rt_model({**PROFILE, **over})
+
+
+def test_rayleigh_is_on_unless_the_profile_turns_it_off(models, root):  # noqa: ARG001  # the data root must be in place
+    """H2 and He alone: the default build carries Rayleigh, and it deepens every band."""
+    rt, _ = models
+
+    def depth(model):
+        return np.asarray(model.transmission_depth(_vmr(0.0, 0.0), HALF, T_ISO, MMW, vmr_he=HALF))
+
+    on = depth(exojax_rt.build_rt_model({**PROFILE, "use_rayleigh": True}))
+    off = depth(exojax_rt.build_rt_model({**PROFILE, "use_rayleigh": False}))
+    assert np.array_equal(depth(rt), on)
+    assert np.all(on > off)
+
+
+@pytest.mark.parametrize(
+    ("what", "value", "match"),
+    [
+        ("T", 299.0, "opacity window"),
+        ("T", 3001.0, "opacity window"),
+        ("T", np.nan, "opacity window"),
+        ("mmw", 0.5, "mean molecular weight"),
+        ("mmw", -2.33, "mean molecular weight"),
+        ("h2o", -1.0e-3, "H2O mixing ratio"),
+        ("h2o", 1.5, "H2O mixing ratio"),
+        ("h2", np.nan, "H2 mixing ratio"),
+        ("he", 1.1, "He mixing ratio"),
+    ],
+)
+def test_a_column_the_model_does_not_cover_is_refused(models, what, value, match):
+    """One bad layer: an error naming the quantity when eager, a NaN spectrum under jit, and no clamp either way.
+
+    Outside 300-3000 K the k-table and CIA interpolations would clamp; a mean molecular weight below atomic hydrogen
+    or a mixing ratio outside [0, 1] is not a gas.
+    """
+    import jax
+
+    rt, em = models
+    good = {"T": T_ISO, "mmw": MMW, "h2o": _vmr()["H2O"], "h2": HALF, "he": HALF}
+
+    def depth(c):
+        return rt.transmission_depth({**_vmr(), "H2O": c["h2o"]}, c["h2"], c["T"], c["mmw"], vmr_he=c["he"])
+
+    def flux(c):
+        return em.emission_flux({**_vmr(), "H2O": c["h2o"]}, c["h2"], c["T"], c["mmw"], vmr_he=c["he"])
+
+    bad = {**good, what: good[what].at[3].set(value)}
+    for observable in (depth, flux):
+        with pytest.raises(ValueError, match=match):
+            observable(bad)
+        jitted = jax.jit(observable)
+        assert np.all(np.isnan(np.asarray(jitted(bad))))
+        assert np.all(np.isfinite(np.asarray(jitted(good))))
 
 
 def test_build_refuses_a_band_past_a_cia_table_and_a_missing_he_table(root):

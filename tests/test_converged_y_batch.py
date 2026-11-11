@@ -186,3 +186,31 @@ def test_inputs_that_would_be_ignored_are_refused(runs):
         vulcan_chem.build_chem_model({**PROFILE, "warm_count_max": 10})
     with pytest.raises(ValueError, match="warm_y"):
         chem.converged_y_batch(jnp.asarray(THETAS), warm_y=jnp.ones((THETAS.shape[0], 1, chem.ni)))
+
+
+def test_an_uncertified_column_is_never_returned_as_converged():
+    """A column stopped on its step cap: an error when eager, NaN under jit, and returned as it is only on request."""
+    chem = vulcan_chem.build_chem_model({**PROFILE, "count_max": 5})
+    th = jnp.asarray(THETAS[1])
+    y, cd = chem.converged_y(th, return_conv_diag=True)
+    assert not bool(cd.conv_normal)
+    with pytest.raises(RuntimeError, match="did not certify"):
+        chem.converged_y(th)
+    with pytest.raises(RuntimeError, match="did not certify"):
+        chem.converged_y_batch(jnp.asarray(THETAS))
+    assert np.all(np.isnan(np.asarray(jax.jit(chem.converged_y)(th))))
+    assert np.array_equal(np.asarray(chem.converged_y(th, allow_uncertified=True)), np.asarray(y))
+
+
+@pytest.mark.parametrize(("span", "refused"), [((0.5, 1.0e6), False), ((115.0, 283.0), True), ((0.5, 400.0), True)])
+def test_a_stellar_spectrum_must_cover_the_photolysis_thresholds(span, refused):
+    """vulcan3 cuts the photolysis grid to the stellar file without a word, so a short file is refused at the build."""
+    from types import SimpleNamespace
+
+    var = SimpleNamespace(def_bin_min=span[0], def_bin_max=span[1], photo_sp={"H2O", "CH4", "HCO"})
+    cfg = SimpleNamespace(sflux_file="atm/stellar_flux/a_star.txt")
+    if refused:
+        with pytest.raises(ValueError, match="photolysis thresholds"):
+            vulcan_chem._check_stellar_span(cfg, var)
+    else:
+        vulcan_chem._check_stellar_span(cfg, var)

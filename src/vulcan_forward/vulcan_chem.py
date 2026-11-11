@@ -107,6 +107,25 @@ def _configured_cfg(profile: Profile) -> Any:
     return cfg
 
 
+def _check_stellar_span(cfg: Any, var: Any) -> None:
+    """Refuse a stellar spectrum that does not cover every photolysis threshold of the network.
+
+    vulcan3 cuts its photolysis grid to the file's span, as VULCAN 2 does, so a short file switches photolysis off
+    outside it without a word.
+    """
+    from vulcan3.photo_setup import _load_thresholds  # vulcan3's table of dissociation thresholds, nm
+
+    thresholds = _load_thresholds(var.photo_sp)
+    need_lo, need_hi = min(thresholds.values()), max(thresholds.values())
+    lo, hi = float(var.def_bin_min), float(var.def_bin_max)
+    if lo > need_lo or hi < need_hi:
+        raise ValueError(
+            f"the stellar spectrum {cfg.sflux_file} covers {lo:g}-{hi:g} nm, but this network's photolysis thresholds "
+            f"run from {need_lo:g} to {need_hi:g} nm. Photolysis outside the file would be switched off. Use a "
+            "spectrum that covers the range."
+        )
+
+
 def _make_kzz_eff(
     kzz_mode: str, profile: Profile, atm: Any, Kzz0: Array
 ) -> Callable[[float | Array, float | Array], Array]:
@@ -272,6 +291,8 @@ def build_chem_model(
 
     rs = RunState.with_pre_loop_setup(cfg)
     var, atm, para = legacy_view(rs)
+    if cfg.use_photo:
+        _check_stellar_span(cfg, var)
     network = net_mod.parse_network(str(resolve_data_path(cfg.network)))
     nz, ni = atm.Tco.shape[0], network.ni
     sidx = dict(network.species_idx)

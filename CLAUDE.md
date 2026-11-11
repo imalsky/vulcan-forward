@@ -15,7 +15,9 @@ Layout, Figures, Branches, Behind main and Tests are in the project-root `CLAUDE
 
 ## Docs
 
-Four root docs: `README.md` (the maintainer's; never edit it unasked), `notes.md` (the results and the evidence behind
+Five root docs: `oracle.md` (the maintainer's goal for this repo and what success and failure are: read it before
+planning work and compare a result with it before calling work done; never edit it unasked), `README.md` (the
+maintainer's; never edit it unasked), `notes.md` (the results and the evidence behind
 the rules below, by topic section, never a dated history), `todo.md` (open work: read it first; open or close items in
 the same pass) and this file (directions only). Any other hand-written `.md` file goes in `docs/`. Name a notes section
 by its heading. Record a rejected approach in notes "Do not retry" in the same pass. Format: the `doc-upkeep` skill;
@@ -74,7 +76,11 @@ policy: the project-root `CLAUDE.md`.
   from the build's column, pass it as a continuation: `warm_y=chem.y0, lnZ_ref=0, c_o_ref=0` (`run_diag` takes the same
   arguments) (notes "Cold start, abundance map, carbon repair").
 - `ConvDiag.conv_normal` is `vulcan3.conv_normal(final, cfg)`, ANDed with the tangent certificate on the jvp path. Never
-  re-implement the runner's certificate terms here (notes "Convergence certificate").
+  re-implement the runner's certificate terms here (notes "Convergence certificate"). A solve that returns no
+  `ConvDiag` returns only a certified column (`_certified`); keep that, and keep `allow_uncertified` an explicit
+  opt-out.
+- Keep `_check_stellar_span`: a stellar spectrum shorter than the network's photolysis thresholds is refused at the
+  build (notes "Opacity: correlated-k on ExoMolOP").
 - Under an outer jit nothing can raise: a column frozen at `dt_min` comes back as `ConvDiag.termination_reason` 4, with
   `last_delta`, and a caller that jits a solve checks it (`vulcan3.raise_if_frozen`).
 - A forward-mode derivative of the solve goes through `converged_y_jvp`, never `jax.jvp(converged_y)` (it stops when the
@@ -114,7 +120,13 @@ policy: the project-root `CLAUDE.md`.
   only, and checks the `.part` grid before it replaces a table. Curated DOIs live in the fetcher record
   (`fetch_exomolop._DATASET_DOI`), never in header echoes.
 - Quadrature nodes and weights come from the file. Keep the refusals in `load_tables`, `build_rt_model` (`art_pbtm_bar`
-  deeper than the table's pressure ceiling) and `_validated_layout`.
+  deeper than the table's pressure ceiling, a band outside 1-15 um) and `_validated_layout`, and the temperature-window
+  refusals in `_rt_opacity._column_ok` (an error when eager, a NaN spectrum under jit). Rayleigh is on unless the
+  profile turns it off (notes "Opacity: correlated-k on ExoMolOP").
+- A core absorber (`constants.CORE_MOLECULE_BANDS_UM`) is in the RT wherever the band overlaps its ranges, or the
+  profile names it in `omit_core_molecules`: a `REQUIRED_MOLECULES` member is refused otherwise, the others warned
+  about and echoed. Never make the engine fill that list in, and change a set or a range only with the table test and
+  a measured reason (notes "Opacity: correlated-k on ExoMolOP").
 - Mixtures use random-overlap resort-rebin in `ckd.overlap`: keep it despite its jumps where pairwise sums swap order
   (notes "Do not retry"). It is non-associative, so `_fold_wo` keeps the zero folded in the exact naive order.
 - Emission runs `_run_emis_ckd_linsap`, never `ArtEmisPure.run_ckd`, and `ibased_linsap`, never `ibased`. The

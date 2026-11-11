@@ -351,6 +351,22 @@ def _float64_leaves(p: ChemParams | Array) -> ChemParams | Array:
     return jnp.asarray(p, dtype=jnp.float64)
 
 
+def _certified(y: Array, cd: ConvDiag) -> Array:
+    """Return ``y`` [..., nz, ni] where its column certified and NaN elsewhere; an error when the call is eager.
+
+    A caller that takes the column without its ``ConvDiag`` cannot tell a certified column from one that stopped on its
+    step cap. Nothing can raise under jit, so there the uncertified column comes back NaN, which the caller checks.
+    """
+    ok = cd.conv_normal
+    if not isinstance(ok, jax.core.Tracer) and not bool(jnp.all(ok)):
+        raise RuntimeError(
+            f"the chemistry column did not certify: accepted steps {np.asarray(cd.accept_count)}, longdy "
+            f"{np.asarray(cd.longdy)}, termination_reason {np.asarray(cd.termination_reason)}. Take the diagnostics "
+            "with return_conv_diag=True and decide, or pass allow_uncertified=True to accept the column as it is."
+        )
+    return jnp.where(ok[..., None, None], y, jnp.nan)
+
+
 def _stack_dir(*ds: Array) -> Array:
     """Stack one leaf over directions; float0 placeholders are direction-independent."""
     if getattr(ds[0], "dtype", None) == jax.dtypes.float0:
@@ -391,8 +407,11 @@ class _ChemSolves:
         c_o_ref: Array | float = 0.0,
         return_conv_diag: bool = False,
         s_o_ref: Array | float = 0.0,
+        allow_uncertified: bool = False,
     ) -> Array | tuple[Array, ConvDiag]:
         """Return the converged column, forward-mode differentiable in ``theta``.
+
+        Without ``return_conv_diag`` the column is returned only if it certified (``_certified``).
 
         Under the hybrid vm_mol scheme a warm continuation runs on the central operator instead of re-entering upwind
         phase 0.
@@ -411,6 +430,8 @@ class _ChemSolves:
             Also return the ``ConvDiag``, a free read off the primal carry whose float fields carry a tangent.
         s_o_ref : float, optional
             The ln S/O multiple it was converged at.
+        allow_uncertified : bool, optional
+            Return the column whether or not it certified, for a caller that gates a later stage instead.
 
         Returns
         -------
@@ -421,7 +442,7 @@ class _ChemSolves:
         final = self.integ.runner(init, atm_T)
         if return_conv_diag:
             return final.y, self.setup.conv_diag(final)
-        return final.y
+        return final.y if allow_uncertified else _certified(final.y, self.setup.conv_diag(final))
 
     def converged_y_batch(
         self,
@@ -431,8 +452,11 @@ class _ChemSolves:
         c_o_ref: Array | float = 0.0,
         return_conv_diag: bool = False,
         s_o_ref: Array | float = 0.0,
+        allow_uncertified: bool = False,
     ) -> Array | tuple[Array, ConvDiag]:
         """Return the converged columns of a stack of thetas, on the batched runner.
+
+        Without ``return_conv_diag`` a lane is returned only if it certified (``_certified``).
 
         One while loop sits above the lane vmap (``OuterLoop.run_batch``): photolysis and the geometry refresh follow
         the loop's tick, not the lane's accept count, so a lane is not bit-identical to its solo ``converged_y``; the
@@ -453,6 +477,8 @@ class _ChemSolves:
             Also return the per-lane ``ConvDiag``.
         s_o_ref : float or jax.Array [N], optional
             The ln S/O multiple, likewise.
+        allow_uncertified : bool, optional
+            Return every lane whether or not it certified.
 
         Returns
         -------
@@ -467,9 +493,10 @@ class _ChemSolves:
             out_axes=(0, outer_loop.ATM_STATIC_BATCH_AXES),
         )(thetas, warm_y, *refs)
         final_b = self.integ.run_batch(init_b, atm_b)
+        cd_b = jax.vmap(self.setup.conv_diag)(final_b)
         if return_conv_diag:
-            return final_b.y, jax.vmap(self.setup.conv_diag)(final_b)
-        return final_b.y
+            return final_b.y, cd_b
+        return final_b.y if allow_uncertified else _certified(final_b.y, cd_b)
 
     def converged_y_queue(
         self,

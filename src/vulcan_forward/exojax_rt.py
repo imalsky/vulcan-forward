@@ -96,12 +96,19 @@ _GEOMETRY_KEYS = {
 
 
 def _require_geometry(profile: Profile, *keys: str) -> None:
-    """Refuse a profile missing planet geometry: it sets the depth normalization and has no default."""
+    """Refuse a profile whose planet geometry is missing or not a positive number: it has no default."""
     missing = [k for k in keys if k not in profile]
     if missing:
         raise ValueError(
             f"profile is missing required planet geometry {missing}: "
             + "; ".join(f"{k} ({_GEOMETRY_KEYS[k]})" for k in missing)
+            + "."
+        )
+    bad = {k: profile[k] for k in keys if not (np.isfinite(float(profile[k])) and float(profile[k]) > 0.0)}
+    if bad:
+        raise ValueError(
+            f"planet geometry must be finite and positive, got {bad}: "
+            + "; ".join(f"{k} ({_GEOMETRY_KEYS[k]})" for k in bad)
             + "."
         )
 
@@ -318,14 +325,17 @@ def build_rt_model(profile: Profile) -> SimpleNamespace:
     Returns
     -------
     types.SimpleNamespace
-        ``transmission_depth``, ``transmission_depth_r``, ``nu_grid`` (cm^-1), ``wl_um``, ``p_art_bar``, ``molecules``,
-        and echoes of the settings it resolved: ``art_ptop_bar``, ``art_pbtm_bar``, ``p_ref_bar``, ``rt_integration``,
-        ``opacity_mode``.
+        ``transmission_depth``, ``transmission_depth_r``, ``nu_grid`` (band centres, cm^-1), ``nu_edges`` (band edges,
+        cm^-1, one more than the bands), ``wl_um``, ``p_art_bar``, ``molecules``, ``omit_core_molecules``,
+        ``unlisted_core_molecules`` (core absorbers of the band left out without being named: a warning, for the
+        consumer to report), and echoes of the settings it resolved: ``art_ptop_bar``, ``art_pbtm_bar``,
+        ``p_ref_bar``, ``rt_integration``, ``opacity_mode``.
 
     Raises
     ------
     ValueError
-        On an unknown key, a bad grid or anchor, an uncovered band, or missing geometry. A missing k-table or CIA table
+        On an unknown key, a bad grid or anchor, an uncovered band, a core absorber left out without being named, or
+        missing geometry. A missing k-table or CIA table
         raises ``FileNotFoundError``, and a molecule with no entry in the molecule table ``KeyError``.
     """
     t0 = time.time()
@@ -334,9 +344,16 @@ def build_rt_model(profile: Profile) -> SimpleNamespace:
     mols = list(profile["molecules"])
     from vulcan_forward import exomolop as _exo
 
-    ckd_pack = _exo.load_tables(
-        mols, float(profile["nu_min"]), float(profile["nu_max"]), molecule_table=profile.get("molecule_table")
-    )
+    nu_min, nu_max = float(profile["nu_min"]), float(profile["nu_max"])
+    constants.check_band(nu_min, nu_max)
+    omitted = list(profile.get("omit_core_molecules", ()))
+    unlisted = constants.check_core_molecules(mols, omitted, nu_min, nu_max)
+    if unlisted:
+        logger.warning(
+            "[rt] %s absorb in this band and are not in the RT; name them in 'omit_core_molecules' if that is meant",
+            unlisted,
+        )
+    ckd_pack = _exo.load_tables(mols, nu_min, nu_max, molecule_table=profile.get("molecule_table"))
     nu_grid = jnp.asarray(ckd_pack.nu_bands)
     ckd_pack.nu_bands_j = nu_grid
     ptop = float(profile.get("art_ptop_bar", constants.ART_PTOP_BAR))
@@ -375,7 +392,7 @@ def build_rt_model(profile: Profile) -> SimpleNamespace:
     opacia, opacia_he = _load_cia(nu_grid)
     logger.info("[rt] CIA + RT built; total %.1fs", time.time() - t0)
 
-    if profile.get("use_rayleigh", False):
+    if profile.get("use_rayleigh", True):
         rayleigh_xs = (
             xsvector_rayleigh_gas(nu_grid, _polarizability["H2"]),
             xsvector_rayleigh_gas(nu_grid, _polarizability["He"]),
@@ -402,9 +419,13 @@ def build_rt_model(profile: Profile) -> SimpleNamespace:
         transmission_depth=model.transmission_depth,
         transmission_depth_r=model.transmission_depth_r,
         nu_grid=np.asarray(nu_grid),
+        # A band value is a mean over its band: a consumer that divides by another spectrum averages that one too.
+        nu_edges=np.asarray(ckd_pack.band_edges, dtype=np.float64),
         wl_um=constants.UM_PER_CM / np.asarray(nu_grid),
         p_art_bar=p_art_bar,
         molecules=mols,
+        omit_core_molecules=omitted,
+        unlisted_core_molecules=unlisted,
         # Echoes of what the profile resolved to, so a consumer can check them.
         art_ptop_bar=ptop,
         art_pbtm_bar=pbtm,
@@ -685,7 +706,7 @@ def build_emis_model(trt: SimpleNamespace, profile: Profile) -> SimpleNamespace:
     -------
     types.SimpleNamespace
         ``emission_flux``, ``emission_flux_tau``, ``eclipse_flux_tau``, ``emission_radius``, ``tau_bottom``,
-        ``nu_grid``, ``wl_um``, ``p_art_bar``, ``art_pbtm_bar``, ``art_ptop_bar``, ``art_nlayer``,
+        ``nu_grid``, ``nu_edges``, ``wl_um``, ``p_art_bar``, ``art_pbtm_bar``, ``art_ptop_bar``, ``art_nlayer``,
         ``p_ref_emission_bar``, ``p_ref_bar``, ``molecules``.
 
     Raises
@@ -746,6 +767,7 @@ def build_emis_model(trt: SimpleNamespace, profile: Profile) -> SimpleNamespace:
         emission_radius=model.emission_radius,
         tau_bottom=model.tau_bottom,
         nu_grid=np.asarray(nu_grid),
+        nu_edges=trt.nu_edges,
         wl_um=trt.wl_um,
         p_art_bar=np.asarray(art.pressure),
         art_pbtm_bar=float(trt.art_pbtm_bar),

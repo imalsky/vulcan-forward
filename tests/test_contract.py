@@ -250,3 +250,17 @@ def test_the_data_root_follows_the_environment_from_a_relocated_install(tmp_path
     r = run()
     assert r.returncode != 0
     assert "VULCAN_FORWARD_DATA" in r.stderr
+
+
+def test_a_required_absorber_is_refused_and_the_others_are_reported():
+    """Over 2.9-5.2 um a list without NH3 is refused; HCN, H2S and SO2 are reported unless the caller names them."""
+    from vulcan_forward import constants
+
+    band = (1923.0, 3450.0)
+    with pytest.raises(ValueError, match=r"needs core absorbers.*NH3 \(absorbs at 2.7-3.3, 5.1-15 um\)\. Add"):
+        constants.check_core_molecules(["H2O", "CO2", "CO", "CH4"], [], *band)
+    five = ["H2O", "CO2", "CO", "CH4", "NH3"]
+    assert constants.check_core_molecules(five, [], *band) == ["HCN", "H2S", "SO2"]
+    assert constants.check_core_molecules(five, ["HCN"], *band) == ["H2S", "SO2"]
+    assert constants.check_core_molecules([*five, "HCN", "H2S", "SO2"], [], *band) == []
+    assert constants.check_core_molecules(["H2O", "CH4", "NH3"], [], 4280.0, 4360.0) == ["H2S"]  # 2.29-2.34 um
