@@ -195,9 +195,10 @@ KZZ_P_REF_BAR = 1.0e-3
 # Molecule table: VULCAN species name and molar mass, g/mol. The opacity is the ExoMolOP k-table <MOL>.ktable.h5, and
 # exomolop.provenance() says which one. molmass is the only mass the engine uses and equals the formula mass
 # (tests/test_contract.py); the tables' mol_mass header is not read (ExoMolOP's NO file carries 46). The tables are the
-# principal isotopologue except CO and CO2 (natural abundance); paired with the total VMR, that is an opacity deficit of
-# ~2% on the multi-carbon species and ~5-6% on the sulfur species (32S is 95% of sulfur). A caller may pass its own
-# table as profile["molecule_table"].
+# principal isotopologue except CO and CO2 (natural abundance). A principal-isotopologue table is normalised to the
+# whole abundance (checked on CO: the natural-abundance table is 0.986-0.999 of it at 1 bar and deeper), so paired
+# with the total VMR it puts the minor isotopologues' share (1-5%; 32S is 95% of sulfur) on the principal lines
+# and leaves out their shifted lines. A caller may pass its own table as profile["molecule_table"].
 MOLECULES: dict[str, dict[str, Any]] = {
     "CO": {"vulcan": "CO", "molmass": 28.010},
     "H2O": {"vulcan": "H2O", "molmass": 18.015},
