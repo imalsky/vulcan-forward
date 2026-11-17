@@ -632,6 +632,13 @@ per-theta re-anchoring stay; the other items stay live as model choices.
   solve certifies itself). Removed in 0.29.0 (`1c68022`); the first real solve compiles
   the runner. `p_ref_emission_bar` as a profile key went in the same commit.
 
+## Ideas not adopted
+
+- Sodium and potassium below 1 um: `constants.check_band` refuses the band, so the omission is an error, never a wrong
+  spectrum. It would need the ExoMolOP Na and K k-tables (Chubb et al. 2021), an H2-H2 CIA table past 10000 cm^-1, an
+  abundance source (the C-H-N-O-S networks carry neither atom), a haze model and a petitRADTRANS reference with the
+  alkalis. The size of the K line's red wing inside the current band is not measured.
+
 ## Do not retry
 
 - RT-stage sort alternatives on the GH200, against the adopted 25.3 ms per spectrum: an
