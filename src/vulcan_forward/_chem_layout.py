@@ -16,17 +16,15 @@ if TYPE_CHECKING:
     from jax.typing import ArrayLike
 
 # Optional chemistry parameters beyond [lnZ, c_o, lnKzz], in their positional order.
-CHEM_EXTRAS = ("s_o", "kzz_slope")
+CHEM_EXTRAS = ("s_o",)
 
 
 def _check_extras(extras: Iterable[str]) -> tuple[str, ...]:
-    """Refuse optional entries that are unknown, repeated or out of order."""
+    """Refuse optional entries that are unknown or repeated."""
     extras = tuple(extras)
     bad = [e for e in extras if e not in CHEM_EXTRAS]
     if bad or len(set(extras)) != len(extras):
         raise ValueError(f"chem_extras {extras!r}: expected a subset of {CHEM_EXTRAS} with no repeats")
-    if list(extras) != [e for e in CHEM_EXTRAS if e in extras]:
-        raise ValueError(f"chem_extras {extras!r} must keep the order {CHEM_EXTRAS}")
     return extras
 
 
@@ -45,8 +43,6 @@ class ChemParams(NamedTuple):
         The ``tp_eval`` hook's parameter block, or one uniform temperature offset, K, without a hook.
     s_o : float
         ln of the S/O multiple, on top of lnZ.
-    kzz_slope : float
-        The Kzz power-law slope.
     """
 
     lnZ: float | Array = 0.0
@@ -54,7 +50,6 @@ class ChemParams(NamedTuple):
     lnKzz: float | Array = 0.0
     tp: tuple[float, ...] | Array = ()
     s_o: float | Array = 0.0
-    kzz_slope: float | Array = 0.0
 
     def to_vector(self, extras: Iterable[str] = ()) -> Array:
         """Return the positional vector ``[lnZ, c_o, lnKzz, *extras, *tp]``.
@@ -91,7 +86,7 @@ def params_from_vector(
     has_tp_eval : bool
         Whether it has one; without one the block is a single uniform offset.
     extras : sequence of str, optional
-        The optional entries the layout carries, in ``CHEM_EXTRAS`` order.
+        The optional entries the layout carries, a subset of ``CHEM_EXTRAS``.
 
     Returns
     -------

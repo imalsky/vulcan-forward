@@ -16,7 +16,7 @@ Tags: [M] measured, [E] estimated, [I] inferred.
   (`network`, `atom_list`, `vulcan_cfg_name`) and the RT column (`art_pbtm_bar`, `p_ref_bar`): the engine fills none
   in, and `opacity_mode` is gone ("Import order, profile keys and refusals"). 0.30.0 on `main`, the only branch, is
   0.29.0 plus the WASP-39b v5 engine options,
-  a sulfur knob (`s_o`) and a Kzz power law as optional entries of the chemistry layout,
+  a sulfur knob (`s_o`) as an optional entry of the chemistry layout (the Kzz power law beside it is removed),
   `lnM` and a grey deck in the RT ("Cold start, abundance map, carbon repair", "Kzz
   shape", "Geometry and anchors", "Opacity: correlated-k on ExoMolOP"). 0.29.0
   (`801f7e7`, tag `v0.29.0`): no build-time warm-up solve, `co_mode` default `fixed_O`,
@@ -104,10 +104,10 @@ Tags: [M] measured, [E] estimated, [I] inferred.
   stated: 29 arrays (four chemistry columns with and without photochemistry, transmission with and without Rayleigh,
   cloud and deck, leave-one-out, a T jvp, emission and eclipse flux) on the real tables [M, daw CPU].
 - A setting stated twice or where it cannot act is refused: a top-level key repeated in `cfg_overrides` (the override
-  won silently), `network` or `atom_list` in `cfg_overrides` (frozen at import), `runtime` there without `dt_max`
-  (vulcan3 derives `dt_max` from the file's `runtime` at load, so it did not follow), `kzz_p_ref_bar` outside the power
-  law. A `yconv_min` override still leaves vulcan3's derived photolysis-switch threshold unchanged ("Known and
-  deliberately untracked"): jwst-transit-authority relies on it.
+  won silently), `network` or `atom_list` in `cfg_overrides` (frozen at import) and `runtime` there without `dt_max`
+  (vulcan3 derives `dt_max` from the file's `runtime` at load, so it did not follow). A `yconv_min` override still
+  leaves vulcan3's derived photolysis-switch threshold unchanged ("Known and deliberately untracked"):
+  jwst-transit-authority relies on it.
 - One planet: `G Mp` of the vulcan3 config (after overrides) and `gs_cgs rp_cm^2` of the profile must agree to
   `constants.GM_MATCH_RTOL`, 2 % (the maintainer decided). The shipped WASP-39 b pair agrees to 3e-6 [M]. A retrieval
   that samples the RT mass is checked at its base values only.
@@ -493,14 +493,10 @@ Tags: [M] measured, [E] estimated, [I] inferred.
 
 ## Kzz shape
 
-- `kzz_mode` "scale" (the default) multiplies the config's Kzz profile by e^lnKzz;
-  "powerlaw" anchors Kzz0 at `kzz_p_ref_bar` (1 mbar by default, log-log interpolated
-  on the config profile at the interior interfaces pico[1:-1], where the runner reads
-  Kzz) and tilts it by (P / P_ref)^-kzz_slope, the slope an optional layout entry
-  (`CHEM_EXTRAS`). Slope 0 is a constant Kzz equal to the profile's value at the
-  reference level, so lnKzz keeps its meaning; a slope entry with the scale mode is
-  refused at build (a silent no-op otherwise). Pinned by `tests/test_converged_y_batch.py`
-  on the prepped `pv.Kzz` (no solve).
+- e^lnKzz multiplies the config's Kzz profile, the only shape. The power-law mode (`kzz_mode`, `kzz_p_ref_bar`, the
+  `kzz_slope` layout entry) is removed: its one consumer, a WASP-39b sensitivity run, was dropped unrun (the maintainer
+  decided), and a profile that names either key is refused as unknown. Pinned by `tests/test_converged_y_batch.py` on
+  the prepped `pv.Kzz` (no solve).
 
 ## Photolysis refresh cadence
 

@@ -73,7 +73,6 @@ class _ChemSetup:
     tp_eval: Callable[[tuple[float, ...] | Array, Array], Array] | None
     n_tp_params: int
     chem_extras: tuple[str, ...]
-    kzz_eff: Callable[[float | Array, float | Array], Array]
     elem: SimpleNamespace
     ratio_idx: Any
     T_base: Array
@@ -134,7 +133,7 @@ class _ChemSetup:
             self.network, T, M, self.nasa9, self.remove_list, use_lowT_caps=bool(self.cfg.use_lowT_limit_rates)
         )
         Ti = 0.5 * (T[:-1] + T[1:])
-        Kzz_eff = self.kzz_eff(lnKzz, _p.kzz_slope)
+        Kzz_eff = self.atm_static.Kzz * jnp.exp(lnKzz)
 
         if warm_y is None:
             y0p = self._eq_seed(T, self.elem.targets(lnZ, c_o, s_o), M)

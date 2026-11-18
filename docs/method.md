@@ -31,9 +31,9 @@ the photolysis reads (`r_star`, `orbit_radius`, `sflux_file`), and `r_star` must
 
 ### Parameter vector
 
-`ChemParams(lnZ, c_o, lnKzz, tp, s_o, kzz_slope)` is the named form. `params_from_vector` and `ChemParams.to_vector` convert
+`ChemParams(lnZ, c_o, lnKzz, tp, s_o)` is the named form. `params_from_vector` and `ChemParams.to_vector` convert
 to and from the positional layout `[lnZ, c_o, lnKzz, *extras, *tp]`, where the extras are the `chem_extras` the model was
-built with (a subset of `CHEM_EXTRAS`, in its order; none by default). Without a `tp_eval` hook the tail is one entry, a
+built with (a subset of `CHEM_EXTRAS`; none by default). Without a `tp_eval` hook the tail is one entry, a
 uniform temperature offset in K. A warm continuation carries three references: `lnZ_ref`, `c_o_ref`, `s_o_ref`.
 
 ### Composition map
@@ -52,8 +52,7 @@ $c < \ln(1 + \min_z O^O_z / O^C_z)$, which `co_bz_bound` and `co_bz_margin` repo
 
 ### Kzz
 
-`kzz_mode="scale"` multiplies the config's profile by $e^{\ln K_{zz}}$. `"powerlaw"` reads $K_{zz,0}$ off the profile at
-`kzz_p_ref_bar` and uses $K_{zz,0} e^{\ln K_{zz}} (P / P_{\rm ref})^{-\alpha}$.
+$e^{\ln K_{zz}}$ multiplies the config's profile.
 
 ### Condensation
 
@@ -172,7 +171,7 @@ $g n_b + b$ on both sides. The g-weights multiply the flux, because the k-distri
 | Symbol | Meaning |
 |---|---|
 | `lnZ`, `c_o`, `s_o` | ln of the metallicity, C/O and S/O multiples of the baseline |
-| `lnKzz`, `kzz_slope`, `Kzz0` | ln of the eddy-diffusion multiple, the power-law slope, the baseline $K_{zz}$ |
+| `lnKzz` | ln of the eddy-diffusion multiple |
 | `Dzz` | Molecular diffusion coefficient |
 | `T`, `T_art`, `Ti` | Temperature on the chemistry grid, on the ART grid, at interfaces |
 | `P`, `dP`, `logP_*`, `lnp_*` | Pressure, a layer's pressure thickness, log10 pressure, natural-log pressure |

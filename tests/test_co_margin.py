@@ -51,29 +51,26 @@ def test_chem_params_named_api_matches_the_vector_form():
     assert float(q.tp[0]) == 25.0
 
     # a NamedTuple, so it is a JAX pytree and round-trips through to_vector
-    # (the optional entries are leaves too, at their 0 defaults)
-    assert len(jax.tree_util.tree_leaves(ChemParams(1.0, 2.0, 3.0, (4.0,)))) == 6
+    # (the optional entry is a leaf too, at its 0 default)
+    assert len(jax.tree_util.tree_leaves(ChemParams(1.0, 2.0, 3.0, (4.0,)))) == 5
     assert np.allclose(np.asarray(ChemParams(1.0, 2.0, 3.0, (4.0,)).to_vector()), [1.0, 2.0, 3.0, 4.0])
 
 
 def test_optional_chemistry_entries_follow_the_declared_layout():
-    """With ``extras`` the vector carries s_o, kzz_slope or both between lnKzz and the T-P block, in CHEM_EXTRAS order.
+    """With ``extras`` the vector carries s_o between lnKzz and the T-P block.
 
-    Without them both read 0 and the base layout holds. A wrong order or an unknown name is refused.
+    Without it s_o reads 0 and the base layout holds. A repeated or unknown name is refused.
     """
-    theta = [0.5, -0.25, 1.5, 0.7, -0.3, 1200.0, -1.0]
+    theta = [0.5, -0.25, 1.5, 0.7, 1200.0, -1.0]
     p = params_from_vector(theta, n_tp_params=2, has_tp_eval=True, extras=CHEM_EXTRAS)
     assert (float(p.lnZ), float(p.c_o), float(p.lnKzz)) == (0.5, -0.25, 1.5)
-    assert (float(p.s_o), float(p.kzz_slope)) == (0.7, -0.3)
+    assert float(p.s_o) == 0.7
     assert np.allclose(np.asarray(p.tp), [1200.0, -1.0])
     assert np.allclose(np.asarray(p.to_vector(CHEM_EXTRAS)), theta)
-    q = params_from_vector([0.5, -0.25, 1.5, 0.7, 1200.0], n_tp_params=1, has_tp_eval=True, extras=("s_o",))
-    assert (float(q.s_o), float(q.kzz_slope), float(q.tp[0])) == (0.7, 0.0, 1200.0)
-    assert np.allclose(np.asarray(q.to_vector(("s_o",))), [0.5, -0.25, 1.5, 0.7, 1200.0])
     r = params_from_vector([0.0, 0.0, 0.0, 25.0], n_tp_params=0, has_tp_eval=False)
-    assert (float(r.s_o), float(r.kzz_slope), float(r.tp[0])) == (0.0, 0.0, 25.0)
-    with pytest.raises(ValueError, match="order"):
-        params_from_vector(theta, n_tp_params=2, has_tp_eval=True, extras=("kzz_slope", "s_o"))
+    assert (float(r.s_o), float(r.tp[0])) == (0.0, 25.0)
+    with pytest.raises(ValueError, match="no repeats"):
+        params_from_vector(theta, n_tp_params=2, has_tp_eval=True, extras=("s_o", "s_o"))
     with pytest.raises(ValueError, match="subset"):
         ChemParams().to_vector(("s_h",))
 

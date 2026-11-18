@@ -20,7 +20,7 @@ import pytest
 if importlib.util.find_spec("vulcan3") is None:
     pytest.skip("vulcan3 not installed (light-CI environment)", allow_module_level=True)
 
-from vulcan_forward import constants, vulcan_chem
+from vulcan_forward import vulcan_chem
 
 import jax
 import jax.numpy as jnp
@@ -66,12 +66,11 @@ def test_initial_column_carries_the_theta_elemental_ratios(runs):
 
 @pytest.fixture(scope="module")
 def chem_x():
-    """The model with both optional entries, [lnZ, c_o, lnKzz, s_o, kzz_slope, T-offset], and Kzz as a power law.
+    """The model with the optional entry, [lnZ, c_o, lnKzz, s_o, T-offset].
 
-    No solve: the tests below read the built initial column and its Kzz.
+    No solve: the test below reads the built initial column.
     """
-    powerlaw = {**PROFILE, "kzz_mode": "powerlaw", "kzz_p_ref_bar": constants.KZZ_P_REF_BAR}
-    return vulcan_chem.build_chem_model(powerlaw, chem_extras=vulcan_chem.CHEM_EXTRAS)
+    return vulcan_chem.build_chem_model(PROFILE, chem_extras=vulcan_chem.CHEM_EXTRAS)
 
 
 def test_sulfur_knob_moves_only_sulfur(chem_x):
@@ -80,7 +79,7 @@ def test_sulfur_knob_moves_only_sulfur(chem_x):
     It holds from the cold seed and from a warm guess at another sulfur reference, with every repair factor positive.
     """
     lnZ, c_o, s_o = 0.3, 0.1, -0.8
-    th = jnp.asarray([lnZ, c_o, 0.0, s_o, 0.0, 0.0])
+    th = jnp.asarray([lnZ, c_o, 0.0, s_o, 0.0])
     audit = chem_x.audit_init(th)
     got, base = audit["ratios_to_H"], audit["baseline_ratios_to_H"]
     want = {"He": 1.0, "C": np.exp(lnZ + c_o), "S": np.exp(lnZ + s_o)}
@@ -93,28 +92,13 @@ def test_sulfur_knob_moves_only_sulfur(chem_x):
     assert abs(warm["dln_SO_achieved"] - s_o) < 1e-10
 
 
-def test_kzz_power_law_is_anchored_on_the_profile_at_the_reference_level(runs, chem_x):
-    """kzz_mode="powerlaw" with slope 0 is a constant Kzz, the config profile's value at the reference level.
-
-    That value is log-log interpolated, and a slope tilts it as (P / P_ref)^-slope times e^lnKzz; the default mode is
-    the profile times e^lnKzz.
-    """
-    from vulcan3.atm_setup import compute_pico
-
+def test_lnkzz_scales_the_config_profile(runs):
+    """e^lnKzz multiplies the config's Kzz profile."""
     chem = runs[0]
-    p_int = np.asarray(compute_pico(jnp.asarray(chem.p_bar * constants.BAR_CGS)))[1:-1] / constants.BAR_CGS
     kzz_prof = np.asarray(chem.prep_pv(jnp.asarray([0.0, 0.0, 0.0, 0.0])).Kzz)
     np.testing.assert_allclose(
         np.asarray(chem.prep_pv(jnp.asarray([0.0, 0.0, np.log(3.0), 0.0])).Kzz), 3.0 * kzz_prof, rtol=1e-12
     )
-    flat = np.asarray(chem_x.prep_pv(jnp.zeros(6)).Kzz)
-    assert np.ptp(flat) == 0.0
-    o = np.argsort(p_int)
-    ref = np.exp(np.interp(np.log(constants.KZZ_P_REF_BAR), np.log(p_int[o]), np.log(kzz_prof[o])))
-    np.testing.assert_allclose(flat[0], ref, rtol=1e-12)
-    slope = 0.5
-    tilted = np.asarray(chem_x.prep_pv(jnp.asarray([0.0, 0.0, np.log(2.0), 0.0, slope, 0.0])).Kzz)
-    np.testing.assert_allclose(tilted, 2.0 * ref * (p_int / constants.KZZ_P_REF_BAR) ** (-slope), rtol=1e-12)
 
 
 def test_batched_lanes_are_their_own_solves_and_agree_with_the_vmap(runs):
@@ -205,8 +189,6 @@ def test_inputs_that_would_be_ignored_are_refused(runs):
         ({"cfg_overrides": {"nz": 30}}, "at the top level of the profile and again in cfg_overrides"),
         ({"cfg_overrides": {"runtime": 1.0e20}}, "'runtime' without 'dt_max'"),
         ({"cfg_overrides": {"network": "thermo/NCHO_photo_network.txt"}}, "freezes at its first import"),
-        ({"kzz_p_ref_bar": 1.0e-3}, "only the power law reads the reference pressure"),
-        ({"kzz_mode": "powerlaw"}, "needs kzz_p_ref_bar"),
         ({"rp_cm": 9.1e9, "gs_cgs": 4220.0}, "the chemistry and the RT describe different planets"),
         ({"use_photo": True, "rstar_cm": 7.0e10}, "the chemistry and the RT describe different stars"),
     ],

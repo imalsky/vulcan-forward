@@ -188,8 +188,7 @@ ATOMIC_MASS_TOL_G_MOL = 0.01
 ART_PTOP_BAR = 1.0e-9
 
 # The pressure, bar, at which a Kzz profile's value is quoted and reported (1 mbar: where the WASP-39 b profile value
-# is quoted). Not a default: under kzz_mode "powerlaw" the profile states its own kzz_p_ref_bar, where Kzz0 is read off
-# the config's profile and tilted by (P / P_ref)^-slope.
+# is quoted).
 KZZ_P_REF_BAR = 1.0e-3
 
 # Molecule table: VULCAN species name and molar mass, g/mol. The opacity is the ExoMolOP k-table <MOL>.ktable.h5, and
@@ -285,8 +284,6 @@ PROFILE_KEYS = frozenset(
         "count_max",
         "dt_max",
         "cfg_overrides",
-        "kzz_mode",
-        "kzz_p_ref_bar",
         # build_rt_model / build_emis_model (art_ptop_bar also sets the chemistry top)
         "molecules",
         "molecule_table",

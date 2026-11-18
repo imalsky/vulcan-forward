@@ -309,50 +309,6 @@ def _check_stellar_span(cfg: Any, var: Any) -> None:
         )
 
 
-def _make_kzz_eff(
-    kzz_mode: str, profile: Profile, atm: Any, Kzz0: Array
-) -> Callable[[float | Array, float | Array], Array]:
-    """Return ``Kzz(lnKzz, kzz_slope)`` at the interior interfaces, where the runner reads Kzz, [nz-1].
-
-    "scale" keeps the config's profile shape. "powerlaw" anchors Kzz0 at ``kzz_p_ref_bar``, log-log interpolated on the
-    config's profile, and tilts it by (P / P_ref)^-slope, so lnKzz = 0, slope = 0 is a constant Kzz equal to the
-    profile's value there.
-    """
-    from vulcan3.atm_setup import compute_pico
-
-    _p_int_bar = (
-        np.asarray(compute_pico(np.asarray(atm.pco, dtype=np.float64)), dtype=np.float64)[1:-1] / constants.BAR_CGS
-    )
-    _kzz_ref0 = _p_over_ref = None
-    if kzz_mode == "powerlaw":
-        kzz_p_ref_bar = float(profile["kzz_p_ref_bar"])
-        if not (_p_int_bar.min() <= kzz_p_ref_bar <= _p_int_bar.max()):
-            raise ValueError(
-                f"kzz_p_ref_bar={kzz_p_ref_bar:g} lies outside the Kzz grid "
-                f"[{_p_int_bar.min():.3g}, {_p_int_bar.max():.3g}] bar"
-            )
-        _order = np.argsort(_p_int_bar)
-        _kzz_ref0 = float(
-            np.exp(
-                np.interp(
-                    np.log(kzz_p_ref_bar),
-                    np.log(_p_int_bar[_order]),
-                    np.log(np.asarray(Kzz0, dtype=np.float64)[_order]),
-                )
-            )
-        )
-        _p_over_ref = jnp.asarray(_p_int_bar / kzz_p_ref_bar)
-        logger.info("[chem] kzz_mode=powerlaw: Kzz0(%g bar) = %.3e cm^2/s, slope from theta", kzz_p_ref_bar, _kzz_ref0)
-
-    def _kzz_eff(lnKzz: float | Array, kzz_slope: float | Array) -> Array:
-        """Return the effective Kzz, cm^2/s."""
-        if kzz_mode == "powerlaw":
-            return _kzz_ref0 * jnp.exp(lnKzz) * _p_over_ref ** (-kzz_slope)  # type: ignore[operator]  # set for powerlaw
-        return Kzz0 * jnp.exp(lnKzz)
-
-    return _kzz_eff
-
-
 def _make_runner(cfg: Any, rs: Any, para: Any) -> Any:
     """Return vulcan3's outer loop on a fresh Rosenbrock solver, with the pre-loop's photolysis statics."""
     import vulcan3.legacy_io as op
@@ -364,30 +320,6 @@ def _make_runner(cfg: Any, rs: Any, para: Any) -> Any:
     integ = outer_loop.OuterLoop(solver, op.Output(cfg=cfg), cfg=cfg)
     solver.naming_solver(para)
     return integ
-
-
-def _checked_kzz_mode(profile: Profile, chem_extras: tuple[str, ...]) -> str:
-    """Return the profile's Kzz mode, refusing an unknown one and a slope only the power law would read."""
-    kzz_mode = str(profile.get("kzz_mode", "scale"))
-    if kzz_mode not in ("scale", "powerlaw"):
-        raise ValueError(f"kzz_mode={kzz_mode!r}: expected 'scale' or 'powerlaw'")
-    if "kzz_p_ref_bar" in profile and kzz_mode != "powerlaw":
-        raise ValueError(
-            f"kzz_p_ref_bar is set but kzz_mode is {kzz_mode!r}: only the power law reads the reference pressure, so "
-            "it would change nothing. Drop the key."
-        )
-    if kzz_mode == "powerlaw" and "kzz_p_ref_bar" not in profile:
-        raise ValueError(
-            "kzz_mode 'powerlaw' needs kzz_p_ref_bar, the pressure in bar where the Kzz profile is read and the slope "
-            "pivots: it belongs to the case and has no default."
-        )
-    if "kzz_slope" in chem_extras and kzz_mode != "powerlaw":
-        raise ValueError(
-            "chem_extras carries 'kzz_slope' but kzz_mode is "
-            f"{kzz_mode!r}: the slope is read only by the power law, so "
-            "it would be a silent no-op"
-        )
-    return kzz_mode
 
 
 def _refuse_surface_h2o(cfg: Any, use_condense: bool) -> None:
@@ -444,8 +376,7 @@ def build_chem_model(
     n_tp_params : int, optional
         Entries ``tp_eval`` consumes.
     chem_extras : sequence of str, optional
-        The optional entries of the vector between ``lnKzz`` and the temperature block, a subset of ``CHEM_EXTRAS``
-        in order.
+        The optional entries of the vector between ``lnKzz`` and the temperature block, a subset of ``CHEM_EXTRAS``.
 
     Returns
     -------
@@ -453,7 +384,7 @@ def build_chem_model(
         The solves ``converged_y``, ``converged_y_batch``, ``converged_y_queue``, ``converged_y_jvp``, ``run_diag``;
         checks ``conv_normal_at_exit``, ``audit_init``, ``warm_start_ok``, ``prep_pv``, ``co_bz_bound``,
         ``co_bz_margin``; data ``y0``, ``T_base`` (K), ``p_bar``, ``dz`` (cm), ``sidx``, ``species_masses`` (g/mol),
-        ``compo_array``, ``atom_list``, ``nz``, ``ni``, ``chem_extras``, ``kzz_mode``, ``count_max``, ``yconv_min``,
+        ``compo_array``, ``atom_list``, ``nz``, ``ni``, ``chem_extras``, ``count_max``, ``yconv_min``,
         ``conden_spec``.
 
     Notes
@@ -465,7 +396,6 @@ def build_chem_model(
     t0 = time.time()
     constants.check_profile_keys(profile)
     chem_extras = _check_extras(chem_extras)
-    kzz_mode = _checked_kzz_mode(profile, chem_extras)
     cfg = _configured_cfg(profile)
 
     from vulcan3 import atm_jax, composition, network as net_mod
@@ -503,7 +433,6 @@ def build_chem_model(
     atm_static = make_atm_static(atm, ni, nz, cfg=integ.config)
     state0 = integ.pack_state(rs)
     T_base = jnp.asarray(np.asarray(atm.Tco, dtype=np.float64))
-    kzz_eff = _make_kzz_eff(kzz_mode, profile, atm, atm_static.Kzz)
 
     # refresh_static feeds the runner's own hydrostatic-refresh kernel; phys0 and spec_atm feed atm_jax.mol_diff, the
     # on-graph Dzz(T, M) builder.
@@ -526,7 +455,6 @@ def build_chem_model(
         tp_eval=tp_eval,
         n_tp_params=n_tp_params,
         chem_extras=chem_extras,
-        kzz_eff=kzz_eff,
         elem=elem,
         ratio_idx=ratio_indices([e for e, _ in elem.pairs]),
         T_base=T_base,
@@ -566,7 +494,6 @@ def build_chem_model(
         nz=nz,
         ni=ni,
         chem_extras=chem_extras,
-        kzz_mode=kzz_mode,
         count_max=int(cfg.count_max),
         yconv_min=float(cfg.yconv_min),
     )
