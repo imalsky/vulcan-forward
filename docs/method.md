@@ -46,7 +46,7 @@ species (He; H2O; CO and CH4; N2; H2S), and repeat. The residual is about $10^{-
 
 ### Fixed-O C/O guess
 
-In `co_mode="fixed_O"` a warm guess scales every C-bearing species by $e^c$ and the O-only carriers by
+A warm guess scales every C-bearing species by $e^c$ and the O-only carriers by
 $b_z = 1 + (1 - e^c) O^C_z / O^O_z$, keeping each layer's O total. $b_z > 0$ only while
 $c < \ln(1 + \min_z O^O_z / O^C_z)$, which `co_bz_bound` and `co_bz_margin` report.
 

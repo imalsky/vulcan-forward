@@ -139,7 +139,7 @@ Tags: [M] measured, [E] estimated, [I] inferred.
 - Every build-time refusal names the remedy: missing table (fetch command), missing
   geometry, out-of-grid anchor, clamped chemistry top or bottom, an absent CIA table (exojax would fetch it behind a
   downloader that swallows failures), CIA span, `art_pbtm_bar`
-  deeper than the table's 100 bar ceiling, unknown profile key, unknown `co_mode`,
+  deeper than the table's 100 bar ceiling, unknown profile key,
   repeated molecule, an unstated or mismatched star, a non-empty `T_cross_sp`. The last because `_prep` leaves the
   T-dependent cross sections at the baseline; no shipped config sets it. The engine keeps room-temperature cross
   sections, as VULCAN 2 does (the maintainer decided): its hot-Jupiter configs leave `T_cross_sp = []` (`vulcan_cfg.py`,
@@ -579,9 +579,8 @@ per-theta re-anchoring stay; the other items stay live as model choices.
   provenance for them beyond "Provenance audit" [M: `git log`].
 - The photolysis-cadence switch threshold stays at VULCAN3's derived 1.0 when a profile
   overrides `yconv_min`: only the refresh timing moves, the certificate does not.
-- `co_mode` defaults to `fixed_O`, which both consumers pass; `proxy` is kept and no test
-  in any repo sets it. The modes differ only in a warm continuation's guess, which the
-  elemental projection puts on the exact targets.
+- The warm C/O guess is the fixed-O map only: `co_mode` and its unused `proxy` mode are removed (no test, spec or
+  consumer set `proxy`); a profile that still names `co_mode` is refused as an unknown key.
 - `transmission_depth`, `emission_flux` and `tau_bottom` have no production caller (grep
   of vulcan-retrieval/src and vulcan-jwst-tool/src).
 - Importing `vulcan_chem` sets `OMP_NUM_THREADS=1` (`setdefault`, undocumented).

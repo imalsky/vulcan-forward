@@ -34,8 +34,8 @@ def _compo() -> np.ndarray:
     return out
 
 
-def _elem(co_fixed_o: bool = True):
-    return _build_elemental(_compo(), SIDX, Y0, len(SPECIES), co_fixed_o)
+def _elem():
+    return _build_elemental(_compo(), SIDX, Y0, len(SPECIES))
 
 
 def test_a_carbon_excess_is_repaired_through_ch4_as_well_as_co():
@@ -54,10 +54,9 @@ def test_a_carbon_excess_is_repaired_through_ch4_as_well_as_co():
     assert ratio == pytest.approx(want, rel=1e-13)
 
 
-@pytest.mark.parametrize("co_fixed_o", [True, False])
-def test_the_warm_guess_applies_only_the_composition_increments(co_fixed_o):
+def test_the_warm_guess_applies_only_the_composition_increments():
     """A guess from a column at (lnZ_ref, c_o_ref, s_o_ref) depends on the differences alone."""
-    guess = _elem(co_fixed_o).guess
+    guess = _elem().guess
     with_refs = np.asarray(guess(1.0, 0.3, 0.2, Y0, 0.4, 0.1, 0.05))
     from_zero = np.asarray(guess(0.6, 0.2, 0.15, Y0, 0.0, 0.0, 0.0))
     np.testing.assert_allclose(with_refs, from_zero, rtol=1e-13, atol=0.0)

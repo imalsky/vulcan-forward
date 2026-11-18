@@ -98,9 +98,7 @@ def bz_margin(y: ArrayLike, n_o: ArrayLike, carbon_mask: ArrayLike, o_only_mask:
         return float(np.log(1.0 + np.min(oo_z / oc_z)))
 
 
-def _build_elemental(
-    compo: np.ndarray, sidx: dict[str, int], y0_np: np.ndarray, ni: int, co_fixed_o: bool
-) -> SimpleNamespace:
+def _build_elemental(compo: np.ndarray, sidx: dict[str, int], y0_np: np.ndarray, ni: int) -> SimpleNamespace:
     """Build the theta targets and the projection for one network, from the baseline column ``y0_np``.
 
     Targets are ratios to elemental H; absolute densities follow from sum_i n_i = M. Returns a namespace of closures
@@ -157,9 +155,7 @@ def _build_elemental(
     )
 
     def co_bz_margin(y: ArrayLike) -> float:
-        """Return ``bz_margin`` on the column ``y``; inf in proxy mode, which has no b_z compensation."""
-        if not co_fixed_o:
-            return float("inf")
+        """Return ``bz_margin`` on the column ``y``."""
         return bz_margin(y, nO_per_species, carbon_mask, o_only_mask)
 
     rep_cols_j = jnp.asarray(rep_cols)
@@ -212,18 +208,13 @@ def _build_elemental(
         """
         c_o_inc = c_o - c_o_ref
         base = warm_y * jnp.exp((s_o - s_o_ref) * sulfur_mask)[None, :]
-        if co_fixed_o:
-            # Layer by layer at fixed O: b_z (see bz_margin) keeps each layer's O total invariant, smooth in c_o.
-            OC_z = (base * (nO_per_species * carbon_mask)[None, :]).sum(axis=1)
-            OO_z = (base * (nO_per_species * o_only_mask)[None, :]).sum(axis=1)
-            b_z = 1.0 + (1.0 - jnp.exp(c_o_inc)) * OC_z / OO_z  # (nz,)
-            cofac = jnp.where(carbon_mask[None, :] > 0, jnp.exp(c_o_inc), 1.0)  # (1, ni)
-            cofac = jnp.where(o_only_mask[None, :] > 0, b_z[:, None], cofac)  # (nz, ni)
-            y0p = base * jnp.exp((lnZ - lnZ_ref) * metal_mask)[None, :] * cofac
-        else:
-            scale = jnp.exp((lnZ - lnZ_ref) * metal_mask + c_o_inc * carbon_mask)  # (ni,)
-            y0p = base * scale[None, :]
-        return y0p
+        # Layer by layer at fixed O: b_z (see bz_margin) keeps each layer's O total invariant, smooth in c_o.
+        OC_z = (base * (nO_per_species * carbon_mask)[None, :]).sum(axis=1)
+        OO_z = (base * (nO_per_species * o_only_mask)[None, :]).sum(axis=1)
+        b_z = 1.0 + (1.0 - jnp.exp(c_o_inc)) * OC_z / OO_z  # (nz,)
+        cofac = jnp.where(carbon_mask[None, :] > 0, jnp.exp(c_o_inc), 1.0)  # (1, ni)
+        cofac = jnp.where(o_only_mask[None, :] > 0, b_z[:, None], cofac)  # (nz, ni)
+        return base * jnp.exp((lnZ - lnZ_ref) * metal_mask)[None, :] * cofac
 
     return SimpleNamespace(
         targets=_targets,

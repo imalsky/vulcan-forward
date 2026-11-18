@@ -285,7 +285,6 @@ PROFILE_KEYS = frozenset(
         "count_max",
         "dt_max",
         "cfg_overrides",
-        "co_mode",
         "kzz_mode",
         "kzz_p_ref_bar",
         # build_rt_model / build_emis_model (art_ptop_bar also sets the chemistry top)

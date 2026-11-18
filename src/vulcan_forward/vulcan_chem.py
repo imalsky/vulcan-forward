@@ -456,12 +456,11 @@ def build_chem_model(
         ``compo_array``, ``atom_list``, ``nz``, ``ni``, ``chem_extras``, ``kzz_mode``, ``count_max``, ``yconv_min``,
         ``conden_spec``.
 
-    Raises
-    ------
-    ValueError
-        On an unknown key or mode, unsupported T-dependent cross sections, a condensing species with no reaction, or,
-        with photochemistry on, a star the case does not state or whose radius is not the RT's.
-        Condensation with ``use_sat_surfaceH2O``, which a live T(P) does not rebuild, raises ``NotImplementedError``.
+    Notes
+    -----
+    The helpers it calls raise ``ValueError`` on an unknown key, unsupported T-dependent cross sections, a condensing
+    species with no reaction, or, with photochemistry on, a star the case does not state or whose radius is not the
+    RT's. Condensation with ``use_sat_surfaceH2O``, which a live T(P) does not rebuild, raises ``NotImplementedError``.
     """
     t0 = time.time()
     constants.check_profile_keys(profile)
@@ -512,15 +511,11 @@ def build_chem_model(
     phys0, spec_atm = atm_jax.make_physical_inputs(cfg, var, atm, list(network.species))
 
     compo = np.asarray(composition.compo_array)
-    # The two modes differ only in a warm continuation's guess; the projection puts both on the same targets.
-    co_mode = str(profile.get("co_mode", "fixed_O"))
-    if co_mode not in ("proxy", "fixed_O"):
-        raise ValueError(f"co_mode={co_mode!r}: expected 'proxy' or 'fixed_O'")
     atomic_masses = jnp.asarray(np.asarray(constants.ATOMIC_MASSES, dtype=np.float64))
     species_masses = jnp.asarray(np.asarray(compo, dtype=np.float64)) @ atomic_masses  # (ni,)
 
     y0 = np.asarray(state0.y, dtype=np.float64)
-    elem = _build_elemental(compo, sidx, y0, ni, co_mode == "fixed_O")
+    elem = _build_elemental(compo, sidx, y0, ni)
 
     setup = _ChemSetup(
         cfg=cfg,
