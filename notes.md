@@ -8,7 +8,9 @@ Tags: [M] measured, [E] estimated, [I] inferred.
 
 ## Current state
 
-- Version 0.31.1 in the working tree: 0.31.0 plus the refusal, with photochemistry on, of a star the case does not
+- Version 0.32.0 in the working tree: 0.31.1 plus `warm_start_ok`, the solve's own start test with no solve, so a
+  caller holding several converged columns can pick one the solve starts from (vulcan-retrieval notes "Warm starts").
+  0.31.1: 0.31.0 plus the refusal, with photochemistry on, of a star the case does not
   state or whose radius is not the RT's ("Import order, profile keys and refusals"). 0.31.0: 0.30.0 plus a breaking
   interface change. The profile names the chemistry
   (`network`, `atom_list`, `vulcan_cfg_name`) and the RT column (`art_pbtm_bar`, `p_ref_bar`): the engine fills none
