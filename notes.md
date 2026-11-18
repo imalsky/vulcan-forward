@@ -513,8 +513,8 @@ Tags: [M] measured, [E] estimated, [I] inferred.
   reverted: the planner's transmission FD/FD and emission AD/FD closure tests pass at
   cadence 5 and fail at cadence 1 (emission warm AD row corr 0.9976 -> 0.558;
   transmission Tirr row corr 0.998 -> 0.981 against a 0.99 gate) [M]. The consumer
-  escalates per column via `cfg_overrides` and records it; vulcan-retrieval sets neither
-  key. So "all derivatives are validated" is not a claim this repo can make.
+  escalates per column via `cfg_overrides` and records it; vulcan-retrieval sets both keys to 1
+  (`runs/survey/survey_base.yaml`, `runs/w39b_smc_retrieval/wasp39_test1.yaml`). So "all derivatives are validated" is not a claim this repo can make.
 
 ## Test tiers and CI
 
