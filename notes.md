@@ -24,8 +24,8 @@ Tags: [M] measured, [E] estimated, [I] inferred.
 - Floors (`pyproject.toml`): `exojax==2.6.0`, `radis<0.17`, `vulcan3>=0.18.0` (first
   release under that name; carries `conv_normal` and `validate_overrides`),
   `jax>=0.6.2`, `numpy>=1.26`, `h5py>=3.9`.
-- Consumers: vulcan-retrieval floors `>=0.30.0` and its `requirements-hpc.txt` pins
-  `50bef74`; jwst-transit-authority (the planner) floors `>=0.29.0` and pins `0accd36`
+- Consumers: vulcan-retrieval floors `>=0.32.0` and its `requirements-hpc.txt` pins
+  `b224861`; jwst-transit-authority (the planner) floors `>=0.31.0` and pins `f7fc352`
   in `deploy/pins.env`.
 - Production: the WASP-39b baseline v2 nautilus run used `d26e9d3` (0.28.0, tag
   `w39b-baseline-v2`). All three W39b production runs carry the 0.27.2 carbon repair
@@ -192,9 +192,9 @@ Tags: [M] measured, [E] estimated, [I] inferred.
   12 absorbers, 1650 bands, 67 layers, CPU: loop 13.49 GiB / 11.9 s, scan 4.56 GiB /
   9.8 s [M].
 - H2 and He Rayleigh is on unless the profile sets `use_rayleigh` false (it was off by default before; both
-  consumers always passed true). Callers that did not name the key, so ran without it and now change: jax_paper's
-  `scripts/retrieval/paper_profiles.py` profiles (used by `run_figs.py`, `sensitivity.py`,
-  `zco_information/build_zco_jacobians.py`, `build_zco_walk.py`) and jwst-transit-authority's
+  consumers always passed true). Callers that did not name the key, so ran without it and now change: the profiles jax_paper's
+  `scripts/retrieval/run_figs.py`, `sensitivity.py`, `scripts/zco_information/build_zco_jacobians.py` and
+  `build_zco_walk.py` build and jwst-transit-authority's
   `validation/scripts/rtcase.py` (a grep of every `build_rt_model(` caller in the workspace). On minus off on a W39b-like test column (40 layers, 700-1600 K, H2O 1e-3, CO 5e-4,
   CO2 1e-5, SO2 3e-6, CH4 1e-7, no cloud) [M, daw CPU]: mean 10.6 ppm (max 29.4) at 1.0-1.2 um, 1.1 (6.0) at
   1.2-2.0 um, 0.07 (0.27) at 2-3 um, 0.01 (0.03) at 3-5.3 um.
@@ -222,7 +222,7 @@ Tags: [M] measured, [E] estimated, [I] inferred.
   band, because its own peak rule would drop the 1.0-1.3 um bands where it is the main absorber. Against the callers
   [M]: both retrieval base specs pass (12 molecules); jwst-transit-authority's GUI default passes, its API default
   (no `extra_mols`: H2O, CO2, CO, CH4, SO2) is refused for NH3, and its sulfur-free network passes with a warning for
-  H2S and SO2; the jax_paper profiles (`paper_profiles.py`) name what they leave out.
+  H2S and SO2; the jax_paper profiles name what they leave out.
 - A bare `converged_y` or `converged_y_batch` returns a column only if it certified (`_chem_model._certified`: an
   error when eager, NaN under jit); `return_conv_diag=True` hands the caller the certificate instead, and
   `allow_uncertified=True` is the opt-out vulcan-retrieval's ungated stage 1 passes. Before this a caller that did
