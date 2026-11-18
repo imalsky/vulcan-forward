@@ -20,10 +20,10 @@ dependencies = [
     # which has no wheel past 3.10 and fails to build, so 3.11 and 3.12
     # installs break. 0.16.3 requires vaex only below 3.11.
     "radis<0.17",
-    # >=0.18.0: the first release under the vulcan3 name; it carries
-    # conv_normal (ConvDiag's certificate) and validate_overrides (the
-    # cfg_overrides check).
-    "vulcan3>=0.18.0",
+    # >=0.19.0: the first release with the public names the engine imports
+    # (DtMinFrozenError, state.TERM_DT_MIN_FROZEN, atm_setup.VISCOSITY_TABLE,
+    # vulcan3.paths), the open-column refusal and the step-control fixes.
+    "vulcan3>=0.19.0",
     # The build reads the case's vulcan3 config file to see which star keys it states itself.
     "PyYAML>=6",
     # Core, not an extra: every consumer reads ExoMolOP HDF5 k-tables; the
