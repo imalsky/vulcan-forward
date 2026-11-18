@@ -450,10 +450,11 @@ def build_chem_model(
     Returns
     -------
     types.SimpleNamespace
-        The solves ``converged_y``, ``converged_y_batch``, ``converged_y_queue``, ``converged_y_jvp``, ``run_diag``; the
-        checks ``conv_normal_at_exit``, ``audit_init``, ``prep_pv``, ``co_bz_bound``, ``co_bz_margin``; and the build's
-        data ``y0``, ``T_base`` (K), ``p_bar``, ``dz`` (cm), ``sidx``, ``species_masses`` (g/mol), ``compo_array``,
-        ``atom_list``, ``nz``, ``ni``, ``chem_extras``, ``kzz_mode``, ``count_max``, ``yconv_min``, ``conden_spec``.
+        The solves ``converged_y``, ``converged_y_batch``, ``converged_y_queue``, ``converged_y_jvp``, ``run_diag``;
+        checks ``conv_normal_at_exit``, ``audit_init``, ``warm_start_ok``, ``prep_pv``, ``co_bz_bound``,
+        ``co_bz_margin``; data ``y0``, ``T_base`` (K), ``p_bar``, ``dz`` (cm), ``sidx``, ``species_masses`` (g/mol),
+        ``compo_array``, ``atom_list``, ``nz``, ``ni``, ``chem_extras``, ``kzz_mode``, ``count_max``, ``yconv_min``,
+        ``conden_spec``.
 
     Raises
     ------
@@ -478,7 +479,6 @@ def build_chem_model(
     from vulcan_forward._chem_model import _CarrySeed, _ChemSetup, _ChemSolves
 
     _assert_composition_tables(composition)
-
     use_condense = bool(cfg.use_condense)
     _refuse_surface_h2o(cfg, use_condense)
     network_file = resolve_data_path(cfg.network)
@@ -546,7 +546,6 @@ def build_chem_model(
         carry=_CarrySeed.from_cfg(cfg),
     )
     solves = _ChemSolves(setup, integ)
-
     return SimpleNamespace(
         run_diag=solves.run_diag,
         converged_y=solves.converged_y,
@@ -555,6 +554,7 @@ def build_chem_model(
         converged_y_jvp=solves.converged_y_jvp,
         conv_normal_at_exit=setup.conv_normal_at_exit,
         audit_init=setup.audit_init,
+        warm_start_ok=setup.warm_start_ok,
         conden_spec=conden_spec,
         prep_pv=setup.prep_pv,
         _integ=integ,

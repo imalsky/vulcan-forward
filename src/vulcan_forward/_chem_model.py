@@ -289,6 +289,43 @@ class _ChemSetup:
         init, _atm_T = self._prep(theta)
         return init.pv
 
+    def warm_start_ok(
+        self,
+        theta: ChemParams | Array,
+        warm_y: Array,
+        lnZ_ref: Array | float = 0.0,
+        c_o_ref: Array | float = 0.0,
+        s_o_ref: Array | float = 0.0,
+    ) -> Array:
+        """Return whether the warm start of ``theta`` from the column ``warm_y`` is physical, without a solve.
+
+        The guess, the repair and the test are the solve's own, so a caller that holds several converged columns can
+        pick one the solve will start from. Runs under jit and vmap.
+
+        Parameters
+        ----------
+        theta : ChemParams or jax.Array
+            The parameters.
+        warm_y : jax.Array [nz, ni]
+            A converged column, cm^-3.
+        lnZ_ref : jax.Array or float
+            The lnZ ``warm_y`` was converged at.
+        c_o_ref : jax.Array or float
+            Its dln(C/O).
+        s_o_ref : jax.Array or float
+            Its s_o.
+
+        Returns
+        -------
+        jax.Array []
+            True where a solve from ``warm_y`` has a state to start from.
+        """
+        _p = self._as_params(theta)
+        # The temperature and the density as _prep builds them.
+        T = self.T_base + _p.tp[0] if self.tp_eval is None else self.tp_eval(_p.tp, self.p_bar)
+        guess = self.elem.guess(_p.lnZ, _p.c_o, _p.s_o, warm_y, lnZ_ref, c_o_ref, s_o_ref)
+        return _physical_ok(*self.elem.project(guess, self.pco / (kb * T), _p.lnZ, _p.c_o, _p.s_o))
+
     def audit_init(
         self,
         theta: ChemParams | Array,
@@ -351,6 +388,11 @@ def _float64_leaves(p: ChemParams | Array) -> ChemParams | Array:
     return jnp.asarray(p, dtype=jnp.float64)
 
 
+def _physical_ok(y0: Array, min_adj: Array) -> Array:
+    """Whether a repaired start column [nz, ni] is physical: a repair factor > 0, every density finite and >= 0."""
+    return (min_adj > 0.0) & jnp.all(jnp.isfinite(y0)) & jnp.all(y0 >= 0.0)
+
+
 def _physical_start(y0: Array, min_adj: Array) -> Array:
     """Return the repaired start column [nz, ni] if it is physical; an error when the call is eager, NaN under jit.
 
@@ -358,7 +400,7 @@ def _physical_start(y0: Array, min_adj: Array) -> Array:
     non-finite density, means the composition is outside what those carriers can absorb, and the solver has no state to
     start from. Nothing can raise under jit, so there the column becomes NaN and the solve comes back uncertified.
     """
-    ok = (min_adj > 0.0) & jnp.all(jnp.isfinite(y0)) & jnp.all(y0 >= 0.0)
+    ok = _physical_ok(y0, min_adj)
     if isinstance(ok, jax.core.Tracer):
         return jnp.where(ok, y0, jnp.nan)
     if not bool(ok):

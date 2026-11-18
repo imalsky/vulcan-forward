@@ -280,6 +280,25 @@ def test_a_start_column_that_is_not_physical_is_refused(runs):
     assert np.all(np.isnan(np.asarray(y)))
 
 
+def test_the_start_check_without_a_solve_is_the_solves_own(runs):
+    """``warm_start_ok`` says, with no solve, which warm starts the solve refuses: a negative density, and a C/O above
+    what the column's oxygen can compensate.
+    """
+    chem, y_b = runs[0], runs[1]
+    th = jnp.asarray(THETAS[1])
+    good = jnp.asarray(y_b[0])
+    ok = jax.jit(jax.vmap(chem.warm_start_ok, in_axes=(None, 0)))
+    bad = good.at[3, chem.sidx["H2O"]].set(-1.0e5)
+    assert np.asarray(ok(th, jnp.stack([good, bad]))).tolist() == [True, False]
+    # Past the column's positivity margin the fixed-O map turns an O-only carrier negative.
+    high_co = th.at[1].set(float(chem.co_bz_margin(np.asarray(good))) + 0.5)
+    assert not bool(chem.warm_start_ok(high_co, good))
+    with pytest.raises(ValueError, match="start column is not physical"):
+        chem.audit_init(high_co, warm_y=good)
+    assert bool(chem.warm_start_ok(th.at[1].set(-0.5), good))
+    chem.audit_init(th.at[1].set(-0.5), warm_y=good)
+
+
 def test_an_uncertified_column_is_never_returned_as_converged():
     """A column stopped on its step cap: an error when eager, NaN under jit, and returned as it is only on request."""
     chem = vulcan_chem.build_chem_model({**PROFILE, "count_max": 5})
