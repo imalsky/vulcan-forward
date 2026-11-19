@@ -487,11 +487,12 @@ Tags: [M] measured, [E] estimated, [I] inferred.
   certified lanes the photo carry was the last gate to clear [M].
 - Weighted vs unweighted inventory: the projection fixes each layer's total and the
   unweighted (layer-summed) column ratios to H; the element budget tracks the
-  dz-weighted column (`budget_ref`, "Convergence certificate"). So two starts at one
+  operator-weighted column (`vulcan3.ini_abun.column_atoms`; `budget_ref`, "Convergence certificate"). So two starts at one
   theta can carry different weighted inventories: algebraically real. On the shipped
   HD209 column the weighted and unweighted column ratios agree to 1e-11..2e-10,
   because the column's atoms sit in the bottom scale heights [M, one column, external
-  review]; W39b is unchecked. vulcan-retrieval's 97 of 1320 warm-certify, cold-fail
+  review]; on vulcan3's converged W39b adjoint fixture (`tests/data/adj_state_w39b.npz`) they agree to 1.7e-7 (S/H),
+  HD189's to 5e-10 [M]. A low-Kzz, strongly stratified column is unchecked. vulcan-retrieval's 97 of 1320 warm-certify, cold-fail
   rows (baseline_v2) are fixed-point path dependence, a different effect.
 
 ## Kzz shape

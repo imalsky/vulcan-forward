@@ -111,8 +111,8 @@ class _ChemSetup:
         """Build the initial runner state and atmosphere for one proposal.
 
         With ``warm_y``, start from that converged column. The projection fixes each layer's total at M and the
-        layer-summed column ratios to H at the theta targets, not the dz-weighted inventory the element budget tracks,
-        so two starts at one theta can carry different weighted inventories.
+        layer-summed column ratios to H at the theta targets, not the operator-weighted inventory the element budget
+        tracks, so two starts at one theta can carry different weighted inventories.
         """
         spec_atm, state0 = self.spec_atm, self.state0
         nz, ni = state0.y.shape
