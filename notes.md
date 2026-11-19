@@ -108,7 +108,9 @@ Tags: [M] measured, [E] estimated, [I] inferred.
   won silently), `network` or `atom_list` in `cfg_overrides` (frozen at import) and `runtime` there without `dt_max`
   (vulcan3 derives `dt_max` from the file's `runtime` at load, so it did not follow). A `yconv_min` override still
   leaves vulcan3's derived photolysis-switch threshold unchanged ("Known and deliberately untracked"):
-  jwst-transit-authority relies on it.
+  jwst-transit-authority relies on it. `vulcan3.validate_overrides` returns the overrides with 0/1 flags as bools (and
+  refuses other non-bool flags); the build applies that copy, so `use_solar: 1` means on, as in a config file. The cold
+  seed takes the run's config (`use_photo`, `O_sequestered_frac`), not vulcan3's process default.
 - One planet: `G Mp` of the vulcan3 config (after overrides) and `gs_cgs rp_cm^2` of the profile must agree to
   `constants.GM_MATCH_RTOL`, 2 % (the maintainer decided). The shipped WASP-39 b pair agrees to 3e-6 [M]. A retrieval
   that samples the RT mass is checked at its base values only.
