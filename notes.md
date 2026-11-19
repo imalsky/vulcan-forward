@@ -22,7 +22,7 @@ Tags: [M] measured, [E] estimated, [I] inferred.
   shape", "Geometry and anchors", "Opacity: correlated-k on ExoMolOP"). 0.29.0
   (`801f7e7`, tag `v0.29.0`): no build-time warm-up solve, `co_mode` default `fixed_O`,
   the emission anchor a constant.
-- Floors (`pyproject.toml`): `exojax==2.6.0`, `radis<0.17`, `vulcan3>=0.18.0` (first
+- Floors (`pyproject.toml`): `exojax==2.6.0`, `radis<0.17`, `vulcan3>=0.19.0` (first
   release under that name; carries `conv_normal` and `validate_overrides`),
   `jax>=0.6.2`, `numpy>=1.26`, `h5py>=3.9`.
 - Consumers: vulcan-retrieval floors `>=0.32.0` and its `requirements-hpc.txt` pins
