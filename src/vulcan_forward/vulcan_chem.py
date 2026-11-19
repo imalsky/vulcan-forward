@@ -137,9 +137,9 @@ def _check_overrides(profile: Profile) -> dict[str, Any]:
     """Return the profile's ``cfg_overrides``, refusing a key the profile also sets or that cannot take effect there."""
     import vulcan3
 
-    overrides = dict(profile.get("cfg_overrides") or {})
-    # setattr checks nothing, so a removed or misspelled key is refused first.
-    vulcan3.validate_overrides(overrides)
+    # setattr checks nothing, so a removed or misspelled key is refused first, and a 0 / 1 flag is applied as the bool
+    # vulcan3's load_config would make it.
+    overrides = vulcan3.validate_overrides(dict(profile.get("cfg_overrides") or {}))
     frozen = sorted(set(overrides) & set(_FROZEN_ENV))
     if frozen:
         raise ValueError(

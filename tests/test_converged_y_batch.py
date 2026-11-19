@@ -205,6 +205,14 @@ def test_the_chemistry_is_named_by_the_profile_and_stated_once(change, match):
     )
 
 
+def test_a_0_or_1_flag_in_cfg_overrides_loads_as_vulcan3_loads_it():
+    """A 0 / 1 flag is a bool, as vulcan3's load_config reads it, so use_solar=1 takes the preset; 2 is refused."""
+    cfg = vulcan_chem._configured_cfg({**PROFILE, "cfg_overrides": {"use_solar": 1, "O_H": 0.003}})
+    assert cfg.use_solar is True
+    with pytest.raises(ValueError, match=r"use_solar=2 must be true or false"):
+        vulcan_chem._configured_cfg({**PROFILE, "cfg_overrides": {"use_solar": 2}})
+
+
 def test_the_cold_seed_reads_the_run_config():
     """The seed is traced after setup has restored vulcan3's process default, so it must read the run's own config."""
     from types import SimpleNamespace
