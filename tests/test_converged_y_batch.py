@@ -226,7 +226,7 @@ def test_the_cold_seed_reads_the_run_config():
     p_bar = jnp.logspace(1.0, -2.0, 4)
     o_to_h = {}
     for frac in (0.0, 0.5):
-        cfg = vulcan_chem._configured_cfg({**PROFILE, "cfg_overrides": {"O_sequestered_frac": frac}})
+        cfg = vulcan_chem._configured_cfg({**PROFILE, "cfg_overrides": {"sequestered_frac": {"O": frac}}})
         setup = SimpleNamespace(cfg=cfg, p_bar=p_bar, ratio_idx=ratio_indices([], cfg))
         y = np.asarray(_ChemSetup._eq_seed(setup, T, jnp.zeros(0), jnp.ones(4)))
         elements = list(seed_elements(cfg))
