@@ -456,7 +456,7 @@ def build_chem_model(
         n_tp_params=n_tp_params,
         chem_extras=chem_extras,
         elem=elem,
-        ratio_idx=ratio_indices([e for e, _ in elem.pairs]),
+        ratio_idx=ratio_indices([e for e, _ in elem.pairs], cfg),
         T_base=T_base,
         pco=jnp.asarray(np.asarray(atm.pco, dtype=np.float64)),
         p_bar=jnp.asarray(p_bar),

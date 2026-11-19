@@ -205,6 +205,28 @@ def test_the_chemistry_is_named_by_the_profile_and_stated_once(change, match):
     )
 
 
+def test_the_cold_seed_reads_the_run_config():
+    """The seed is traced after setup has restored vulcan3's process default, so it must read the run's own config."""
+    from types import SimpleNamespace
+
+    from vulcan3 import composition
+    from vulcan3.ini_abun import ratio_indices, seed_elements
+
+    from vulcan_forward._chem_model import _ChemSetup
+
+    T = jnp.full(4, 1500.0)
+    p_bar = jnp.logspace(1.0, -2.0, 4)
+    o_to_h = {}
+    for frac in (0.0, 0.5):
+        cfg = vulcan_chem._configured_cfg({**PROFILE, "cfg_overrides": {"O_sequestered_frac": frac}})
+        setup = SimpleNamespace(cfg=cfg, p_bar=p_bar, ratio_idx=ratio_indices([], cfg))
+        y = np.asarray(_ChemSetup._eq_seed(setup, T, jnp.zeros(0), jnp.ones(4)))
+        elements = list(seed_elements(cfg))
+        atoms = y @ np.asarray(composition.compo_array)[:, [composition.atom_list.index(e) for e in elements]]
+        o_to_h[frac] = atoms[:, elements.index("O")] / atoms[:, elements.index("H")]
+    np.testing.assert_allclose(o_to_h[0.5] / o_to_h[0.0], 0.5, rtol=1e-6)
+
+
 @pytest.mark.usefixtures("runs")  # vulcan3 is imported on this module's network
 def test_a_star_the_case_does_not_state_is_refused(tmp_path):
     """A config file that omits the star would take default.yaml's star; the case must state it, in its file or in

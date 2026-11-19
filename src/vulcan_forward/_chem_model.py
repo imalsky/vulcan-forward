@@ -92,7 +92,8 @@ class _ChemSetup:
         The cold-start seed is the network's Gibbs equilibrium at the proposal's T-P and column ratios. Its tangent is
         zero by construction (vulcan3 carries the custom_jvp); lnZ and c_o tangents enter through the projection.
         """
-        return eq_seed(T, self.p_bar, element_vector(ratios, self.ratio_idx)) * M[:, None]
+        # The run's config, not vulcan3's process default, which setup has restored by the time this is traced.
+        return eq_seed(T, self.p_bar, element_vector(ratios, self.ratio_idx, self.cfg), self.cfg) * M[:, None]
 
     def _as_params(self, p: ChemParams | Array) -> ChemParams:
         if isinstance(p, ChemParams):
