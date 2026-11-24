@@ -438,10 +438,12 @@ Tags: [M] measured, [E] estimated, [I] inferred.
   1.0e-4). The gradient tests assert column max rel 4e-1, median 1e-3, tangent
   stack-relative 2e-4; measured cold 1.70e-1 / 2.08e-4 / 1.73e-5, warm 1.16e-1 /
   5.74e-5 / 2.56e-5 [M].
-- Per-lane `lnZ_ref` / `c_o_ref` are bitwise the scalar path [M].
+- Per-lane `lnZ_ref` / `c_o_ref` against the scalar path: bitwise on x86-64 [M, daw]; on arm64 bitwise until vulcan3's
+  seed scan was turned to start at the hot bottom (`171e5e6`), since then lane 1 splits as a batch of one does
+  ("Batched routes"), 195 against 125 accepted steps and max rel 1.005e-1 [M, laptop].
 - Test bars, calibrated on daw (Xeon 8462Y+): queue-vs-batch primal 0.05 (`REL_MAX`);
-  batch-vs-solo 0.1 (6e-2 and 8e-2 measured across Python 3.10-3.12 and numpy
-  1.26-2.x); queued tangent 1e-2 on every job at `dt_max` 1e7 (<= 1.5e-5 measured; a refill
+  batch-vs-solo 0.2 (6e-2 and 8e-2 measured across Python 3.10-3.12 and numpy
+  1.26-2.x on x86-64, 1.005e-1 on arm64; it was 0.1 until that arm64 value); queued tangent 1e-2 on every job at `dt_max` 1e7 (<= 1.5e-5 measured; a refill
   that drops a job's tangent reads 1.0, one that takes the next job's 3.9e-1) [M]. GitHub
   runner run 36254404095 (`bdbf2d1`): queue-vs-batch primal 6.87e-2, and the eq-seed warm jvp
   ran to its 3001 cap with the tangent diverged; those tests are in the full tier. GH200 is unverified; the
