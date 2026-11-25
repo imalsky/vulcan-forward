@@ -8,7 +8,8 @@ Tags: [M] measured, [E] estimated, [I] inferred.
 
 ## Current state
 
-- Version 0.33.0: 0.32.0 without `kzz_mode`, `kzz_p_ref_bar`, `ChemParams.kzz_slope` and the `co_mode` proxy, floor
+- Version 0.34.0 (`f0748ae`, tag `v0.34.0`, on TestPyPI): 0.33.0 plus the cold seed passing the run config to
+  vulcan3's equilibrium seed and element vector, floor `vulcan3>=0.20.0`. 0.33.0: 0.32.0 without `kzz_mode`, `kzz_p_ref_bar`, `ChemParams.kzz_slope` and the `co_mode` proxy, floor
   `vulcan3>=0.19.0`. 0.32.0: 0.31.1 plus `warm_start_ok`, the solve's own start test with no solve, so a
   caller holding several converged columns can pick one the solve starts from (vulcan-retrieval notes "Warm starts").
   0.31.1: 0.31.0 plus the refusal, with photochemistry on, of a star the case does not
@@ -22,11 +23,11 @@ Tags: [M] measured, [E] estimated, [I] inferred.
   shape", "Geometry and anchors", "Opacity: correlated-k on ExoMolOP"). 0.29.0
   (`801f7e7`, tag `v0.29.0`): no build-time warm-up solve, `co_mode` default `fixed_O`,
   the emission anchor a constant.
-- Floors (`pyproject.toml`): `exojax==2.6.0`, `radis<0.17`, `vulcan3>=0.19.0` (first
-  release under that name; carries `conv_normal` and `validate_overrides`),
+- Floors (`pyproject.toml`): `exojax==2.6.0`, `radis<0.17`, `vulcan3>=0.20.0` (the seed
+  functions that take the run config),
   `jax>=0.6.2`, `numpy>=1.26`, `h5py>=3.9`.
-- Consumers: vulcan-retrieval floors `>=0.32.0` and its `requirements-hpc.txt` pins
-  `b224861`; jwst-transit-authority (the planner) floors `>=0.31.0` and pins `f7fc352`
+- Consumers: vulcan-retrieval floors `>=0.34.0` and its `requirements-hpc.txt` pins
+  `f0748ae`; jwst-transit-authority (the planner) floors `>=0.33.0` and pins `afa6f98`
   in `deploy/pins.env`.
 - Production: the WASP-39b baseline v2 nautilus run used `d26e9d3` (0.28.0, tag
   `w39b-baseline-v2`). All three W39b production runs carry the 0.27.2 carbon repair
@@ -40,11 +41,9 @@ Tags: [M] measured, [E] estimated, [I] inferred.
   skipped, line coverage 90.6 %. CI's `coverage` job (exojax, no data tree, `fail_under` 80), read here: 125 passed / 12
   skipped, 90.5 %.
 - Full tier (`VULCAN_FORWARD_RUN_FULL=1`): the `converged_y_jvp` tests, the five `@FULL`
-  queue/gradient tests and the 8-species pRT case. Readings at `-n 6 --dist worksteal`
-  [M]: `4ca5fa6` 103 passed in 20.7 min, 23.9 GB peak; the 0.29.0 tree 95 passed /
-  2 failed in 31.4 min, the failures the queue-vs-batch knife edge at the recorded
-  6.874e-2 ("Batched routes") while the eq-seed warm jvp case certifies; the
-  2025-network tree 98 passed in 35.1 min on daw.
+  queue/gradient tests and the 8-species pRT case. At `-n 6 --dist worksteal`, single-threaded
+  XLA, on daw [M]: `f0748ae` (0.34.0) 220 passed in 33.9 min. On the 0.29.0 tree two tests
+  failed on the queue-vs-batch knife edge at the recorded 6.874e-2 ("Batched routes").
 - Known defect, no shipped number moves: the `ckd.overlap` sort-crossing jumps
   ("Opacity: correlated-k on ExoMolOP").
 
